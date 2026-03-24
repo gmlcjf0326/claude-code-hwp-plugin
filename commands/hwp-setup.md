@@ -2,6 +2,7 @@
 description: HWP Studio 사용 환경을 진단합니다. Python, pyhwpx, 한글 프로그램의 설치 상태를 확인하고 문제가 있으면 해결 방법을 안내합니다.
 allowed-tools:
   - "mcp__hwp-studio__hwp_check_setup"
+  - "mcp__plugin_hwp-studio_hwp-studio__hwp_check_setup"
 ---
 
 # HWP 환경 진단

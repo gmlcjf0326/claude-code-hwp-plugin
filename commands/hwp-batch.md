@@ -2,12 +2,19 @@
 description: 엑셀/CSV 데이터를 기반으로 여러 건의 HWP 문서를 일괄 생성합니다. 위촉장, 증명서 등.
 allowed-tools:
   - "mcp__hwp-studio__hwp_open_document"
+  - "mcp__plugin_hwp-studio_hwp-studio__hwp_open_document"
   - "mcp__hwp-studio__hwp_close_document"
+  - "mcp__plugin_hwp-studio_hwp-studio__hwp_close_document"
   - "mcp__hwp-studio__hwp_generate_multi_documents"
+  - "mcp__plugin_hwp-studio_hwp-studio__hwp_generate_multi_documents"
   - "mcp__hwp-studio__hwp_read_reference"
+  - "mcp__plugin_hwp-studio_hwp-studio__hwp_read_reference"
   - "mcp__hwp-studio__hwp_list_files"
+  - "mcp__plugin_hwp-studio_hwp-studio__hwp_list_files"
   - "mcp__hwp-studio__hwp_save_document"
+  - "mcp__plugin_hwp-studio_hwp-studio__hwp_save_document"
   - "mcp__hwp-studio__hwp_batch_convert"
+  - "mcp__plugin_hwp-studio_hwp-studio__hwp_batch_convert"
 ---
 
 # HWP 다건 문서 일괄 생성

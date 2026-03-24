@@ -2,9 +2,13 @@
 description: HWP 문서에서 개인정보(주민번호, 전화번호, 이메일 등)를 자동으로 감지합니다.
 allowed-tools:
   - "mcp__hwp-studio__hwp_open_document"
+  - "mcp__plugin_hwp-studio_hwp-studio__hwp_open_document"
   - "mcp__hwp-studio__hwp_privacy_scan"
+  - "mcp__plugin_hwp-studio_hwp-studio__hwp_privacy_scan"
   - "mcp__hwp-studio__hwp_find_replace"
+  - "mcp__plugin_hwp-studio_hwp-studio__hwp_find_replace"
   - "mcp__hwp-studio__hwp_save_document"
+  - "mcp__plugin_hwp-studio_hwp-studio__hwp_save_document"
 ---
 
 # HWP 개인정보 스캔

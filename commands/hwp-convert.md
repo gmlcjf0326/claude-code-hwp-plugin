@@ -2,10 +2,15 @@
 description: HWP 문서를 PDF, DOCX, HTML, HWPX 형식으로 변환합니다.
 allowed-tools:
   - "mcp__hwp-studio__hwp_open_document"
+  - "mcp__plugin_hwp-studio_hwp-studio__hwp_open_document"
   - "mcp__hwp-studio__hwp_save_document"
+  - "mcp__plugin_hwp-studio_hwp-studio__hwp_save_document"
   - "mcp__hwp-studio__hwp_export_pdf"
+  - "mcp__plugin_hwp-studio_hwp-studio__hwp_export_pdf"
   - "mcp__hwp-studio__hwp_export_docx"
+  - "mcp__plugin_hwp-studio_hwp-studio__hwp_export_docx"
   - "mcp__hwp-studio__hwp_export_html"
+  - "mcp__plugin_hwp-studio_hwp-studio__hwp_export_html"
 ---
 
 # HWP 문서 변환

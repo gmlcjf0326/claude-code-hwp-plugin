@@ -2,14 +2,23 @@
 description: HWP 문서의 구조와 내용을 분석하여 요약합니다. 문서 종류, 완성도, 빈 항목을 파악합니다.
 allowed-tools:
   - "mcp__hwp-studio__hwp_open_document"
+  - "mcp__plugin_hwp-studio_hwp-studio__hwp_open_document"
   - "mcp__hwp-studio__hwp_smart_analyze"
+  - "mcp__plugin_hwp-studio_hwp-studio__hwp_smart_analyze"
   - "mcp__hwp-studio__hwp_get_document_text"
+  - "mcp__plugin_hwp-studio_hwp-studio__hwp_get_document_text"
   - "mcp__hwp-studio__hwp_get_tables"
+  - "mcp__plugin_hwp-studio_hwp-studio__hwp_get_tables"
   - "mcp__hwp-studio__hwp_word_count"
+  - "mcp__plugin_hwp-studio_hwp-studio__hwp_word_count"
   - "mcp__hwp-studio__hwp_form_detect"
+  - "mcp__plugin_hwp-studio_hwp-studio__hwp_form_detect"
   - "mcp__hwp-studio__hwp_text_search"
+  - "mcp__plugin_hwp-studio_hwp-studio__hwp_text_search"
   - "mcp__hwp-studio__hwp_extract_style_profile"
+  - "mcp__plugin_hwp-studio_hwp-studio__hwp_extract_style_profile"
   - "mcp__hwp-studio__hwp_get_fields"
+  - "mcp__plugin_hwp-studio_hwp-studio__hwp_get_fields"
 ---
 
 # HWP 문서 분석

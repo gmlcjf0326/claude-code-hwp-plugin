@@ -17,6 +17,22 @@ allowed-tools:
   - "mcp__hwp-studio__hwp_save_document"
   - "mcp__hwp-studio__hwp_extract_style_profile"
   - "mcp__hwp-studio__hwp_map_table_cells"
+  - "mcp__plugin_hwp-studio_hwp-studio__hwp_check_setup"
+  - "mcp__plugin_hwp-studio_hwp-studio__hwp_open_document"
+  - "mcp__plugin_hwp-studio_hwp-studio__hwp_close_document"
+  - "mcp__plugin_hwp-studio_hwp-studio__hwp_smart_analyze"
+  - "mcp__plugin_hwp-studio_hwp-studio__hwp_analyze_document"
+  - "mcp__plugin_hwp-studio_hwp-studio__hwp_smart_fill"
+  - "mcp__plugin_hwp-studio_hwp-studio__hwp_auto_fill_from_reference"
+  - "mcp__plugin_hwp-studio_hwp-studio__hwp_read_reference"
+  - "mcp__plugin_hwp-studio_hwp-studio__hwp_fill_table_cells"
+  - "mcp__plugin_hwp-studio_hwp-studio__hwp_fill_fields"
+  - "mcp__plugin_hwp-studio_hwp-studio__hwp_privacy_scan"
+  - "mcp__plugin_hwp-studio_hwp-studio__hwp_get_tables"
+  - "mcp__plugin_hwp-studio_hwp-studio__hwp_get_document_text"
+  - "mcp__plugin_hwp-studio_hwp-studio__hwp_save_document"
+  - "mcp__plugin_hwp-studio_hwp-studio__hwp_extract_style_profile"
+  - "mcp__plugin_hwp-studio_hwp-studio__hwp_map_table_cells"
 ---
 
 # HWP 양식 자동 채우기
@@ -36,8 +52,9 @@ hwp_check_setup으로 Python/한글 상태 확인. 문제 있으면 `/hwp-setup`
 
 ### Step 2: 문서 열기 + 분석
 - hwp_open_document로 파일 열기
-- hwp_smart_analyze로 구조 파악 (표, 필드, 빈칸)
+- hwp_smart_analyze로 구조 파악 (표, 필드, 빈칸). 90초 타임아웃이므로 대용량 문서는 시간이 걸릴 수 있음.
 - hwp_extract_style_profile로 서식 파악 (글꼴, 크기, 자간)
+- hwp_map_table_cells로 표 셀 탭 인덱스 매핑 (병합 셀 대응). 이 단계를 반드시 거쳐야 정확한 셀 위치를 알 수 있음.
 
 ### Step 3: 미리보기
 - "다음과 같이 채울 예정입니다:" → 내용 요약 제시
@@ -46,7 +63,7 @@ hwp_check_setup으로 Python/한글 상태 확인. 문제 있으면 `/hwp-setup`
 ### Step 4: 채우기
 - 참고자료 있으면: hwp_read_reference로 로드 → hwp_auto_fill_from_reference
 - 없으면: hwp_smart_fill (서식 보존)
-- 필요 시 hwp_fill_table_cells로 개별 셀 조정
+- 필요 시 hwp_fill_table_cells로 개별 셀 조정. label 기반 매칭 권장.
 
 ### Step 5: 검증 + 저장
 - hwp_get_tables로 채운 결과 확인
@@ -62,6 +79,8 @@ hwp_check_setup으로 Python/한글 상태 확인. 문제 있으면 `/hwp-setup`
 - 금액: 한글+숫자 병기 (예: 금일백만원정(1,000,000원))
 
 ## 막혔을 때
-- 표가 비어있음 → hwp_map_table_cells로 셀 매핑 확인, label 기반 매칭 시도
-- HWPX 권장 → 한글에서 "다른 이름으로 저장" > HWPX 선택
-- 한글 응답 없음 → 작업 관리자에서 Hwp.exe 종료 후 재시작
+- **표가 비어있음** → hwp_map_table_cells로 셀 매핑 확인, label 기반 매칭 시도
+- **HWPX 권장** → 한글에서 "다른 이름으로 저장" > HWPX 선택
+- **한글 응답 없음** → 작업 관리자(Ctrl+Shift+Esc)에서 Hwp.exe 종료 후 재시작
+- **타임아웃** → 대용량 문서는 smart_analyze 대신 analyze_document 사용 (더 빠름)
+- **셀 위치를 모르겠음** → hwp_map_table_cells로 탭 인덱스 확인 후 tab 기반으로 채우기
