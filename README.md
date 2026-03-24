@@ -49,17 +49,34 @@ claude-code-hwp-plugin/
 
 ## 설치
 
+### Step 1: 마켓플레이스 등록 (최초 1회)
+
 ```bash
-claude plugins install github:gmlcjf0326/claude-code-hwp-plugin
+claude plugins marketplace add gmlcjf0326/claude-code-hwp-plugin
 ```
 
-또는 로컬:
+### Step 2: 플러그인 설치
+
+```bash
+claude plugins install claude-code-hwp-plugin@hwp-marketplace
+```
+
+### Step 3: 확인
+
+```bash
+claude plugins list
+```
+
+`claude-code-hwp-plugin@hwp-marketplace` 가 `enabled` 상태이면 성공입니다.
+
+### 로컬 설치 (개발자용)
 
 ```bash
 git clone https://github.com/gmlcjf0326/claude-code-hwp-plugin.git
 cd claude-code-hwp-plugin
 npm install
-claude plugins install .
+claude plugins marketplace add .
+claude plugins install claude-code-hwp-plugin@hwp-marketplace
 ```
 
 ## 시작하기
