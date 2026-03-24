@@ -573,8 +573,9 @@ def insert_markdown(hwp, md_text):
                     i += 1
                     continue
                 # 셀 파싱
-                cells = [c.strip() for c in row_text.split('|')]
-                cells = [c for c in cells if c]  # 빈 문자열 제거
+                # H3 fix: 빈 셀 유지 (앞뒤 빈 요소만 제거)
+                raw_cells = row_text.split('|')
+                cells = [c.strip() for c in raw_cells[1:-1]]  # | 앞뒤 빈 요소 제거, 중간 빈 셀 유지
                 table_lines.append(cells)
                 i += 1
             # 표 생성

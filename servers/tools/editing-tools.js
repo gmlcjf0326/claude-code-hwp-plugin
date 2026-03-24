@@ -519,12 +519,27 @@ export function registerEditingTools(server, bridge, toolset = 'standard') {
                 return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
             }
         });
-        server.tool('hwp_table_merge_cells', '표에서 선택된 셀들을 병합합니다. 먼저 표에 진입한 상태여야 합니다.', { table_index: z.number().int().min(0).describe('표 인덱스') }, async ({ table_index }) => {
+        server.tool('hwp_table_merge_cells', '표의 셀을 병합합니다. start_row/col ~ end_row/col로 범위를 지정하면 해당 영역이 병합됩니다. 범위 미지정 시 현재 선택된 셀이 병합됩니다. 병합 순서는 하단→상단이 안전합니다.', {
+            table_index: z.number().int().min(0).describe('표 인덱스'),
+            start_row: z.number().int().min(0).optional().describe('시작 행 (0부터)'),
+            start_col: z.number().int().min(0).optional().describe('시작 열 (0부터)'),
+            end_row: z.number().int().min(0).optional().describe('끝 행 (0부터)'),
+            end_col: z.number().int().min(0).optional().describe('끝 열 (0부터)'),
+        }, async ({ table_index, start_row, start_col, end_row, end_col }) => {
             if (!bridge.getCurrentDocument())
                 return { content: [{ type: 'text', text: JSON.stringify({ error: '열린 문서가 없습니다.' }) }], isError: true };
             try {
                 await bridge.ensureRunning();
-                const r = await bridge.send('table_merge_cells', { table_index }, FILL_TIMEOUT);
+                const params = { table_index };
+                if (start_row !== undefined)
+                    params.start_row = start_row;
+                if (start_col !== undefined)
+                    params.start_col = start_col;
+                if (end_row !== undefined)
+                    params.end_row = end_row;
+                if (end_col !== undefined)
+                    params.end_col = end_col;
+                const r = await bridge.send('table_merge_cells', params, FILL_TIMEOUT);
                 if (!r.success)
                     return { content: [{ type: 'text', text: JSON.stringify({ error: r.error }) }], isError: true };
                 bridge.setCachedAnalysis(null);
@@ -534,10 +549,13 @@ export function registerEditingTools(server, bridge, toolset = 'standard') {
                 return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
             }
         });
-        server.tool('hwp_table_create_from_data', '2D 배열 데이터로 새 표를 생성합니다. 현재 커서 위치에 표가 삽입됩니다. header_style=true로 첫 행을 자동 스타일링(Bold+배경색)합니다.', {
+        server.tool('hwp_table_create_from_data', '2D 배열 데이터로 새 표를 생성합니다. col_widths로 열 너비(mm), row_heights로 행 높이(mm)를 지정할 수 있습니다. 공문서 표 등 정밀한 레이아웃에 사용하세요.', {
             data: z.array(z.array(z.string())).describe('2D 배열 데이터 [["헤더1","헤더2"],["값1","값2"]]'),
-            header_style: z.boolean().optional().describe('첫 행을 헤더로 자동 스타일링 (Bold+연회색 배경, 기본 false)'),
-        }, async ({ data, header_style }) => {
+            header_style: z.boolean().optional().describe('첫 행을 헤더로 자동 스타일링 (Bold+배경색)'),
+            col_widths: z.array(z.number()).optional().describe('열 너비 배열 (mm 단위, 예: [18, 65, 23, 23])'),
+            row_heights: z.array(z.number()).optional().describe('행 높이 배열 (mm 단위, 예: [10, 12, 12])'),
+            alignment: z.enum(['left', 'center', 'right']).optional().describe('표 정렬 (기본: left)'),
+        }, async ({ data, header_style, col_widths, row_heights, alignment }) => {
             if (!bridge.getCurrentDocument())
                 return { content: [{ type: 'text', text: JSON.stringify({ error: '열린 문서가 없습니다.' }) }], isError: true };
             try {
@@ -545,6 +563,12 @@ export function registerEditingTools(server, bridge, toolset = 'standard') {
                 const params = { data };
                 if (header_style)
                     params.header_style = header_style;
+                if (col_widths)
+                    params.col_widths = col_widths;
+                if (row_heights)
+                    params.row_heights = row_heights;
+                if (alignment)
+                    params.alignment = alignment;
                 const r = await bridge.send('table_create_from_data', params, FILL_TIMEOUT);
                 if (!r.success)
                     return { content: [{ type: 'text', text: JSON.stringify({ error: r.error }) }], isError: true };

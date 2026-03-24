@@ -291,7 +291,8 @@ export class HwpBridge {
         }
         // 3) 한글(HWP) COM 등록 체크
         try {
-            await execFileAsync(pythonExe, ['-c', 'import win32com.client; o = win32com.client.gencache.EnsureDispatch("HWPFrame.HwpObject"); o.XHwpDocuments.Close(False); del o'], { timeout: 15000 });
+            // C1: COM 등록 체크만 수행. EnsureDispatch가 기존 HWP를 재사용할 수 있으므로 Quit() 대신 참조만 해제
+            await execFileAsync(pythonExe, ['-c', 'import win32com.client; o = win32com.client.Dispatch("HWPFrame.HwpObject"); del o'], { timeout: 15000 });
             result.hwp = { found: true };
         }
         catch (err) {

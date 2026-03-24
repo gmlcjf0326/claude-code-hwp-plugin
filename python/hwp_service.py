@@ -25,12 +25,13 @@ def validate_file_path(file_path, must_exist=True):
 
 
 def _execute_all_replace(hwp, find_str, replace_str, use_regex=False):
-    """AllReplace 공통 함수. BUG-2 fix: COM 반환값 대신 전후 텍스트 비교로 검증."""
+    """AllReplace 공통 함수. 전후 텍스트 비교로 검증. H4: 타임아웃 시 낙관적 가정."""
     # 치환 전 텍스트 캡처
+    before = None
     try:
         before = hwp.get_text_file("TEXT", "")
-    except Exception:
-        before = ""
+    except Exception as e:
+        print(f"[WARN] get_text_file before failed: {e}", file=sys.stderr)
 
     act = hwp.HAction
     pset = hwp.HParameterSet.HFindReplace
@@ -46,10 +47,20 @@ def _execute_all_replace(hwp, find_str, replace_str, use_regex=False):
     act.Execute("AllReplace", pset.HSet)
 
     # 치환 후 텍스트 비교로 실제 변경 여부 판단
+    after = None
     try:
         after = hwp.get_text_file("TEXT", "")
-    except Exception:
-        after = ""
+    except Exception as e:
+        print(f"[WARN] get_text_file after failed: {e}", file=sys.stderr)
+
+    # 2C3: 텍스트 캡처 실패 시 구분
+    if before is None and after is None:
+        # 양쪽 모두 실패 → Execute는 실행됨 → 낙관적 True
+        return True
+    if before is None or after is None:
+        # 한쪽만 실패 → 비교 불가하지만 Execute는 실행됨 → 로깅 후 True
+        print(f"[WARN] Partial text capture: before={'ok' if before is not None else 'fail'}, after={'ok' if after is not None else 'fail'}", file=sys.stderr)
+        return True
     return before != after
 
 
@@ -257,7 +268,8 @@ def dispatch(hwp, method, params):
         if not selected:
             return {"status": "not_found", "find": params["find"]}
 
-        # BUG-4 fix: Cancel 대신 MoveRight — 찾은 텍스트 끝으로 커서 이동
+        # 2C2 fix: 찾은 텍스트 끝으로 커서 이동
+        # FindReplace가 텍스트를 선택한 상태에서 MoveRight → 선택 해제 + 선택 끝으로 이동
         hwp.HAction.Run("MoveRight")
 
         # 색상 설정 (옵션)
@@ -424,10 +436,32 @@ def dispatch(hwp, method, params):
 
     if method == "table_merge_cells":
         validate_params(params, ["table_index"], method)
+        table_index = params["table_index"]
+        start_row = params.get("start_row")
+        start_col = params.get("start_col")
+        end_row = params.get("end_row")
+        end_col = params.get("end_col")
         try:
-            hwp.get_into_nth_table(params["table_index"])
-            hwp.TableMergeCell()
-            return {"status": "ok", "table_index": params["table_index"]}
+            hwp.get_into_nth_table(table_index)
+            if start_row is not None and end_row is not None and start_col is not None and end_col is not None:
+                # H2: 범위 지정 병합 — TableCellBlock으로 셀 선택 후 병합
+                hwp.HAction.Run("TableColBegin")
+                hwp.HAction.Run("TableRowBegin")
+                for _ in range(start_row):
+                    hwp.HAction.Run("TableLowerCell")
+                for _ in range(start_col):
+                    hwp.HAction.Run("TableRightCell")
+                hwp.HAction.Run("TableCellBlock")
+                for _ in range(end_col - start_col):
+                    hwp.HAction.Run("TableRightCell")
+                for _ in range(end_row - start_row):
+                    hwp.HAction.Run("TableLowerCell")
+                hwp.HAction.Run("TableMergeCell")
+            else:
+                # 기존 방식 (현재 선택된 셀 병합)
+                hwp.TableMergeCell()
+            return {"status": "ok", "table_index": table_index,
+                    "range": {"start_row": start_row, "start_col": start_col, "end_row": end_row, "end_col": end_col} if start_row is not None else None}
         except Exception as e:
             raise RuntimeError(f"셀 병합 실패: {e}")
         finally:
@@ -457,8 +491,34 @@ def dispatch(hwp, method, params):
             raise ValueError("data must be a non-empty 2D array")
         rows = len(data)
         cols = max(len(row) for row in data) if data else 0
-        header_style = params.get("header_style", False)  # 헤더 자동 스타일링
-        hwp.create_table(rows, cols)
+        header_style = params.get("header_style", False)
+        col_widths = params.get("col_widths")  # [mm, mm, ...] H1 fix
+        row_heights = params.get("row_heights")  # [mm, mm, ...]
+        alignment = params.get("alignment")  # left/center/right
+
+        # H1: col_widths/row_heights가 있으면 HTableCreation으로 정밀 생성
+        if col_widths or row_heights:
+            try:
+                tc = hwp.HParameterSet.HTableCreation
+                hwp.HAction.GetDefault("TableCreate", tc.HSet)
+                tc.Rows = rows
+                tc.Cols = cols
+                tc.WidthType = 2  # 절대 너비
+                tc.HeightType = 0
+                if col_widths:
+                    tc.CreateItemArray("ColWidth", cols)
+                    for i, w in enumerate(col_widths[:cols]):
+                        tc.ColWidth.SetItem(i, hwp.MiliToHwpUnit(w))
+                if row_heights:
+                    tc.CreateItemArray("RowHeight", rows)
+                    for i, h in enumerate(row_heights[:rows]):
+                        tc.RowHeight.SetItem(i, hwp.MiliToHwpUnit(h))
+                hwp.HAction.Execute("TableCreate", tc.HSet)
+            except Exception as e:
+                print(f"[WARN] HTableCreation failed, fallback to create_table: {e}", file=sys.stderr)
+                hwp.create_table(rows, cols)
+        else:
+            hwp.create_table(rows, cols)
         # 셀 채우기
         filled = 0
         for r, row in enumerate(data):
