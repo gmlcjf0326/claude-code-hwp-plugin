@@ -1,0 +1,664 @@
+/**
+ * Composite tools: smart analysis with completion rate
+ */
+import { z } from 'zod';
+import path from 'node:path';
+import fs from 'node:fs';
+const HWP_EXTENSIONS = new Set(['.hwp', '.hwpx']);
+const ANALYSIS_TIMEOUT = 60000;
+export function registerCompositeTools(server, bridge) {
+    // ── 진단 도구 (개발용) ──
+    server.tool('hwp_inspect_com_object', '[개발용] pyhwpx COM 객체의 실제 속성 목록을 덤프합니다. HCharShape/HParaShape 등의 정확한 속성명을 확인할 때 사용.', {
+        object: z.enum(['HCharShape', 'HParaShape', 'HFindReplace']).optional().describe('조사할 COM 객체 (기본: HCharShape)'),
+    }, async ({ object: objName }) => {
+        try {
+            await bridge.ensureRunning();
+            const response = await bridge.send('inspect_com_object', { object: objName ?? 'HCharShape' }, 30000);
+            if (!response.success) {
+                return { content: [{ type: 'text', text: JSON.stringify({ error: response.error }) }], isError: true };
+            }
+            return { content: [{ type: 'text', text: JSON.stringify(response.data) }] };
+        }
+        catch (err) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+        }
+    });
+    server.tool('hwp_generate_multi_documents', '하나의 템플릿으로 여러 건의 문서를 생성합니다. 각 데이터마다 템플릿을 별도 파일로 복사 후 채우기/치환하므로 AllReplace 범위 문제가 없습니다. 같은 양식에 여러 사람/기업 데이터를 채울 때 사용하세요.', {
+        template_path: z.string().describe('템플릿 HWP/HWPX 파일 경로'),
+        data_list: z.array(z.object({
+            name: z.string().describe('출력 파일명 접미사 (예: "이준혁_(주)딥러닝코리아")'),
+            table_cells: z.record(z.string(), z.array(z.object({
+                tab: z.number().int().min(0).describe('Tab 인덱스'),
+                text: z.string().describe('채울 텍스트'),
+            }))).optional().describe('표 채우기 데이터 { "표인덱스": [{tab, text}, ...] }'),
+            replacements: z.array(z.object({
+                find: z.string().describe('찾을 텍스트'),
+                replace: z.string().describe('바꿀 텍스트'),
+            })).optional().describe('텍스트 치환 목록'),
+            verify_tables: z.array(z.number().int().min(0)).optional().describe('채우기 후 검증할 표 인덱스 목록'),
+        })).describe('각 문서별 데이터'),
+        output_dir: z.string().optional().describe('출력 디렉토리 (생략 시 템플릿과 같은 폴더)'),
+    }, async ({ template_path, data_list, output_dir }) => {
+        const resolved = path.resolve(template_path);
+        if (!fs.existsSync(resolved)) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: `템플릿 파일을 찾을 수 없습니다: ${resolved}` }) }], isError: true };
+        }
+        try {
+            await bridge.ensureRunning();
+            const params = {
+                template_path: resolved,
+                data_list,
+            };
+            if (output_dir)
+                params.output_dir = path.resolve(output_dir);
+            const response = await bridge.send('generate_multi_documents', params, ANALYSIS_TIMEOUT * 2);
+            if (!response.success) {
+                return { content: [{ type: 'text', text: JSON.stringify({ error: response.error }) }], isError: true };
+            }
+            return { content: [{ type: 'text', text: JSON.stringify(response.data) }] };
+        }
+        catch (err) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+        }
+    });
+    server.tool('hwp_smart_fill', '표 셀 채우기 + 서식 자동 감지/보존. hwp_fill_table_cells와 달리 각 셀의 글꼴/크기/자간/장평을 자동 감지하고 유지합니다. 공공기관 문서처럼 서식이 중요한 경우 이 도구를 사용하세요. 적용된 서식 정보도 반환합니다.', {
+        table_index: z.number().int().min(0).describe('표 인덱스'),
+        cells: z.array(z.object({
+            tab: z.number().int().min(0).describe('Tab 인덱스'),
+            text: z.string().describe('채울 텍스트'),
+        })).describe('채울 셀 목록'),
+    }, async ({ table_index, cells }) => {
+        if (!bridge.getCurrentDocument()) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: '열린 문서가 없습니다. hwp_open_document로 문서를 열어주세요.' }) }], isError: true };
+        }
+        try {
+            await bridge.ensureRunning();
+            const response = await bridge.send('smart_fill', { table_index, cells }, ANALYSIS_TIMEOUT);
+            if (!response.success) {
+                return { content: [{ type: 'text', text: JSON.stringify({ error: response.error }) }], isError: true };
+            }
+            return { content: [{ type: 'text', text: JSON.stringify(response.data) }] };
+        }
+        catch (err) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+        }
+    });
+    server.tool('hwp_auto_map_reference', '참고자료(Excel/CSV)의 헤더와 표의 라벨을 자동 매칭하여 채울 데이터를 생성합니다. 매핑 결과를 확인한 후 hwp_fill_table_cells로 실제 채우기를 진행하세요. hwp_read_reference로 데이터를 읽은 뒤 이 도구로 매핑하면 편리합니다.', {
+        table_index: z.number().int().min(0).describe('표 인덱스'),
+        ref_headers: z.array(z.string()).describe('참고자료 헤더 목록 (예: ["기업명", "대표자", "전화번호"])'),
+        ref_row: z.array(z.string()).describe('참고자료 데이터 행 (헤더 순서에 맞춤)'),
+    }, async ({ table_index, ref_headers, ref_row }) => {
+        if (!bridge.getCurrentDocument()) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: '열린 문서가 없습니다. hwp_open_document로 문서를 열어주세요.' }) }], isError: true };
+        }
+        try {
+            await bridge.ensureRunning();
+            const response = await bridge.send('auto_map_reference', { table_index, ref_headers, ref_row }, ANALYSIS_TIMEOUT);
+            if (!response.success) {
+                return { content: [{ type: 'text', text: JSON.stringify({ error: response.error }) }], isError: true };
+            }
+            return { content: [{ type: 'text', text: JSON.stringify(response.data) }] };
+        }
+        catch (err) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+        }
+    });
+    server.tool('hwp_table_insert_from_csv', 'CSV 또는 Excel 파일을 읽어서 표로 자동 생성합니다. 현재 커서 위치에 헤더+데이터가 포함된 표가 삽입됩니다.', {
+        file_path: z.string().describe('CSV 또는 Excel 파일 경로'),
+    }, async ({ file_path }) => {
+        if (!bridge.getCurrentDocument()) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: '열린 문서가 없습니다.' }) }], isError: true };
+        }
+        const resolved = path.resolve(file_path);
+        if (!fs.existsSync(resolved)) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: `파일을 찾을 수 없습니다: ${resolved}` }) }], isError: true };
+        }
+        try {
+            await bridge.ensureRunning();
+            const r = await bridge.send('table_insert_from_csv', { file_path: resolved }, ANALYSIS_TIMEOUT);
+            if (!r.success)
+                return { content: [{ type: 'text', text: JSON.stringify({ error: r.error }) }], isError: true };
+            bridge.setCachedAnalysis(null);
+            return { content: [{ type: 'text', text: JSON.stringify(r.data) }] };
+        }
+        catch (err) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+        }
+    });
+    server.tool('hwp_document_merge', '현재 열린 문서에 다른 HWP 문서의 내용을 합칩니다. 여러 문서를 하나로 합칠 때 사용하세요.', {
+        file_path: z.string().describe('합칠 HWP 파일 경로'),
+    }, async ({ file_path }) => {
+        if (!bridge.getCurrentDocument()) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: '열린 문서가 없습니다.' }) }], isError: true };
+        }
+        const resolved = path.resolve(file_path);
+        if (!fs.existsSync(resolved)) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: `파일을 찾을 수 없습니다: ${resolved}` }) }], isError: true };
+        }
+        try {
+            await bridge.ensureRunning();
+            const response = await bridge.send('document_merge', { file_path: resolved }, ANALYSIS_TIMEOUT);
+            if (!response.success) {
+                return { content: [{ type: 'text', text: JSON.stringify({ error: response.error }) }], isError: true };
+            }
+            bridge.setCachedAnalysis(null);
+            return { content: [{ type: 'text', text: JSON.stringify(response.data) }] };
+        }
+        catch (err) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+        }
+    });
+    server.tool('hwp_document_summary', '문서를 분석하고 빈 필드/셀을 강조하며 작성 완성도(%)를 계산합니다. 문서 상태를 한눈에 파악하고 다음 작업을 결정할 때 사용하세요.', {
+        file_path: z.string().describe('HWP/HWPX 파일 경로'),
+    }, async ({ file_path }) => {
+        const resolved = path.resolve(file_path);
+        if (!fs.existsSync(resolved)) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: `파일을 찾을 수 없습니다: ${resolved}` }) }], isError: true };
+        }
+        const ext = path.extname(resolved).toLowerCase();
+        if (!HWP_EXTENSIONS.has(ext)) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: 'HWP 또는 HWPX 파일만 지원합니다.' }) }], isError: true };
+        }
+        try {
+            await bridge.ensureRunning();
+            const response = await bridge.send('analyze_document', { file_path: resolved }, ANALYSIS_TIMEOUT);
+            if (!response.success) {
+                return { content: [{ type: 'text', text: JSON.stringify({ error: response.error }) }], isError: true };
+            }
+            const analysis = response.data;
+            bridge.setCachedAnalysis(analysis);
+            bridge.setCurrentDocument(resolved);
+            const fields = analysis.fields || [];
+            const emptyFields = fields.filter(f => !f.value || f.value.trim() === '');
+            const tables = analysis.tables || [];
+            let totalCells = 0;
+            let emptyCells = 0;
+            for (const table of tables) {
+                for (const row of table.data) {
+                    for (const cell of row) {
+                        totalCells++;
+                        if (!cell || cell.trim() === '') {
+                            emptyCells++;
+                        }
+                    }
+                }
+            }
+            const totalItems = fields.length + totalCells;
+            const filledItems = (fields.length - emptyFields.length) + (totalCells - emptyCells);
+            const completionRate = totalItems > 0
+                ? Math.round((filledItems / totalItems) * 100)
+                : 100;
+            const parts = [];
+            if (emptyFields.length > 0) {
+                parts.push(`${emptyFields.length}개 빈 필드`);
+            }
+            if (emptyCells > 0) {
+                parts.push(`${emptyCells}개 빈 셀`);
+            }
+            let recommendation;
+            const nextActions = [];
+            if (parts.length > 0) {
+                recommendation = `${parts.join('과 ')}이 있습니다.`;
+                if (emptyFields.length > 0) {
+                    recommendation += ' hwp_fill_fields로 필드를 채울 수 있습니다.';
+                    nextActions.push({ tool: 'hwp_fill_fields', reason: `${emptyFields.length}개 빈 필드 채우기` });
+                }
+                if (emptyCells > 0) {
+                    recommendation += ' hwp_fill_table_cells로 표 셀을 채울 수 있습니다.';
+                    nextActions.push({ tool: 'hwp_fill_table_cells', reason: `${emptyCells}개 빈 표 셀 채우기` });
+                }
+                nextActions.push({ tool: 'hwp_save_document', reason: '변경사항 저장' });
+            }
+            else {
+                recommendation = '문서가 완전히 작성되었습니다.';
+            }
+            const summary = {
+                file_name: analysis.file_name,
+                file_format: analysis.file_format,
+                pages: analysis.pages,
+                table_count: tables.length,
+                field_count: fields.length,
+                empty_fields: emptyFields.map(f => ({ name: f.name })),
+                empty_cell_count: emptyCells,
+                total_cell_count: totalCells,
+                completion_rate: `${completionRate}%`,
+                text_preview: analysis.text_preview,
+                recommendation,
+                next_actions: nextActions,
+            };
+            return { content: [{ type: 'text', text: JSON.stringify(summary) }] };
+        }
+        catch (err) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+        }
+    });
+    // ── 보안/개인정보 도구 ──
+    server.tool('hwp_privacy_scan', '문서 텍스트에서 개인정보(주민번호, 전화번호, 이메일, 계좌번호 등)를 자동 감지합니다. 공공기관 문서 제출 전 개인정보 포함 여부를 확인할 때 사용하세요.', {
+        file_path: z.string().optional().describe('HWP 파일 경로 (생략 시 현재 문서의 텍스트 스캔)'),
+    }, async ({ file_path }) => {
+        try {
+            await bridge.ensureRunning();
+            // 문서 텍스트 추출
+            let text;
+            if (file_path) {
+                const resolved = path.resolve(file_path);
+                const resp = await bridge.send('analyze_document', { file_path: resolved }, ANALYSIS_TIMEOUT);
+                if (!resp.success) {
+                    return { content: [{ type: 'text', text: JSON.stringify({ error: resp.error }) }], isError: true };
+                }
+                text = resp.data.full_text || '';
+            }
+            else {
+                const current = bridge.getCurrentDocument();
+                if (!current) {
+                    return { content: [{ type: 'text', text: JSON.stringify({ error: '열린 문서가 없습니다.' }) }], isError: true };
+                }
+                const resp = await bridge.send('analyze_document', { file_path: current }, ANALYSIS_TIMEOUT);
+                if (!resp.success) {
+                    return { content: [{ type: 'text', text: JSON.stringify({ error: resp.error }) }], isError: true };
+                }
+                text = resp.data.full_text || '';
+            }
+            // Python에서 개인정보 스캔
+            const scanResp = await bridge.send('privacy_scan', { text }, ANALYSIS_TIMEOUT);
+            if (!scanResp.success) {
+                return { content: [{ type: 'text', text: JSON.stringify({ error: scanResp.error }) }], isError: true };
+            }
+            return { content: [{ type: 'text', text: JSON.stringify(scanResp.data) }] };
+        }
+        catch (err) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+        }
+    });
+    // ── 차별화 복합 도구 ──
+    server.tool('hwp_smart_analyze', '문서를 열고, 구조 분석 + 문서 타입 추론 + 서식 프로파일 + 완성도 + 추천 작업을 한번에 수행합니다. 문서를 처음 다룰 때 이 도구 하나면 충분합니다. analyze_document + document_summary + get_table_format_summary를 통합한 원스톱 분석 도구입니다.', {
+        file_path: z.string().describe('HWP/HWPX 파일 경로'),
+    }, async ({ file_path }) => {
+        const resolved = path.resolve(file_path);
+        if (!fs.existsSync(resolved)) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: `파일을 찾을 수 없습니다: ${resolved}` }) }], isError: true };
+        }
+        try {
+            await bridge.ensureRunning();
+            // 1. 문서 분석 (smart_analyze는 복합 도구이므로 90초 타임아웃)
+            const analysisResp = await bridge.send('analyze_document', { file_path: resolved }, 90000);
+            if (!analysisResp.success) {
+                return { content: [{ type: 'text', text: JSON.stringify({ error: analysisResp.error }) }], isError: true };
+            }
+            const analysis = analysisResp.data;
+            bridge.setCachedAnalysis(analysis);
+            bridge.setCurrentDocument(resolved);
+            // 2. 완성도 계산
+            const fields = analysis.fields || [];
+            const emptyFields = fields.filter(f => !f.value || f.value.trim() === '');
+            const tables = analysis.tables || [];
+            let totalCells = 0, emptyCells = 0;
+            for (const table of tables) {
+                for (const row of table.data) {
+                    for (const cell of row) {
+                        totalCells++;
+                        if (!cell || cell.trim() === '')
+                            emptyCells++;
+                    }
+                }
+            }
+            const totalItems = fields.length + totalCells;
+            const filledItems = (fields.length - emptyFields.length) + (totalCells - emptyCells);
+            const completionRate = totalItems > 0 ? Math.round((filledItems / totalItems) * 100) : 100;
+            // 3. 문서 타입 추론
+            const fullText = (analysis.full_text || '').toLowerCase();
+            let documentType = '일반 문서';
+            const typePatterns = [
+                ['사업계획서/신청서', ['사업계획', '신청서', '지원사업', '보조금', '참여기업']],
+                ['공문서 (기안문/시행문)', ['수신자', '발신명의', '시행일자', '기안자', '결재']],
+                ['보고서', ['보고서', '보고일', '현황', '문제점', '개선방안', '기대효과']],
+                ['계약서', ['계약서', '갑', '을', '계약금', '계약기간']],
+                ['이력서', ['이력서', '학력', '경력', '자격증', '자기소개']],
+                ['회의록', ['회의록', '참석자', '안건', '결정사항', '향후계획']],
+                ['견적서/인보이스', ['견적서', '인보이스', '품목', '단가', '합계']],
+            ];
+            let maxScore = 0;
+            for (const [type, keywords] of typePatterns) {
+                const score = keywords.filter(k => fullText.includes(k)).length;
+                if (score > maxScore) {
+                    maxScore = score;
+                    documentType = type;
+                }
+            }
+            // 4. 서식 프로파일 (첫 번째 데이터 표의 서식 샘플)
+            let formatProfile = null;
+            const dataTables = tables.filter(t => t.data.length > 0);
+            const targetTable = dataTables.length > 0 ? dataTables[0] : (tables.length > 0 ? tables[0] : null);
+            if (targetTable) {
+                try {
+                    const fmtResp = await bridge.send('get_table_format_summary', {
+                        table_index: targetTable.index,
+                    }, ANALYSIS_TIMEOUT);
+                    if (fmtResp.success) {
+                        formatProfile = fmtResp.data;
+                    }
+                }
+                catch { /* 서식 조회 실패해도 계속 */ }
+            }
+            // 5. 추천 작업
+            const recommendations = [];
+            if (emptyCells > 0)
+                recommendations.push(`hwp_fill_table_cells 또는 hwp_smart_fill로 ${emptyCells}개 빈 셀 채우기`);
+            if (emptyFields.length > 0)
+                recommendations.push(`hwp_fill_fields로 ${emptyFields.length}개 빈 필드 채우기`);
+            if (completionRate >= 90)
+                recommendations.push('hwp_save_document로 저장');
+            if (documentType.includes('사업계획서'))
+                recommendations.push('fill_public_document 프롬프트로 공문서 표준 작성');
+            return {
+                content: [{
+                        type: 'text',
+                        text: JSON.stringify({
+                            file_name: analysis.file_name,
+                            file_format: analysis.file_format,
+                            document_type: documentType,
+                            pages: analysis.pages,
+                            table_count: tables.length,
+                            field_count: fields.length,
+                            completion_rate: `${completionRate}%`,
+                            empty_cells: emptyCells,
+                            empty_fields: emptyFields.length,
+                            text_preview: analysis.text_preview,
+                            format_profile: formatProfile,
+                            recommendations,
+                        }),
+                    }],
+            };
+        }
+        catch (err) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+        }
+    });
+    server.tool('hwp_auto_fill_from_reference', '엑셀/CSV → 자동 매핑 → 서식 보존 채우기를 일괄 수행하는 원스톱 도구. hwp_smart_fill + hwp_read_reference + hwp_auto_map_reference를 통합합니다. "이 엑셀 데이터로 신청서를 채워줘" 같은 요청에 사용하세요.', {
+        file_path: z.string().describe('참고자료 파일 경로 (xlsx, csv, json)'),
+        table_index: z.number().int().min(0).describe('채울 표 인덱스'),
+        row_index: z.number().int().min(0).optional().describe('참고자료에서 사용할 행 번호 (0부터, 생략 시 첫 번째 행)'),
+    }, async ({ file_path: refPath, table_index, row_index }) => {
+        if (!bridge.getCurrentDocument()) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: '열린 문서가 없습니다. hwp_open_document 또는 hwp_smart_analyze로 문서를 먼저 열어주세요.' }) }], isError: true };
+        }
+        try {
+            await bridge.ensureRunning();
+            const resolvedRef = path.resolve(refPath);
+            // 1. 참고자료 읽기
+            const refResp = await bridge.send('read_reference', { file_path: resolvedRef }, ANALYSIS_TIMEOUT);
+            if (!refResp.success) {
+                return { content: [{ type: 'text', text: JSON.stringify({ error: `참고자료 읽기 실패: ${refResp.error}` }) }], isError: true };
+            }
+            const refData = refResp.data;
+            // 헤더와 데이터 행 추출
+            let headers = [];
+            let dataRow = [];
+            const format = refData.format;
+            const ri = row_index ?? 0;
+            if (format === 'csv') {
+                headers = refData.headers || [];
+                const data = refData.data || [];
+                dataRow = data[ri] || [];
+            }
+            else if (format === 'excel') {
+                const sheets = refData.sheets || [];
+                if (sheets.length > 0) {
+                    headers = sheets[0].headers || [];
+                    dataRow = sheets[0].data?.[ri] || [];
+                }
+            }
+            else if (format === 'json') {
+                const jsonData = refData.data;
+                if (Array.isArray(jsonData) && jsonData.length > 0) {
+                    const obj = jsonData[ri] || jsonData[0];
+                    headers = Object.keys(obj);
+                    dataRow = Object.values(obj).map(v => String(v ?? ''));
+                }
+            }
+            else {
+                return { content: [{ type: 'text', text: JSON.stringify({ error: `자동 매핑은 csv, xlsx, json만 지원합니다. (현재: ${format})` }) }], isError: true };
+            }
+            if (headers.length === 0) {
+                return { content: [{ type: 'text', text: JSON.stringify({ error: '참고자료에서 헤더를 찾을 수 없습니다.' }) }], isError: true };
+            }
+            // 2. 자동 매핑
+            const mapResp = await bridge.send('auto_map_reference', {
+                table_index, ref_headers: headers, ref_row: dataRow,
+            }, ANALYSIS_TIMEOUT);
+            if (!mapResp.success) {
+                return { content: [{ type: 'text', text: JSON.stringify({ error: `매핑 실패: ${mapResp.error}` }) }], isError: true };
+            }
+            const mapData = mapResp.data;
+            if (mapData.mappings.length === 0) {
+                return { content: [{ type: 'text', text: JSON.stringify({
+                                status: 'no_mapping',
+                                message: '자동 매핑된 항목이 없습니다. 표의 라벨과 참고자료 헤더가 일치하지 않습니다.',
+                                unmapped: mapData.unmapped,
+                                ref_headers: headers,
+                            }) }] };
+            }
+            // 3. 서식 보존 채우기 (smart_fill)
+            const cells = mapData.mappings.map(m => ({ tab: m.tab, text: m.text }));
+            const fillResp = await bridge.send('smart_fill', { table_index, cells }, ANALYSIS_TIMEOUT);
+            if (!fillResp.success) {
+                return { content: [{ type: 'text', text: JSON.stringify({ error: `채우기 실패: ${fillResp.error}` }) }], isError: true };
+            }
+            bridge.setCachedAnalysis(null);
+            return {
+                content: [{
+                        type: 'text',
+                        text: JSON.stringify({
+                            status: 'ok',
+                            reference_file: path.basename(resolvedRef),
+                            mapped: mapData.mappings.map(m => ({ header: m.header, label: m.matched_label, value: m.text })),
+                            unmapped: mapData.unmapped,
+                            fill_result: fillResp.data,
+                        }),
+                    }],
+            };
+        }
+        catch (err) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+        }
+    });
+    // ── Phase C: 복합 기능 ──
+    server.tool('hwp_table_to_json', '표 데이터를 JSON 형식으로 추출합니다.', {
+        table_index: z.number().int().min(0).describe('표 인덱스'),
+    }, async ({ table_index }) => {
+        if (!bridge.getCurrentDocument())
+            return { content: [{ type: 'text', text: JSON.stringify({ error: '열린 문서가 없습니다.' }) }], isError: true };
+        try {
+            await bridge.ensureRunning();
+            const r = await bridge.send('table_to_json', { table_index }, ANALYSIS_TIMEOUT);
+            if (!r.success)
+                return { content: [{ type: 'text', text: JSON.stringify({ error: r.error }) }], isError: true };
+            return { content: [{ type: 'text', text: JSON.stringify(r.data) }] };
+        }
+        catch (err) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+        }
+    });
+    server.tool('hwp_batch_convert', '폴더 내 모든 HWP 파일을 지정 형식으로 일괄 변환합니다.', {
+        input_dir: z.string().describe('HWP 파일이 있는 디렉토리'),
+        output_format: z.enum(['PDF', 'HTML', 'HWPX']).describe('변환할 형식'),
+        output_dir: z.string().optional().describe('출력 디렉토리 (생략 시 input_dir)'),
+    }, async ({ input_dir, output_format, output_dir }) => {
+        try {
+            await bridge.ensureRunning();
+            const params = { input_dir: path.resolve(input_dir), output_format };
+            if (output_dir)
+                params.output_dir = path.resolve(output_dir);
+            const r = await bridge.send('batch_convert', params, ANALYSIS_TIMEOUT * 5);
+            if (!r.success)
+                return { content: [{ type: 'text', text: JSON.stringify({ error: r.error }) }], isError: true };
+            return { content: [{ type: 'text', text: JSON.stringify(r.data) }] };
+        }
+        catch (err) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+        }
+    });
+    server.tool('hwp_compare_documents', '두 HWP 문서의 텍스트를 비교하여 차이점을 반환합니다.', {
+        file_path_1: z.string().describe('첫 번째 문서 경로'),
+        file_path_2: z.string().describe('두 번째 문서 경로'),
+    }, async ({ file_path_1, file_path_2 }) => {
+        try {
+            await bridge.ensureRunning();
+            const r = await bridge.send('compare_documents', {
+                file_path_1: path.resolve(file_path_1), file_path_2: path.resolve(file_path_2),
+            }, ANALYSIS_TIMEOUT * 2);
+            if (!r.success)
+                return { content: [{ type: 'text', text: JSON.stringify({ error: r.error }) }], isError: true };
+            return { content: [{ type: 'text', text: JSON.stringify(r.data) }] };
+        }
+        catch (err) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+        }
+    });
+    // ── 목차 자동 생성 ──
+    server.tool('hwp_generate_toc', '현재 문서의 제목 패턴(Ⅰ., 1., 가. 등)을 자동 감지하여 목차를 생성하고 현재 커서 위치에 삽입합니다.', {
+        dot_leader: z.boolean().optional().describe('점선 리더 사용 여부 (기본 true)'),
+    }, async ({ dot_leader }) => {
+        if (!bridge.getCurrentDocument())
+            return { content: [{ type: 'text', text: JSON.stringify({ error: '열린 문서가 없습니다.' }) }], isError: true };
+        try {
+            await bridge.ensureRunning();
+            const params = {};
+            if (dot_leader !== undefined)
+                params.dot_leader = dot_leader;
+            const r = await bridge.send('generate_toc', params, ANALYSIS_TIMEOUT);
+            if (!r.success)
+                return { content: [{ type: 'text', text: JSON.stringify({ error: r.error }) }], isError: true };
+            bridge.setCachedAnalysis(null);
+            return { content: [{ type: 'text', text: JSON.stringify(r.data) }] };
+        }
+        catch (err) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+        }
+    });
+    // ── 간트차트 추진일정 표 ──
+    server.tool('hwp_create_gantt_chart', '추진일정 간트차트 표를 자동 생성합니다. 작업 목록과 기간을 입력하면 ■ 표시가 있는 일정표를 만듭니다.', {
+        tasks: z.array(z.object({
+            name: z.string().describe('작업명'),
+            desc: z.string().optional().describe('수행내용'),
+            start: z.number().int().min(1).describe('시작 월 (1부터)'),
+            end: z.number().int().min(1).describe('종료 월'),
+            weight: z.string().optional().describe('비중(%)'),
+        })).describe('작업 목록'),
+        months: z.number().int().min(1).max(24).describe('총 기간 (월 수)'),
+        month_label: z.string().optional().describe('월 라벨 형식 (기본 "M+N")'),
+    }, async ({ tasks, months, month_label }) => {
+        if (!bridge.getCurrentDocument())
+            return { content: [{ type: 'text', text: JSON.stringify({ error: '열린 문서가 없습니다.' }) }], isError: true };
+        try {
+            await bridge.ensureRunning();
+            const params = { tasks, months };
+            if (month_label)
+                params.month_label = month_label;
+            const r = await bridge.send('create_gantt_chart', params, ANALYSIS_TIMEOUT);
+            if (!r.success)
+                return { content: [{ type: 'text', text: JSON.stringify({ error: r.error }) }], isError: true };
+            bridge.setCachedAnalysis(null);
+            return { content: [{ type: 'text', text: JSON.stringify(r.data) }] };
+        }
+        catch (err) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+        }
+    });
+    server.tool('hwp_word_count', '현재 문서의 글자수, 단어수, 문단수, 페이지수를 반환합니다.', {}, async () => {
+        if (!bridge.getCurrentDocument())
+            return { content: [{ type: 'text', text: JSON.stringify({ error: '열린 문서가 없습니다.' }) }], isError: true };
+        try {
+            await bridge.ensureRunning();
+            const r = await bridge.send('word_count', {}, ANALYSIS_TIMEOUT);
+            if (!r.success)
+                return { content: [{ type: 'text', text: JSON.stringify({ error: r.error }) }], isError: true };
+            return { content: [{ type: 'text', text: JSON.stringify(r.data) }] };
+        }
+        catch (err) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+        }
+    });
+    // ── Phase D: HWPX XML 엔진 도구 ──
+    server.tool('hwp_template_list', '사용 가능한 22종 문서 템플릿 목록을 반환합니다. 공문서, 기업, 학술, 개인 카테고리별 템플릿을 확인할 수 있습니다. 한글 프로그램 없이 동작합니다.', {
+        category: z.string().optional().describe('필터링할 카테고리 (공문서/기업/학술/개인, 생략 시 전체)'),
+    }, async ({ category }) => {
+        try {
+            const { TEMPLATES } = await import('../hwpx-engine.js');
+            let list = TEMPLATES;
+            if (category) {
+                list = TEMPLATES.filter(t => t.category === category);
+            }
+            return { content: [{ type: 'text', text: JSON.stringify({
+                            templates: list.map(t => ({ id: t.id, name: t.name, category: t.category, fields: t.fields })),
+                            total: list.length,
+                            categories: [...new Set(TEMPLATES.map(t => t.category))],
+                        }) }] };
+        }
+        catch (err) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+        }
+    });
+    server.tool('hwp_document_create', '빈 HWPX 문서를 생성합니다. 한글 프로그램 없이 동작합니다. 생성된 파일은 한글에서 열 수 있습니다.', {
+        output_path: z.string().describe('생성할 HWPX 파일 경로'),
+        title: z.string().optional().describe('문서 제목 (선택)'),
+    }, async ({ output_path, title }) => {
+        try {
+            const { createBlankHwpx } = await import('../hwpx-engine.js');
+            const resolved = path.resolve(output_path);
+            await createBlankHwpx(resolved, title);
+            return { content: [{ type: 'text', text: JSON.stringify({
+                            status: 'ok', path: resolved, title: title || '(빈 문서)',
+                            note: '한글 프로그램에서 열어서 확인하세요.',
+                        }) }] };
+        }
+        catch (err) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+        }
+    });
+    server.tool('hwp_template_generate', '템플릿 기반으로 HWPX 문서를 생성합니다. 변수(기업명, 대표자 등)를 치환하여 완성된 문서를 만듭니다. 한글 프로그램 없이 동작합니다.', {
+        template_id: z.string().describe('템플릿 ID (hwp_template_list로 확인)'),
+        variables: z.record(z.string(), z.string()).describe('채울 변수 { "기업명": "플랜아이", "대표자": "이명기" }'),
+        output_path: z.string().describe('생성할 HWPX 파일 경로'),
+    }, async ({ template_id, variables, output_path }) => {
+        try {
+            const { generateFromTemplate } = await import('../hwpx-engine.js');
+            const resolved = path.resolve(output_path);
+            const result = await generateFromTemplate(template_id, variables, resolved);
+            return { content: [{ type: 'text', text: JSON.stringify({
+                            status: 'ok', path: resolved, template: template_id,
+                            filled_fields: result.filledFields,
+                            empty_fields: result.emptyFields,
+                        }) }] };
+        }
+        catch (err) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+        }
+    });
+    server.tool('hwp_xml_edit_text', 'HWPX 파일의 텍스트를 직접 찾아 바꿉니다. 한글 프로그램 없이 동작합니다. HWPX(ZIP+XML) 내부의 텍스트를 수정합니다.', {
+        file_path: z.string().describe('수정할 HWPX 파일 경로'),
+        find: z.string().describe('찾을 텍스트'),
+        replace: z.string().describe('바꿀 텍스트'),
+        output_path: z.string().optional().describe('저장 경로 (생략 시 원본 덮어쓰기)'),
+    }, async ({ file_path, find, replace, output_path }) => {
+        try {
+            const { readHwpxXml, writeHwpxXml, replaceTextInSection } = await import('../hwpx-engine.js');
+            const resolved = path.resolve(file_path);
+            const outResolved = output_path ? path.resolve(output_path) : resolved;
+            if (!fs.existsSync(resolved)) {
+                return { content: [{ type: 'text', text: JSON.stringify({ error: `파일을 찾을 수 없습니다: ${resolved}` }) }], isError: true };
+            }
+            const doc = await readHwpxXml(resolved, 'Contents/section0.xml');
+            const count = replaceTextInSection(doc, find, replace);
+            await writeHwpxXml(resolved, outResolved, 'Contents/section0.xml', doc);
+            return { content: [{ type: 'text', text: JSON.stringify({
+                            status: 'ok', path: outResolved, find, replace,
+                            replacements: count,
+                            note: 'linesegarray가 자동 삭제되었습니다 (CLAUDE.md 규칙)',
+                        }) }] };
+        }
+        catch (err) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+        }
+    });
+}

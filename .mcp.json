@@ -1,0 +1,9 @@
+{
+  "hwp-studio": {
+    "command": "node",
+    "args": ["${CLAUDE_PLUGIN_ROOT}/servers/index.js"],
+    "env": {
+      "PYTHONUNBUFFERED": "1"
+    }
+  }
+}
