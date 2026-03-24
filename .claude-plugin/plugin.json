@@ -6,7 +6,7 @@
     "name": "김희철",
     "email": "gmlcjf0326@hanmail.net"
   },
-  "repository": "https://github.com/gmlcjf0326/claude-code-hwp-mcp",
+  "repository": "https://github.com/gmlcjf0326/claude-code-hwp-plugin",
   "license": "MIT",
   "keywords": ["hwp", "hwpx", "한글", "mcp", "document-automation", "pyhwpx", "korean"]
 }

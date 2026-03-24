@@ -1,5 +1,8 @@
 ---
 description: HWP Studio 플러그인의 모든 기능과 사용법을 안내합니다. 처음 사용할 때 이 커맨드를 실행하세요.
+allowed-tools:
+  - "mcp__hwp-studio__hwp_check_setup"
+  - "mcp__hwp-studio__hwp_list_files"
 ---
 
 # HWP Studio 기능 안내

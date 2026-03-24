@@ -7,10 +7,14 @@ export default function postToolUse({ tool, input, output }) {
   const outputStr = typeof output === 'string' ? output : JSON.stringify(output || '');
 
   // HWPX XML 편집 후 linesegarray 삭제 확인 (CLAUDE.md 규칙 8)
+  // 텍스트를 수정하는 Edit에서 linesegarray를 남겨두면 문서가 깨질 수 있음
   if (tool === 'Edit' && input?.file_path?.includes('section') && input?.file_path?.endsWith('.xml')) {
-    if (input.new_string && !input.new_string.includes('linesegarray')) {
+    // hp:t 텍스트를 수정했는데 같은 Edit에서 linesegarray를 삭제하지 않은 경우 경고
+    const isTextEdit = input.new_string && (input.new_string.includes('hp:t') || input.new_string.includes('textContent'));
+    const removesLineseg = input.new_string && input.new_string.includes('linesegarray');
+    if (isTextEdit && !removesLineseg) {
       return {
-        message: '⚠️ HWPX XML 수정 시 linesegarray 요소 삭제가 필요합니다.\n→ 텍스트 수정 후 해당 paragraph의 <linesegarray> 요소를 삭제하세요.\n→ CLAUDE.md 규칙 8번 참조'
+        message: '⚠️ HWPX XML에서 텍스트를 수정했다면 linesegarray 요소도 삭제해야 합니다.\n→ 같은 section XML에서 <hp:linesegarray> 요소를 찾아 삭제하세요.\n→ CLAUDE.md 규칙 8번 참조'
       };
     }
   }
