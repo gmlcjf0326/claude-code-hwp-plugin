@@ -310,16 +310,20 @@ def dispatch(hwp, method, params):
 
     if method == "insert_text":
         validate_params(params, ["text"], method)
+        text = params["text"]
+        # 각 insert_text 호출을 독립 문단으로 — 끝에 줄바꿈 자동 추가
+        if not text.endswith("\r\n") and not text.endswith("\n"):
+            text += "\r\n"
         style = params.get("style")
         color = params.get("color")  # [r, g, b] 하위 호환
         if style:
             from hwp_editor import insert_text_with_style
-            insert_text_with_style(hwp, params["text"], style)
+            insert_text_with_style(hwp, text, style)
         elif color:
             from hwp_editor import insert_text_with_color
-            insert_text_with_color(hwp, params["text"], tuple(color))
+            insert_text_with_color(hwp, text, tuple(color))
         else:
-            hwp.insert_text(params["text"])
+            hwp.insert_text(text)
         return {"status": "ok"}
 
     if method == "set_paragraph_style":
