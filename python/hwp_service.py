@@ -474,17 +474,21 @@ def dispatch(hwp, method, params):
         try:
             hwp.get_into_nth_table(table_index)
             if start_row is not None and end_row is not None and start_col is not None and end_col is not None:
-                # H2: 범위 지정 병합 — TableCellBlock으로 셀 선택 후 병합
+                # 범위 지정 병합 — 시작 셀로 이동 → 블록 선택 확장 → 병합
                 hwp.HAction.Run("TableColBegin")
                 hwp.HAction.Run("TableRowBegin")
                 for _ in range(start_row):
                     hwp.HAction.Run("TableLowerCell")
                 for _ in range(start_col):
                     hwp.HAction.Run("TableRightCell")
+                # 블록 선택 시작
                 hwp.HAction.Run("TableCellBlock")
+                # TableCellBlockExtend + 방향키로 블록 확장
                 for _ in range(end_col - start_col):
+                    hwp.HAction.Run("TableCellBlockExtend")
                     hwp.HAction.Run("TableRightCell")
                 for _ in range(end_row - start_row):
+                    hwp.HAction.Run("TableCellBlockExtend")
                     hwp.HAction.Run("TableLowerCell")
                 hwp.HAction.Run("TableMergeCell")
             else:
@@ -580,24 +584,8 @@ def dispatch(hwp, method, params):
             hwp.HAction.Run("BreakPara")   # 새 문단 생성 (표 아래)
         except Exception as e:
             print(f"[WARN] Table exit: {e}", file=sys.stderr)
-        # 헤더행 배경색 적용 (표 밖에서 get_into_nth_table로 안전하게 진입)
-        if header_style and rows > 0:
-            try:
-                # 현재 문서에서 가장 마지막 표 = 방금 생성한 표
-                table_count = hwp.get_table_count() if hasattr(hwp, 'get_table_count') else -1
-                # 표 안으로 진입하여 첫 행 배경색 적용
-                hwp.MovePos(2)  # BOF
-                # 가장 마지막에 생성된 표의 인덱스 계산
-                tidx = max(0, table_count - 1) if table_count > 0 else 0
-                hwp.get_into_nth_table(tidx)
-                for i in range(cols):
-                    hwp.cell_fill((232, 232, 232))  # #E8E8E8 연회색
-                    if i < cols - 1:
-                        hwp.TableRightCell()
-                hwp.Cancel()
-                hwp.HAction.Run("MoveDocEnd")
-            except Exception as e:
-                print(f"[WARN] Header background: {e}", file=sys.stderr)
+        # header_style: Bold는 이미 표 생성 시 적용됨
+        # 배경색은 set_cell_color로 별도 적용 (표 진입/탈출 부작용 방지)
         return {"status": "ok", "rows": rows, "cols": cols, "filled": filled, "header_styled": bool(header_style)}
 
     if method == "table_insert_from_csv":
