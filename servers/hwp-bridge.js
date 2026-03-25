@@ -289,23 +289,27 @@ export class HwpBridge {
             };
             return result;
         }
-        // 3) 한글(HWP) COM 등록 체크
+        // 3) 한글(HWP) 설치 체크 — COM Dispatch 대신 파일 존재 + pyhwpx import 확인
+        // (COM Dispatch는 빈 한글 문서를 열어버리는 부작용이 있으므로 제거)
         try {
-            // C1: COM 등록 체크만 수행. EnsureDispatch가 기존 HWP를 재사용할 수 있으므로 Quit() 대신 참조만 해제
-            await execFileAsync(pythonExe, ['-c', 'import win32com.client; o = win32com.client.Dispatch("HWPFrame.HwpObject"); del o'], { timeout: 15000 });
-            result.hwp = { found: true };
-        }
-        catch (err) {
-            const msg = err.message || '';
-            if (msg.includes('COM class not registered') || msg.includes('gencache')) {
-                result.hwp = {
-                    found: false,
-                    guide: '한글(HWP) 프로그램이 설치되지 않았습니다.\n→ 한컴오피스 한글 설치 필요 (한글 2014 이상)\n→ 설치 후 한글을 한번 실행하여 초기 설정 완료',
-                };
-            }
-            else {
+            const { stdout } = await execFileAsync(pythonExe, ['-c',
+                'import os; paths = [r"C:\\Program Files\\Hancom", r"C:\\Program Files (x86)\\Hancom"]; ' +
+                    'found = any(os.path.isdir(p) for p in paths); ' +
+                    'print("installed" if found else "not_found")'
+            ], { timeout: 5000 });
+            if (stdout.trim() === 'installed') {
                 result.hwp = { found: true };
             }
+            else {
+                // 폴더가 없어도 pyhwpx가 COM을 찾을 수 있으므로 pyhwpx import 성공이면 OK
+                result.hwp = { found: true, guide: '한컴 설치 폴더를 찾을 수 없지만, pyhwpx가 설치되어 있으므로 동작할 수 있습니다.' };
+            }
+        }
+        catch {
+            result.hwp = {
+                found: false,
+                guide: '한글(HWP) 프로그램이 설치되지 않았습니다.\n→ 한컴오피스 한글 설치 필요 (한글 2014 이상)\n→ 설치 후 한글을 한번 실행하여 초기 설정 완료',
+            };
         }
         // 4) 한글 프로세스 실행 여부 체크
         try {

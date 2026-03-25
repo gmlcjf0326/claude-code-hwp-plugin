@@ -622,22 +622,53 @@ def dispatch(hwp, method, params):
                 "success": bool(result), "file_exists": file_exists, "file_size": file_size}
 
     if method == "verify_layout":
-        # PDF로 내보내고 경로 반환 → Claude Code의 Read로 시각적 검증
+        # PDF로 내보내고 PNG 이미지로 변환 → Claude Code의 Read로 시각적 검증
         import tempfile
         tmp_pdf = os.path.join(tempfile.gettempdir(), "hwp_verify_layout.pdf")
         try:
             hwp.save_as(tmp_pdf, "PDF")
-            file_exists = os.path.exists(tmp_pdf)
-            file_size = os.path.getsize(tmp_pdf) if file_exists else 0
-            return {
-                "status": "ok" if file_exists else "error",
-                "pdf_path": tmp_pdf,
-                "pages": hwp.PageCount,
-                "file_size": file_size,
-                "hint": "Read 도구로 이 PDF 파일을 열면 문서 레이아웃을 시각적으로 확인할 수 있습니다."
-            }
+            if not os.path.exists(tmp_pdf):
+                return {"status": "error", "error": "PDF 생성 실패"}
+
+            # PDF → PNG 변환 (PyMuPDF)
+            try:
+                import fitz
+                doc = fitz.open(tmp_pdf)
+                image_paths = []
+                page_range = params.get("pages")  # "1", "1-3" 등
+                start_page = 0
+                end_page = doc.page_count
+
+                if page_range:
+                    parts = str(page_range).split("-")
+                    start_page = max(0, int(parts[0]) - 1)
+                    end_page = int(parts[-1]) if len(parts) > 1 else start_page + 1
+
+                for i in range(start_page, min(end_page, doc.page_count)):
+                    pix = doc[i].get_pixmap(dpi=150)
+                    png_path = os.path.join(tempfile.gettempdir(), f"hwp_verify_page{i+1}.png")
+                    pix.save(png_path)
+                    image_paths.append(png_path)
+
+                doc.close()
+                return {
+                    "status": "ok",
+                    "image_paths": image_paths,
+                    "pages": len(image_paths),
+                    "total_pages": hwp.PageCount,
+                    "hint": "Read 도구로 각 PNG 이미지를 열어 레이아웃을 시각적으로 검증하세요."
+                }
+            except ImportError:
+                # PyMuPDF 미설치 → PDF 경로만 반환
+                return {
+                    "status": "ok_pdf_only",
+                    "pdf_path": tmp_pdf,
+                    "pages": hwp.PageCount,
+                    "file_size": os.path.getsize(tmp_pdf),
+                    "hint": "PyMuPDF 미설치. 'pip install PyMuPDF' 실행 후 다시 시도하면 PNG 이미지로 자동 변환됩니다."
+                }
         except Exception as e:
-            return {"status": "error", "error": f"PDF 생성 실패: {e}"}
+            return {"status": "error", "error": f"레이아웃 검증 실패: {e}"}
 
     if method == "insert_hyperlink":
         validate_params(params, ["url"], method)

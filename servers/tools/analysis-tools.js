@@ -429,12 +429,17 @@ export function registerAnalysisTools(server, bridge, toolset = 'standard') {
             }
         });
         // ── 시각적 레이아웃 검증 ──
-        server.tool('hwp_verify_layout', '현재 문서를 PDF로 내보내고 파일 경로를 반환합니다. Claude가 Read 도구로 PDF를 읽어 표 구조, 셀 병합, 열 너비, 정렬 등 레이아웃을 시각적으로 검증할 수 있습니다. 공문서 생성 후 결과물 확인에 사용하세요.', {}, async () => {
+        server.tool('hwp_verify_layout', '현재 문서를 PNG 이미지로 변환하여 경로를 반환합니다. Claude가 Read 도구로 이미지를 읽어 표 구조, 셀 병합, 열 너비, 정렬 등을 시각적으로 검증합니다. 공문서 생성 후 결과물 확인에 사용하세요. PyMuPDF 필요(pip install PyMuPDF).', {
+            pages: z.string().optional().describe('확인할 페이지 (예: "1", "5-7". 생략 시 전체)'),
+        }, async ({ pages }) => {
             if (!bridge.getCurrentDocument())
                 return { content: [{ type: 'text', text: JSON.stringify({ error: '열린 문서가 없습니다.' }) }], isError: true };
             try {
                 await bridge.ensureRunning();
-                const r = await bridge.send('verify_layout', {}, 60000);
+                const params = {};
+                if (pages)
+                    params.pages = pages;
+                const r = await bridge.send('verify_layout', params, 60000);
                 if (!r.success)
                     return { content: [{ type: 'text', text: JSON.stringify({ error: r.error }) }], isError: true };
                 return { content: [{ type: 'text', text: JSON.stringify(r.data) }] };
