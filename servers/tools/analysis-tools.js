@@ -448,5 +448,55 @@ export function registerAnalysisTools(server, bridge, toolset = 'standard') {
                 return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
             }
         });
+        // ── 페이지 설정 ──
+        server.tool('hwp_set_page_setup', '페이지 여백, 용지 크기, 방향을 설정합니다. 공문서 작성 전 페이지 설정에 사용하세요.', {
+            top_margin: z.number().optional().describe('위쪽 여백 (mm)'),
+            bottom_margin: z.number().optional().describe('아래쪽 여백 (mm)'),
+            left_margin: z.number().optional().describe('왼쪽 여백 (mm)'),
+            right_margin: z.number().optional().describe('오른쪽 여백 (mm)'),
+            header_margin: z.number().optional().describe('머리말 여백 (mm)'),
+            footer_margin: z.number().optional().describe('꼬리말 여백 (mm)'),
+            orientation: z.enum(['portrait', 'landscape']).optional().describe('용지 방향'),
+            paper_width: z.number().optional().describe('용지 너비 (mm, 기본 A4=210)'),
+            paper_height: z.number().optional().describe('용지 높이 (mm, 기본 A4=297)'),
+        }, async (params) => {
+            if (!bridge.getCurrentDocument())
+                return { content: [{ type: 'text', text: JSON.stringify({ error: '열린 문서가 없습니다.' }) }], isError: true };
+            try {
+                await bridge.ensureRunning();
+                const r = await bridge.send('set_page_setup', params);
+                if (!r.success)
+                    return { content: [{ type: 'text', text: JSON.stringify({ error: r.error }) }], isError: true };
+                return { content: [{ type: 'text', text: JSON.stringify(r.data) }] };
+            }
+            catch (err) {
+                return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+            }
+        });
+        // ── 셀 속성 설정 ──
+        server.tool('hwp_set_cell_property', '표 셀의 여백, 수직 정렬, 텍스트 방향, 보호 등 속성을 설정합니다.', {
+            table_index: z.number().int().min(0).describe('표 인덱스'),
+            tab: z.number().int().min(0).describe('셀 탭 인덱스'),
+            vert_align: z.enum(['top', 'middle', 'bottom']).optional().describe('수직 정렬'),
+            margin_left: z.number().optional().describe('셀 왼쪽 여백 (mm)'),
+            margin_right: z.number().optional().describe('셀 오른쪽 여백 (mm)'),
+            margin_top: z.number().optional().describe('셀 위쪽 여백 (mm)'),
+            margin_bottom: z.number().optional().describe('셀 아래쪽 여백 (mm)'),
+            text_direction: z.number().int().min(0).max(1).optional().describe('텍스트 방향 (0=가로, 1=세로)'),
+            protected: z.boolean().optional().describe('셀 보호'),
+        }, async (params) => {
+            if (!bridge.getCurrentDocument())
+                return { content: [{ type: 'text', text: JSON.stringify({ error: '열린 문서가 없습니다.' }) }], isError: true };
+            try {
+                await bridge.ensureRunning();
+                const r = await bridge.send('set_cell_property', params);
+                if (!r.success)
+                    return { content: [{ type: 'text', text: JSON.stringify({ error: r.error }) }], isError: true };
+                return { content: [{ type: 'text', text: JSON.stringify(r.data) }] };
+            }
+            catch (err) {
+                return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+            }
+        });
     } // end toolset !== 'minimal'
 }

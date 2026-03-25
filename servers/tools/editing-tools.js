@@ -1027,6 +1027,8 @@ export function registerEditingTools(server, bridge, toolset = 'standard') {
             style: z.object({
                 line_type: z.number().int().min(0).max(5).optional().describe('선 종류: 0=없음, 1=실선, 2=파선, 3=점선, 4=1점쇄선, 5=2점쇄선'),
                 line_width: z.number().optional().describe('선 두께 (pt 단위)'),
+                color: z.string().optional().describe('테두리 색상 (#RRGGBB, 예: "#003366")'),
+                edges: z.array(z.enum(['left', 'right', 'top', 'bottom'])).optional().describe('적용할 방향 (생략 시 전체)'),
             }).optional().describe('테두리 스타일'),
         }, async ({ table_index, cells, style }) => {
             if (!bridge.getCurrentDocument())

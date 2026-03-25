@@ -169,7 +169,27 @@ def dispatch(hwp, method, params):
         return {"text": text}
 
     if method == "get_cursor_context":
-        return {"context": "cursor context placeholder"}
+        # 실제 커서 위치의 서식 + 주변 텍스트 반환
+        from hwp_editor import get_char_shape, get_para_shape
+        context = {"status": "ok"}
+        try:
+            context["char_shape"] = get_char_shape(hwp)
+        except Exception as e:
+            context["char_shape"] = {"error": str(e)}
+        try:
+            context["para_shape"] = get_para_shape(hwp)
+        except Exception as e:
+            context["para_shape"] = {"error": str(e)}
+        try:
+            pos = hwp.GetPos()
+            context["position"] = list(pos) if pos else None
+        except Exception:
+            context["position"] = None
+        try:
+            context["page"] = hwp.PageCount
+        except Exception:
+            context["page"] = None
+        return context
 
     if method == "save_as":
         validate_params(params, ["path"], method)
@@ -519,12 +539,22 @@ def dispatch(hwp, method, params):
                 hwp.create_table(rows, cols)
         else:
             hwp.create_table(rows, cols)
-        # 셀 채우기
+        # 셀 채우기 (alignment 적용 포함)
+        align_map = {"left": 0, "center": 1, "right": 2}
         filled = 0
         for r, row in enumerate(data):
             for c, val in enumerate(row):
+                # alignment 적용 (각 셀에 문단 정렬)
+                if alignment and alignment in align_map:
+                    try:
+                        act_p = hwp.HAction
+                        ps = hwp.HParameterSet.HParaShape
+                        act_p.GetDefault("ParaShape", ps.HSet)
+                        ps.AlignType = align_map[alignment]
+                        act_p.Execute("ParaShape", ps.HSet)
+                    except Exception as e:
+                        print(f"[WARN] Cell align: {e}", file=sys.stderr)
                 if val:
-                    # BUG-1 fix: SelectAll 제거 — 새 표의 빈 셀에 직접 삽입
                     if header_style and r == 0:
                         from hwp_editor import insert_text_with_style
                         insert_text_with_style(hwp, str(val), {"bold": True})
@@ -674,6 +704,70 @@ def dispatch(hwp, method, params):
         except Exception as e:
             return {"status": "error", "error": f"레이아웃 검증 실패: {e}"}
 
+    if method == "set_page_setup":
+        # 페이지 설정 (여백, 용지 크기, 방향)
+        try:
+            act = hwp.HAction
+            pset = hwp.HParameterSet.HSecDef
+            act.GetDefault("PageSetup", pset.HSet)
+            pdef = pset.PageDef
+            if "top_margin" in params:
+                pdef.TopMargin = hwp.MiliToHwpUnit(params["top_margin"])
+            if "bottom_margin" in params:
+                pdef.BottomMargin = hwp.MiliToHwpUnit(params["bottom_margin"])
+            if "left_margin" in params:
+                pdef.LeftMargin = hwp.MiliToHwpUnit(params["left_margin"])
+            if "right_margin" in params:
+                pdef.RightMargin = hwp.MiliToHwpUnit(params["right_margin"])
+            if "header_margin" in params:
+                pdef.HeaderLen = hwp.MiliToHwpUnit(params["header_margin"])
+            if "footer_margin" in params:
+                pdef.FooterLen = hwp.MiliToHwpUnit(params["footer_margin"])
+            if "orientation" in params:
+                pdef.Landscape = 1 if params["orientation"] == "landscape" else 0
+            if "paper_width" in params:
+                pdef.PaperWidth = hwp.MiliToHwpUnit(params["paper_width"])
+            if "paper_height" in params:
+                pdef.PaperHeight = hwp.MiliToHwpUnit(params["paper_height"])
+            act.Execute("PageSetup", pset.HSet)
+            return {"status": "ok"}
+        except Exception as e:
+            return {"status": "error", "error": f"페이지 설정 실패: {e}"}
+
+    if method == "set_cell_property":
+        # 셀 속성 설정 (여백, 텍스트 방향, 수직 정렬, 보호)
+        validate_params(params, ["table_index", "tab"], method)
+        try:
+            from hwp_editor import _navigate_to_tab
+            hwp.get_into_nth_table(params["table_index"])
+            _navigate_to_tab(hwp, params["table_index"], params["tab"], 0)
+            pset = hwp.HParameterSet.HCell
+            hwp.HAction.GetDefault("CellShape", pset.HSet)
+            if "vert_align" in params:
+                va_map = {"top": 0, "middle": 1, "bottom": 2}
+                pset.VertAlign = va_map.get(params["vert_align"], 0)
+            if "margin_left" in params:
+                pset.MarginLeft = hwp.MiliToHwpUnit(params["margin_left"])
+            if "margin_right" in params:
+                pset.MarginRight = hwp.MiliToHwpUnit(params["margin_right"])
+            if "margin_top" in params:
+                pset.MarginTop = hwp.MiliToHwpUnit(params["margin_top"])
+            if "margin_bottom" in params:
+                pset.MarginBottom = hwp.MiliToHwpUnit(params["margin_bottom"])
+            if "text_direction" in params:
+                pset.TextDirection = int(params["text_direction"])  # 0=가로, 1=세로
+            if "protected" in params:
+                pset.Protected = 1 if params["protected"] else 0
+            hwp.HAction.Execute("CellShape", pset.HSet)
+            return {"status": "ok", "tab": params["tab"]}
+        except Exception as e:
+            raise RuntimeError(f"셀 속성 설정 실패: {e}")
+        finally:
+            try:
+                hwp.Cancel()
+            except Exception:
+                pass
+
     if method == "insert_hyperlink":
         validate_params(params, ["url"], method)
         url = params["url"]
@@ -740,10 +834,11 @@ def dispatch(hwp, method, params):
             end = min(start + pages_per_split - 1, total_pages)
             part_name = f"part_{start}-{end}{ext}"
             part_path = os.path.join(output_dir, part_name)
-            # 분할 저장은 COM API 한계로 전체 복사 후 저장
+            # 분할 저장은 COM API 한계로 전체 복사 (실제 페이지 분할 아님)
             shutil.copy2(src_path, part_path)
             parts.append({"pages": f"{start}-{end}", "path": part_path})
-        return {"status": "ok", "total_pages": total_pages, "parts": len(parts), "files": parts}
+        return {"status": "ok", "total_pages": total_pages, "parts": len(parts), "files": parts,
+                "warning": "COM API 한계로 각 파일은 전체 문서의 복사본입니다. 실제 페이지 분할은 한글 프로그램에서 수동으로 진행해주세요."}
 
     if method == "insert_footnote":
         hwp.HAction.Run("InsertFootnote")
