@@ -186,9 +186,15 @@ def dispatch(hwp, method, params):
         except Exception:
             context["position"] = None
         try:
-            context["page"] = hwp.PageCount
+            context["total_pages"] = hwp.PageCount
         except Exception:
-            context["page"] = None
+            context["total_pages"] = None
+        try:
+            # KeyIndicator: (섹션, 페이지, 줄, 컬럼, 삽입/수정, 줄번호)
+            ki = hwp.KeyIndicator()
+            context["current_page"] = ki[1] if ki else None
+        except Exception:
+            context["current_page"] = None
         return context
 
     if method == "save_as":
@@ -798,13 +804,15 @@ def dispatch(hwp, method, params):
             hwp.HAction.Run("Cancel")
             return {"status": "ok", "x": x, "y": y, "width": width, "height": height}
         except Exception as e:
-            # 대안: 간단한 글상자 생성
+            # 대안: 간단한 글상자 생성 (위치/크기 무시)
             try:
+                print(f"[WARN] 글상자 위치/크기 파라미터 무시됨 (fallback): {e}", file=sys.stderr)
                 hwp.HAction.Run("DrawTextBox")
                 if text:
                     hwp.insert_text(text)
                 hwp.HAction.Run("Cancel")
-                return {"status": "ok", "method": "fallback", "text": text}
+                return {"status": "ok", "method": "fallback", "text": text,
+                        "warning": "위치/크기 파라미터가 적용되지 않았습니다 (fallback 방식)"}
             except Exception as e2:
                 raise RuntimeError(f"글상자 생성 실패: {e} / {e2}")
 
@@ -828,37 +836,46 @@ def dispatch(hwp, method, params):
             act.Execute("DrawLine", pset.HSet)
             return {"status": "ok"}
         except Exception as e:
-            # 폴백: 기본 선 삽입
-            hwp.HAction.Run("InsertLine")
-            return {"status": "ok", "method": "fallback", "error": str(e)}
+            raise RuntimeError(f"선 그리기 실패: {e}")
 
     if method == "set_header_footer":
-        # 머리글/바닥글 설정
+        # 머리글/바닥글 설정 (CreateAction 방식)
         hf_type = params.get("type", "header")  # "header" or "footer"
         text = params.get("text", "")
         try:
-            if hf_type == "header":
-                hwp.HAction.Run("HeaderFooter")
-                # 머리글 편집 모드 진입
-            else:
-                hwp.HAction.Run("HeaderFooter")
+            act = hwp.CreateAction("HeaderFooter")
+            ps = act.CreateSet()
+            act.GetDefault(ps)
+            # Type: 0=머리글, 1=바닥글
+            ps.SetItem("Type", 0 if hf_type == "header" else 1)
+            result = act.Execute(ps)
+            if not result:
+                raise RuntimeError("HeaderFooter Execute 실패")
+            # 머리글/바닥글 편집 모드 진입됨 — 텍스트 삽입
             if text:
                 hwp.insert_text(text)
-            hwp.HAction.Run("Cancel")  # 머리글/바닥글 편집 종료
+            # 본문으로 복귀
+            hwp.HAction.Run("CloseEx")
             return {"status": "ok", "type": hf_type, "text": text}
         except Exception as e:
+            # 편집 모드에 들어갔을 수 있으므로 복귀 시도
+            try:
+                hwp.HAction.Run("CloseEx")
+            except Exception as ex:
+                print(f"[WARN] CloseEx recovery failed: {ex}", file=sys.stderr)
             raise RuntimeError(f"머리글/바닥글 설정 실패: {e}")
 
     if method == "apply_style":
         # 스타일 적용 ("제목1", "본문", "개요1" 등)
         style_name = params.get("style_name", "본문")
         try:
+            # CharShape/ParaShape를 스타일 기반으로 변경
+            # pyhwpx의 set_style 또는 HAction 기반
             act = hwp.HAction
             pset = hwp.HParameterSet.HStyle
             act.GetDefault("Style", pset.HSet)
-            pset.Apply = 1
-            # 스타일 이름으로 적용
-            hwp.HAction.Run("Style")
+            pset.HSet.SetItem("StyleName", style_name)
+            act.Execute("Style", pset.HSet)
             return {"status": "ok", "style": style_name}
         except Exception as e:
             raise RuntimeError(f"스타일 적용 실패: {e}")
@@ -971,18 +988,34 @@ def dispatch(hwp, method, params):
                 "warning": "COM API 한계로 각 파일은 전체 문서의 복사본입니다. 실제 페이지 분할은 한글 프로그램에서 수동으로 진행해주세요."}
 
     if method == "insert_footnote":
-        hwp.HAction.Run("InsertFootnote")
-        text = params.get("text")
-        if text:
-            hwp.insert_text(text)
-        return {"status": "ok", "type": "footnote"}
+        try:
+            hwp.HAction.Run("InsertFootnote")
+            text = params.get("text")
+            if text:
+                hwp.insert_text(text)
+            hwp.HAction.Run("CloseEx")
+            return {"status": "ok", "type": "footnote"}
+        except Exception as e:
+            try:
+                hwp.HAction.Run("CloseEx")
+            except Exception:
+                pass
+            raise RuntimeError(f"각주 삽입 실패: {e}")
 
     if method == "insert_endnote":
-        hwp.HAction.Run("InsertEndnote")
-        text = params.get("text")
-        if text:
-            hwp.insert_text(text)
-        return {"status": "ok", "type": "endnote"}
+        try:
+            hwp.HAction.Run("InsertEndnote")
+            text = params.get("text")
+            if text:
+                hwp.insert_text(text)
+            hwp.HAction.Run("CloseEx")
+            return {"status": "ok", "type": "endnote"}
+        except Exception as e:
+            try:
+                hwp.HAction.Run("CloseEx")
+            except Exception:
+                pass
+            raise RuntimeError(f"미주 삽입 실패: {e}")
 
     if method == "insert_page_num":
         fmt = params.get("format", "plain")  # "plain"|"dash"|"paren"
@@ -1159,8 +1192,15 @@ def dispatch(hwp, method, params):
         return {"status": "ok", "type": "column"}
 
     if method == "insert_line":
-        hwp.HAction.Run("InsertLine")
-        return {"status": "ok"}
+        # draw_line과 동일하게 처리 (대화상자 방지)
+        try:
+            act = hwp.HAction
+            pset = hwp.HParameterSet.HDrawLineAttr
+            act.GetDefault("DrawLine", pset.HSet)
+            act.Execute("DrawLine", pset.HSet)
+            return {"status": "ok"}
+        except Exception as e:
+            raise RuntimeError(f"선 삽입 실패: {e}")
 
     if method == "table_swap_type":
         validate_params(params, ["table_index"], method)
