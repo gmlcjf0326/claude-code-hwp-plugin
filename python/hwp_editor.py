@@ -626,10 +626,17 @@ def fill_table_cells_by_tab(hwp, table_idx, cells):
                 hwp.HAction.Run("SelectAll")
                 cell_style = cell.get("style")
                 if cell_style:
-                    # 셀 수준 정렬은 ParaShape로 설정
-                    if "align" in cell_style:
-                        set_paragraph_style(hwp, {"align": cell_style["align"]})
                     insert_text_with_style(hwp, text, cell_style)
+                    # 셀 정렬은 텍스트 삽입 후 TableCellAlign 액션으로 적용
+                    if "align" in cell_style:
+                        align_action = {
+                            "left": "TableCellAlignLeftCenter",
+                            "center": "TableCellAlignCenterCenter",
+                            "right": "TableCellAlignRightCenter",
+                            "justify": "TableCellAlignLeftCenter",
+                        }
+                        action = align_action.get(cell_style["align"], "TableCellAlignLeftCenter")
+                        hwp.HAction.Run(action)
                 else:
                     hwp.insert_text(text)
 
@@ -1088,13 +1095,8 @@ def set_cell_background_color(hwp, table_idx, cells):
                         hwp.TableRightCell()
                     current_tab = target_tab
 
-                # 셀 배경색 설정 (HCellBorderFill → FillAttr.WinBrushFaceColor)
-                act = hwp.HAction
-                pset = hwp.HParameterSet.HCellBorderFill
-                act.GetDefault("CellBorderFill", pset.HSet)
-                pset.FillAttr.type = 1  # WindowsBrush 타입
-                pset.FillAttr.WinBrushFaceColor = hwp.RGBColor(r, g, b)
-                act.Execute("CellBorderFill", pset.HSet)
+                # 셀 배경색 설정 (pyhwpx 내장 cell_fill 사용)
+                hwp.cell_fill((r, g, b))
                 result["colored"] += 1
 
             except Exception as e:

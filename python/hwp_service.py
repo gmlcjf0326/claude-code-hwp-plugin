@@ -576,19 +576,28 @@ def dispatch(hwp, method, params):
         # 표 밖으로 커서 이동 (표 생성 후 커서가 표 안에 남아있음)
         try:
             hwp.Cancel()  # 셀 선택 해제
-            # 표 아래로 커서 이동: Ctrl+End 방향으로 표 탈출
             hwp.HAction.Run("MoveDocEnd")  # 문서 끝으로 이동
             hwp.HAction.Run("BreakPara")   # 새 문단 생성 (표 아래)
         except Exception as e:
             print(f"[WARN] Table exit: {e}", file=sys.stderr)
-        # 헤더행 배경색 적용 (옵션)
+        # 헤더행 배경색 적용 (표 밖에서 get_into_nth_table로 안전하게 진입)
         if header_style and rows > 0:
             try:
-                from hwp_editor import set_cell_background_color
-                header_cells = [{"tab": i, "color": "#E8E8E8"} for i in range(cols)]
-                set_cell_background_color(hwp, -1, header_cells)  # -1 = 현재 표
-            except Exception:
-                pass  # 배경색 실패해도 표 자체는 유지
+                # 현재 문서에서 가장 마지막 표 = 방금 생성한 표
+                table_count = hwp.get_table_count() if hasattr(hwp, 'get_table_count') else -1
+                # 표 안으로 진입하여 첫 행 배경색 적용
+                hwp.MovePos(2)  # BOF
+                # 가장 마지막에 생성된 표의 인덱스 계산
+                tidx = max(0, table_count - 1) if table_count > 0 else 0
+                hwp.get_into_nth_table(tidx)
+                for i in range(cols):
+                    hwp.cell_fill((232, 232, 232))  # #E8E8E8 연회색
+                    if i < cols - 1:
+                        hwp.TableRightCell()
+                hwp.Cancel()
+                hwp.HAction.Run("MoveDocEnd")
+            except Exception as e:
+                print(f"[WARN] Header background: {e}", file=sys.stderr)
         return {"status": "ok", "rows": rows, "cols": cols, "filled": filled, "header_styled": bool(header_style)}
 
     if method == "table_insert_from_csv":
