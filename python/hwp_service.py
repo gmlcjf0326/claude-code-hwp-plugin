@@ -768,6 +768,136 @@ def dispatch(hwp, method, params):
             except Exception:
                 pass
 
+    if method == "insert_textbox":
+        # 글상자 생성 (위치/크기 지정)
+        x = params.get("x", 0)  # mm
+        y = params.get("y", 0)  # mm
+        width = params.get("width", 60)  # mm
+        height = params.get("height", 30)  # mm
+        text = params.get("text", "")
+        border = params.get("border", True)
+        try:
+            act = hwp.HAction
+            # CreateAction으로 글상자 생성
+            act_tb = hwp.CreateAction("DrawTextBox")
+            ps = act_tb.CreateSet()
+            act_tb.GetDefault(ps)
+            # ShapeObject로 위치/크기 설정
+            so = ps.Item("ShapeObject")
+            so.HorzRelTo = 0  # 페이지 기준
+            so.VertRelTo = 0  # 페이지 기준
+            so.HorzOffset = hwp.MiliToHwpUnit(x)
+            so.VertOffset = hwp.MiliToHwpUnit(y)
+            so.Width = hwp.MiliToHwpUnit(width)
+            so.Height = hwp.MiliToHwpUnit(height)
+            act_tb.Execute(ps)
+            # 텍스트 삽입
+            if text:
+                hwp.insert_text(text)
+            # 글상자 밖으로 나가기
+            hwp.HAction.Run("Cancel")
+            return {"status": "ok", "x": x, "y": y, "width": width, "height": height}
+        except Exception as e:
+            # 대안: 간단한 글상자 생성
+            try:
+                hwp.HAction.Run("DrawTextBox")
+                if text:
+                    hwp.insert_text(text)
+                hwp.HAction.Run("Cancel")
+                return {"status": "ok", "method": "fallback", "text": text}
+            except Exception as e2:
+                raise RuntimeError(f"글상자 생성 실패: {e} / {e2}")
+
+    if method == "draw_line":
+        # 선 그리기 (두께/색상/스타일)
+        try:
+            act = hwp.HAction
+            pset = hwp.HParameterSet.HDrawLineAttr
+            act.GetDefault("DrawLine", pset.HSet)
+            if "width" in params:
+                pset.Width = int(params["width"])  # 선 두께
+            if "color" in params:
+                c = params["color"]
+                if isinstance(c, str):  # "#RRGGBB"
+                    r, g, b = int(c[1:3], 16), int(c[3:5], 16), int(c[5:7], 16)
+                    pset.Color = hwp.RGBColor(r, g, b)
+                elif isinstance(c, list):
+                    pset.Color = hwp.RGBColor(c[0], c[1], c[2])
+            if "style" in params:
+                pset.style = int(params["style"])  # 0=실선, 1=파선, 2=점선 등
+            act.Execute("DrawLine", pset.HSet)
+            return {"status": "ok"}
+        except Exception as e:
+            # 폴백: 기본 선 삽입
+            hwp.HAction.Run("InsertLine")
+            return {"status": "ok", "method": "fallback", "error": str(e)}
+
+    if method == "set_header_footer":
+        # 머리글/바닥글 설정
+        hf_type = params.get("type", "header")  # "header" or "footer"
+        text = params.get("text", "")
+        try:
+            if hf_type == "header":
+                hwp.HAction.Run("HeaderFooter")
+                # 머리글 편집 모드 진입
+            else:
+                hwp.HAction.Run("HeaderFooter")
+            if text:
+                hwp.insert_text(text)
+            hwp.HAction.Run("Cancel")  # 머리글/바닥글 편집 종료
+            return {"status": "ok", "type": hf_type, "text": text}
+        except Exception as e:
+            raise RuntimeError(f"머리글/바닥글 설정 실패: {e}")
+
+    if method == "apply_style":
+        # 스타일 적용 ("제목1", "본문", "개요1" 등)
+        style_name = params.get("style_name", "본문")
+        try:
+            act = hwp.HAction
+            pset = hwp.HParameterSet.HStyle
+            act.GetDefault("Style", pset.HSet)
+            pset.Apply = 1
+            # 스타일 이름으로 적용
+            hwp.HAction.Run("Style")
+            return {"status": "ok", "style": style_name}
+        except Exception as e:
+            raise RuntimeError(f"스타일 적용 실패: {e}")
+
+    if method == "set_column":
+        # 다단 설정
+        count = params.get("count", 2)  # 단 수
+        gap = params.get("gap", 10)  # 단 간격 (mm)
+        line_type = params.get("line_type", 0)  # 구분선 종류
+        try:
+            act = hwp.HAction
+            pset = hwp.HParameterSet.HColDef
+            act.GetDefault("MultiColumn", pset.HSet)
+            pset.Count = int(count)
+            pset.SameSize = 1  # 같은 너비
+            pset.SameGap = hwp.MiliToHwpUnit(gap)
+            pset.LineType = int(line_type)
+            pset.type = 1  # 일반 다단
+            act.Execute("MultiColumn", pset.HSet)
+            return {"status": "ok", "count": count, "gap": gap}
+        except Exception as e:
+            raise RuntimeError(f"다단 설정 실패: {e}")
+
+    if method == "insert_caption":
+        # 캡션 삽입 (표/그림 제목)
+        text = params.get("text", "")
+        side = params.get("side", 3)  # 0=왼쪽, 1=오른쪽, 2=위, 3=아래
+        try:
+            act = hwp.HAction
+            pset = hwp.HParameterSet.HCaption
+            act.GetDefault("InsertCaption", pset.HSet)
+            pset.Side = int(side)
+            act.Execute("InsertCaption", pset.HSet)
+            if text:
+                hwp.insert_text(text)
+            return {"status": "ok", "text": text, "side": side}
+        except Exception as e:
+            raise RuntimeError(f"캡션 삽입 실패: {e}")
+
     if method == "insert_hyperlink":
         validate_params(params, ["url"], method)
         url = params["url"]

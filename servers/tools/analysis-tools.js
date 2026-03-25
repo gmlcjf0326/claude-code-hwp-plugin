@@ -498,5 +498,118 @@ export function registerAnalysisTools(server, bridge, toolset = 'standard') {
                 return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
             }
         });
+        // ── 글상자 생성 ──
+        server.tool('hwp_insert_textbox', '글상자(텍스트박스)를 생성합니다. x/y로 위치, width/height로 크기를 지정합니다. 결재란 등 위치 지정이 필요한 요소에 사용하세요.', {
+            x: z.number().optional().describe('X 위치 (mm, 페이지 기준, 기본 0)'),
+            y: z.number().optional().describe('Y 위치 (mm, 페이지 기준, 기본 0)'),
+            width: z.number().optional().describe('너비 (mm, 기본 60)'),
+            height: z.number().optional().describe('높이 (mm, 기본 30)'),
+            text: z.string().optional().describe('글상자 내 텍스트'),
+            border: z.boolean().optional().describe('테두리 표시 (기본 true)'),
+        }, async (params) => {
+            if (!bridge.getCurrentDocument())
+                return { content: [{ type: 'text', text: JSON.stringify({ error: '열린 문서가 없습니다.' }) }], isError: true };
+            try {
+                await bridge.ensureRunning();
+                const r = await bridge.send('insert_textbox', params);
+                if (!r.success)
+                    return { content: [{ type: 'text', text: JSON.stringify({ error: r.error }) }], isError: true };
+                return { content: [{ type: 'text', text: JSON.stringify(r.data) }] };
+            }
+            catch (err) {
+                return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+            }
+        });
+        // ── 선 그리기 (강화) ──
+        server.tool('hwp_draw_line', '선을 그립니다. 두께, 색상, 스타일을 지정할 수 있습니다. hwp_insert_line보다 상세한 제어가 가능합니다.', {
+            width: z.number().optional().describe('선 두께'),
+            color: z.string().optional().describe('선 색상 (#RRGGBB 또는 [R,G,B])'),
+            style: z.number().int().min(0).max(5).optional().describe('선 스타일 (0=실선, 1=파선, 2=점선, 3=1점쇄선, 4=2점쇄선)'),
+        }, async (params) => {
+            if (!bridge.getCurrentDocument())
+                return { content: [{ type: 'text', text: JSON.stringify({ error: '열린 문서가 없습니다.' }) }], isError: true };
+            try {
+                await bridge.ensureRunning();
+                const r = await bridge.send('draw_line', params);
+                if (!r.success)
+                    return { content: [{ type: 'text', text: JSON.stringify({ error: r.error }) }], isError: true };
+                return { content: [{ type: 'text', text: JSON.stringify(r.data) }] };
+            }
+            catch (err) {
+                return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+            }
+        });
+        // ── 머리글/바닥글 ──
+        server.tool('hwp_set_header_footer', '머리글 또는 바닥글을 설정합니다. 기관명, 페이지번호 등을 삽입할 때 사용하세요.', {
+            type: z.enum(['header', 'footer']).describe('머리글 또는 바닥글'),
+            text: z.string().optional().describe('삽입할 텍스트'),
+        }, async ({ type, text }) => {
+            if (!bridge.getCurrentDocument())
+                return { content: [{ type: 'text', text: JSON.stringify({ error: '열린 문서가 없습니다.' }) }], isError: true };
+            try {
+                await bridge.ensureRunning();
+                const r = await bridge.send('set_header_footer', { type, text });
+                if (!r.success)
+                    return { content: [{ type: 'text', text: JSON.stringify({ error: r.error }) }], isError: true };
+                return { content: [{ type: 'text', text: JSON.stringify(r.data) }] };
+            }
+            catch (err) {
+                return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+            }
+        });
+        // ── 스타일 적용 ──
+        server.tool('hwp_apply_style', '현재 커서 위치에 문단 스타일을 적용합니다. "제목1", "본문", "개요1" 등 한글에 정의된 스타일을 사용합니다.', {
+            style_name: z.string().describe('스타일 이름 (예: "제목1", "본문", "개요 1")'),
+        }, async ({ style_name }) => {
+            if (!bridge.getCurrentDocument())
+                return { content: [{ type: 'text', text: JSON.stringify({ error: '열린 문서가 없습니다.' }) }], isError: true };
+            try {
+                await bridge.ensureRunning();
+                const r = await bridge.send('apply_style', { style_name });
+                if (!r.success)
+                    return { content: [{ type: 'text', text: JSON.stringify({ error: r.error }) }], isError: true };
+                return { content: [{ type: 'text', text: JSON.stringify(r.data) }] };
+            }
+            catch (err) {
+                return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+            }
+        });
+        // ── 다단 설정 ──
+        server.tool('hwp_set_column', '현재 섹션의 다단을 설정합니다. 2단/3단 레이아웃에 사용하세요.', {
+            count: z.number().int().min(1).max(10).describe('단 수 (기본 2)'),
+            gap: z.number().optional().describe('단 간격 (mm, 기본 10)'),
+            line_type: z.number().int().min(0).max(5).optional().describe('구분선 종류 (0=없음, 1=실선)'),
+        }, async ({ count, gap, line_type }) => {
+            if (!bridge.getCurrentDocument())
+                return { content: [{ type: 'text', text: JSON.stringify({ error: '열린 문서가 없습니다.' }) }], isError: true };
+            try {
+                await bridge.ensureRunning();
+                const r = await bridge.send('set_column', { count, gap, line_type });
+                if (!r.success)
+                    return { content: [{ type: 'text', text: JSON.stringify({ error: r.error }) }], isError: true };
+                return { content: [{ type: 'text', text: JSON.stringify(r.data) }] };
+            }
+            catch (err) {
+                return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+            }
+        });
+        // ── 캡션 삽입 ──
+        server.tool('hwp_insert_caption', '표나 그림에 캡션(제목)을 삽입합니다.', {
+            text: z.string().optional().describe('캡션 텍스트'),
+            side: z.number().int().min(0).max(3).optional().describe('캡션 위치 (0=왼쪽, 1=오른쪽, 2=위, 3=아래)'),
+        }, async ({ text, side }) => {
+            if (!bridge.getCurrentDocument())
+                return { content: [{ type: 'text', text: JSON.stringify({ error: '열린 문서가 없습니다.' }) }], isError: true };
+            try {
+                await bridge.ensureRunning();
+                const r = await bridge.send('insert_caption', { text, side });
+                if (!r.success)
+                    return { content: [{ type: 'text', text: JSON.stringify({ error: r.error }) }], isError: true };
+                return { content: [{ type: 'text', text: JSON.stringify(r.data) }] };
+            }
+            catch (err) {
+                return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+            }
+        });
     } // end toolset !== 'minimal'
 }
