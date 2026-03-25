@@ -185,6 +185,40 @@ def insert_text_with_style(hwp, text, style=None):
             pset.SmallCaps = 1 if style["small_caps"] else 0
         except Exception as e:
             print(f"[WARN] SmallCaps: {e}", file=sys.stderr)
+    # 그림자 색상/오프셋
+    if "shadow_color" in style:
+        try:
+            sc = style["shadow_color"]
+            pset.ShadowColor = hwp.RGBColor(sc[0], sc[1], sc[2])
+        except Exception as e:
+            print(f"[WARN] ShadowColor: {e}", file=sys.stderr)
+    if "shadow_offset_x" in style:
+        try:
+            pset.ShadowOffsetX = int(style["shadow_offset_x"])
+        except Exception as e:
+            print(f"[WARN] ShadowOffsetX: {e}", file=sys.stderr)
+    if "shadow_offset_y" in style:
+        try:
+            pset.ShadowOffsetY = int(style["shadow_offset_y"])
+        except Exception as e:
+            print(f"[WARN] ShadowOffsetY: {e}", file=sys.stderr)
+    # 밑줄/취소선 모양
+    if "underline_shape" in style:
+        try:
+            pset.UnderlineShape = int(style["underline_shape"])
+        except Exception as e:
+            print(f"[WARN] UnderlineShape: {e}", file=sys.stderr)
+    if "strikeout_shape" in style:
+        try:
+            pset.StrikeOutShape = int(style["strikeout_shape"])
+        except Exception as e:
+            print(f"[WARN] StrikeOutShape: {e}", file=sys.stderr)
+    # 커닝
+    if "use_kerning" in style:
+        try:
+            pset.UseKerning = 1 if style["use_kerning"] else 0
+        except Exception as e:
+            print(f"[WARN] UseKerning: {e}", file=sys.stderr)
 
     act.Execute("CharShape", pset.HSet)
 
@@ -301,6 +335,41 @@ def set_paragraph_style(hwp, style=None):
             pset.SnapToGrid = 1 if style["snap_to_grid"] else 0
         except Exception as e:
             print(f"[WARN] SnapToGrid: {e}", file=sys.stderr)
+    # 한영 자동 간격
+    if "auto_space_eAsian_eng" in style:
+        try:
+            pset.AutoSpaceEAsianEng = 1 if style["auto_space_eAsian_eng"] else 0
+        except Exception as e:
+            print(f"[WARN] AutoSpaceEAsianEng: {e}", file=sys.stderr)
+    if "auto_space_eAsian_num" in style:
+        try:
+            pset.AutoSpaceEAsianNum = 1 if style["auto_space_eAsian_num"] else 0
+        except Exception as e:
+            print(f"[WARN] AutoSpaceEAsianNum: {e}", file=sys.stderr)
+    # 영문 줄바꿈
+    if "break_latin_word" in style:
+        try:
+            pset.BreakLatinWord = int(style["break_latin_word"])
+        except Exception as e:
+            print(f"[WARN] BreakLatinWord: {e}", file=sys.stderr)
+    # 제목 수준
+    if "heading_type" in style:
+        try:
+            pset.HeadingType = int(style["heading_type"])
+        except Exception as e:
+            print(f"[WARN] HeadingType: {e}", file=sys.stderr)
+    # 줄 함께 유지
+    if "keep_lines_together" in style:
+        try:
+            pset.KeepLinesTogether = 1 if style["keep_lines_together"] else 0
+        except Exception as e:
+            print(f"[WARN] KeepLinesTogether: {e}", file=sys.stderr)
+    # 문단 압축
+    if "condense" in style:
+        try:
+            pset.Condense = int(style["condense"])
+        except Exception as e:
+            print(f"[WARN] Condense: {e}", file=sys.stderr)
 
     act.Execute("ParaShape", pset.HSet)
 

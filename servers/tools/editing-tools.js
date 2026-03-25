@@ -291,9 +291,15 @@ export function registerEditingTools(server, bridge, toolset = 'standard') {
             subscript: z.boolean().optional().describe('아래 첨자'),
             outline: z.boolean().optional().describe('외곽선'),
             shadow: z.boolean().optional().describe('그림자'),
+            shadow_color: z.array(z.number().int().min(0).max(255)).length(3).optional().describe('그림자 색상 [R,G,B]'),
+            shadow_offset_x: z.number().optional().describe('그림자 X 오프셋'),
+            shadow_offset_y: z.number().optional().describe('그림자 Y 오프셋'),
             emboss: z.boolean().optional().describe('양각'),
             engrave: z.boolean().optional().describe('음각'),
             small_caps: z.boolean().optional().describe('작은 대문자'),
+            underline_shape: z.number().int().optional().describe('밑줄 모양'),
+            strikeout_shape: z.number().int().optional().describe('취소선 모양'),
+            use_kerning: z.boolean().optional().describe('커닝 (자동 자간 조정)'),
         }).optional().describe('텍스트 서식 옵션'),
     }, async ({ text, color, style }) => {
         if (!bridge.getCurrentDocument()) {
@@ -336,7 +342,13 @@ export function registerEditingTools(server, bridge, toolset = 'standard') {
             widow_orphan: z.boolean().optional().describe('과부/고아 방지'),
             line_wrap: z.number().int().optional().describe('줄 바꿈 방식'),
             snap_to_grid: z.boolean().optional().describe('그리드에 맞춤'),
-        }, async ({ align, line_spacing, line_spacing_type, space_before, space_after, indent, left_margin, right_margin, page_break_before, keep_with_next, widow_orphan, line_wrap, snap_to_grid }) => {
+            auto_space_eAsian_eng: z.boolean().optional().describe('한영 자동 간격'),
+            auto_space_eAsian_num: z.boolean().optional().describe('한숫자 자동 간격'),
+            break_latin_word: z.number().int().optional().describe('영문 줄바꿈 (0=단어, 1=글자)'),
+            heading_type: z.number().int().optional().describe('제목 수준 (개요)'),
+            keep_lines_together: z.boolean().optional().describe('줄 함께 유지 (문단 분리 방지)'),
+            condense: z.number().int().optional().describe('문단 압축'),
+        }, async ({ align, line_spacing, line_spacing_type, space_before, space_after, indent, left_margin, right_margin, page_break_before, keep_with_next, widow_orphan, line_wrap, snap_to_grid, auto_space_eAsian_eng, auto_space_eAsian_num, break_latin_word, heading_type, keep_lines_together, condense }) => {
             if (!bridge.getCurrentDocument()) {
                 return { content: [{ type: 'text', text: JSON.stringify({ error: '열린 문서가 없습니다.' }) }], isError: true };
             }
@@ -369,6 +381,18 @@ export function registerEditingTools(server, bridge, toolset = 'standard') {
                     style.line_wrap = line_wrap;
                 if (snap_to_grid !== undefined)
                     style.snap_to_grid = snap_to_grid;
+                if (auto_space_eAsian_eng !== undefined)
+                    style.auto_space_eAsian_eng = auto_space_eAsian_eng;
+                if (auto_space_eAsian_num !== undefined)
+                    style.auto_space_eAsian_num = auto_space_eAsian_num;
+                if (break_latin_word !== undefined)
+                    style.break_latin_word = break_latin_word;
+                if (heading_type !== undefined)
+                    style.heading_type = heading_type;
+                if (keep_lines_together !== undefined)
+                    style.keep_lines_together = keep_lines_together;
+                if (condense !== undefined)
+                    style.condense = condense;
                 const response = await bridge.send('set_paragraph_style', { style });
                 if (!response.success) {
                     return { content: [{ type: 'text', text: JSON.stringify({ error: response.error }) }], isError: true };
