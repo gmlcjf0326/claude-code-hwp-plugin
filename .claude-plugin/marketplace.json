@@ -10,7 +10,7 @@
   "plugins": [
     {
       "name": "claude-code-hwp-plugin",
-      "description": "한글(HWP/HWPX) 문서 자동화. 85개+ MCP 도구 + 8개 워크플로우 커맨드 + HWPX 규칙 hooks.",
+      "description": "한글(HWP/HWPX) 문서 자동화. 94개 MCP 도구 + 8개 워크플로우 커맨드 + HWPX 규칙 hooks.",
       "version": "0.4.1",
       "author": {
         "name": "김희철",
