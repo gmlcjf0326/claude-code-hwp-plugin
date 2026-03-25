@@ -533,10 +533,14 @@ def dispatch(hwp, method, params):
                     filled += 1
                 if c < len(row) - 1 or r < rows - 1:
                     hwp.TableRightCell()
+        # 표 밖으로 커서 이동 (표 생성 후 커서가 표 안에 남아있음)
         try:
-            hwp.Cancel()
+            hwp.Cancel()  # 셀 선택 해제
+            # 표 아래로 커서 이동: Ctrl+End 방향으로 표 탈출
+            hwp.HAction.Run("MoveDocEnd")  # 문서 끝으로 이동
+            hwp.HAction.Run("BreakPara")   # 새 문단 생성 (표 아래)
         except Exception as e:
-            print(f"[WARN] {e}", file=sys.stderr)
+            print(f"[WARN] Table exit: {e}", file=sys.stderr)
         # 헤더행 배경색 적용 (옵션)
         if header_style and rows > 0:
             try:

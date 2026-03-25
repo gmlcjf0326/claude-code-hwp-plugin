@@ -908,12 +908,13 @@ def set_cell_background_color(hwp, table_idx, cells):
                         hwp.TableRightCell()
                     current_tab = target_tab
 
-                # 셀 배경색 설정 (CellShape → BackColor)
+                # 셀 배경색 설정 (HCellBorderFill → FillAttr.WinBrushFaceColor)
                 act = hwp.HAction
-                pset = hwp.HParameterSet.HCellShape
-                act.GetDefault("CellShape", pset.HSet)
-                pset.BackColor = hwp.RGBColor(r, g, b)
-                act.Execute("CellShape", pset.HSet)
+                pset = hwp.HParameterSet.HCellBorderFill
+                act.GetDefault("CellBorderFill", pset.HSet)
+                pset.FillAttr.type = 1  # WindowsBrush 타입
+                pset.FillAttr.WinBrushFaceColor = hwp.RGBColor(r, g, b)
+                act.Execute("CellBorderFill", pset.HSet)
                 result["colored"] += 1
 
             except Exception as e:
@@ -959,13 +960,16 @@ def set_table_border_style(hwp, table_idx, cells=None, style=None):
                     act = hwp.HAction
                     pset = hwp.HParameterSet.HCellBorderFill
                     act.GetDefault("CellBorderFill", pset.HSet)
-                    # 4방향 테두리 설정
-                    for attr in ["Left", "Right", "Top", "Bottom"]:
-                        line = getattr(pset, f"{attr}Border", None)
-                        if line:
-                            line.Type = line_type
-                            if line_width:
-                                line.Width = line_width
+                    # 4방향 테두리 설정 (BorderType/BorderWidth 속성)
+                    pset.BorderTypeLeft = line_type
+                    pset.BorderTypeRight = line_type
+                    pset.BorderTypeTop = line_type
+                    pset.BorderTypeBottom = line_type
+                    if line_width:
+                        pset.BorderWidthLeft = line_width
+                        pset.BorderWidthRight = line_width
+                        pset.BorderWidthTop = line_width
+                        pset.BorderWidthBottom = line_width
                     act.Execute("CellBorderFill", pset.HSet)
                     modified += 1
                 except Exception as e:
@@ -978,12 +982,15 @@ def set_table_border_style(hwp, table_idx, cells=None, style=None):
             act = hwp.HAction
             pset = hwp.HParameterSet.HCellBorderFill
             act.GetDefault("CellBorderFill", pset.HSet)
-            for attr in ["Left", "Right", "Top", "Bottom"]:
-                line = getattr(pset, f"{attr}Border", None)
-                if line:
-                    line.Type = line_type
-                    if line_width:
-                        line.Width = line_width
+            pset.BorderTypeLeft = line_type
+            pset.BorderTypeRight = line_type
+            pset.BorderTypeTop = line_type
+            pset.BorderTypeBottom = line_type
+            if line_width:
+                pset.BorderWidthLeft = line_width
+                pset.BorderWidthRight = line_width
+                pset.BorderWidthTop = line_width
+                pset.BorderWidthBottom = line_width
             act.Execute("CellBorderFill", pset.HSet)
             return {"status": "ok", "applied": "whole_table"}
     finally:
