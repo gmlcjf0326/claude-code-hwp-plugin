@@ -1,5 +1,5 @@
 ---
-description: 엑셀/CSV 데이터를 기반으로 여러 건의 HWP 문서를 일괄 생성합니다. 위촉장, 증명서 등.
+description: Excel 데이터로 위촉장/증명서 등 다건 일괄 생성. 파일명 규칙 지정, PDF 일괄 변환 포함.
 allowed-tools:
   - "mcp__hwp-studio__hwp_open_document"
   - "mcp__plugin_hwp-studio_hwp-studio__hwp_open_document"

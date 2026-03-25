@@ -1,5 +1,5 @@
 ---
-description: HWP 문서의 구조와 내용을 분석하여 요약합니다. 문서 종류, 완성도, 빈 항목을 파악합니다.
+description: HWP 문서 분석+요약. 표 구조, 빈 항목, 서식 프로파일 추출. PDF 시각 검증 포함.
 allowed-tools:
   - "mcp__hwp-studio__hwp_open_document"
   - "mcp__plugin_hwp-studio_hwp-studio__hwp_open_document"

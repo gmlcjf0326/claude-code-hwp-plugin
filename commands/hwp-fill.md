@@ -1,5 +1,5 @@
 ---
-description: HWP/HWPX 양식의 빈 항목을 AI가 자동으로 채웁니다. 사업계획서, 과업지시서, 신청서 등.
+description: HWP 양식 자동 채우기. Excel/PDF/DOCX 참고자료 지원. 서식 보존하며 빈칸을 AI가 채웁니다.
 allowed-tools:
   - "mcp__hwp-studio__hwp_check_setup"
   - "mcp__hwp-studio__hwp_open_document"

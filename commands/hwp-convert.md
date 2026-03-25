@@ -1,5 +1,5 @@
 ---
-description: HWP 문서를 PDF, DOCX, HTML, HWPX 형식으로 변환합니다.
+description: HWP 문서 형식 변환. PDF/DOCX/HTML/HWPX 지원. 일괄 변환도 가능.
 allowed-tools:
   - "mcp__hwp-studio__hwp_open_document"
   - "mcp__plugin_hwp-studio_hwp-studio__hwp_open_document"

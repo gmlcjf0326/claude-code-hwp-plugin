@@ -1,5 +1,5 @@
 ---
-description: AI가 한글 문서를 처음부터 작성합니다. 양식이 있으면 서식을 따르고, 없으면 표준 형식으로 작성합니다.
+description: 문서 처음부터 작성. 공문/사업계획서/보고서/동의서 등. 긴 문서는 섹션별 분할 작성. PDF 변환 포함.
 allowed-tools:
   - "mcp__hwp-studio__hwp_open_document"
   - "mcp__plugin_hwp-studio_hwp-studio__hwp_open_document"
