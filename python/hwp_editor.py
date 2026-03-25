@@ -35,18 +35,30 @@ def insert_text_with_color(hwp, text, rgb=None):
 def insert_text_with_style(hwp, text, style=None):
     """서식 지정 텍스트 삽입.
     style: {
-        "color": [r,g,b],        # 글자 색상
-        "bold": True/False,       # 굵게
-        "italic": True/False,     # 기울임
-        "underline": True/False,  # 밑줄
-        "font_size": 12.0,        # 글자 크기 (pt)
-        "font_name": "맑은 고딕", # 글꼴
-        "bg_color": [r,g,b],      # 배경 색상
-        "strikeout": True/False,  # 취소선
-        "char_spacing": -5,       # 자간 (%, 기본 0)
-        "width_ratio": 90,        # 장평 (%, 기본 100)
-        "font_name_hanja": "바탕",# 한자 글꼴
-        "font_name_japanese": "", # 일본어 글꼴
+        "color": [r,g,b],          # 글자 색상
+        "bold": True/False,         # 굵게
+        "italic": True/False,       # 기울임
+        "underline": True/False,    # 밑줄 (bool → 실선)
+        "underline_type": 0-7,      # 밑줄 종류 (0=없음,1=실선,2=이중,3=점선,4=파선,5=1점쇄선,6=물결,7=굵은실선)
+        "underline_color": [r,g,b], # 밑줄 색상
+        "font_size": 12.0,          # 글자 크기 (pt)
+        "font_name": "맑은 고딕",   # 글꼴 (한글+라틴 동시)
+        "font_name_latin": "Arial", # 라틴 전용 글꼴
+        "bg_color": [r,g,b],        # 배경 색상
+        "strikeout": True/False,    # 취소선 (bool → 단일)
+        "strikeout_type": 0-3,      # 취소선 종류 (0=없음,1=단일,2=이중,3=굵은)
+        "strikeout_color": [r,g,b], # 취소선 색상
+        "char_spacing": -5,         # 자간 (%, 기본 0)
+        "width_ratio": 90,          # 장평 (%, 기본 100)
+        "font_name_hanja": "바탕",  # 한자 글꼴
+        "font_name_japanese": "",   # 일본어 글꼴
+        "superscript": True/False,  # 위 첨자
+        "subscript": True/False,    # 아래 첨자
+        "outline": True/False,      # 외곽선
+        "shadow": True/False,       # 그림자
+        "emboss": True/False,       # 양각
+        "engrave": True/False,      # 음각
+        "small_caps": True/False,   # 작은 대문자
     }
     삽입 후 원래 서식으로 복원.
     """
@@ -59,22 +71,20 @@ def insert_text_with_style(hwp, text, style=None):
 
     # 현재 서식 저장
     act.GetDefault("CharShape", pset.HSet)
-    saved_color = pset.TextColor
-    saved_bold = pset.Bold
-    saved_italic = pset.Italic
-    saved_underline = pset.UnderlineType
-    saved_height = pset.Height
-    saved_strikeout = pset.StrikeOutType
-    saved_char_spacing = None
-    saved_width_ratio = None
-    try:
-        saved_char_spacing = pset.SpacingHangul
-    except Exception:
-        pass
-    try:
-        saved_width_ratio = pset.RatioHangul
-    except Exception:
-        pass
+    saved = {}
+    saved['TextColor'] = pset.TextColor
+    saved['Bold'] = pset.Bold
+    saved['Italic'] = pset.Italic
+    saved['UnderlineType'] = pset.UnderlineType
+    saved['Height'] = pset.Height
+    saved['StrikeOutType'] = pset.StrikeOutType
+    for attr in ['SpacingHangul', 'RatioHangul', 'SuperScript', 'SubScript',
+                 'OutLineType', 'ShadowType', 'Emboss', 'Engrave', 'SmallCaps',
+                 'UnderlineColor', 'StrikeOutColor']:
+        try:
+            saved[attr] = getattr(pset, attr)
+        except Exception:
+            saved[attr] = None
 
     # 새 서식 적용
     act.GetDefault("CharShape", pset.HSet)
@@ -86,18 +96,36 @@ def insert_text_with_style(hwp, text, style=None):
         pset.Bold = 1 if style["bold"] else 0
     if "italic" in style:
         pset.Italic = 1 if style["italic"] else 0
-    if "underline" in style:
+    if "underline_type" in style:
+        pset.UnderlineType = int(style["underline_type"])
+    elif "underline" in style:
         pset.UnderlineType = 1 if style["underline"] else 0
+    if "underline_color" in style:
+        uc = style["underline_color"]
+        try:
+            pset.UnderlineColor = hwp.RGBColor(uc[0], uc[1], uc[2])
+        except Exception as e:
+            print(f"[WARN] UnderlineColor: {e}", file=sys.stderr)
     if "font_size" in style:
         pset.Height = int(style["font_size"] * 100)  # pt → HWP 단위
     if "font_name" in style:
         pset.FaceNameHangul = style["font_name"]
         pset.FaceNameLatin = style["font_name"]
+    if "font_name_latin" in style:
+        pset.FaceNameLatin = style["font_name_latin"]
     if "bg_color" in style:
         bg = style["bg_color"]
         pset.ShadeColor = hwp.RGBColor(bg[0], bg[1], bg[2])
-    if "strikeout" in style:
+    if "strikeout_type" in style:
+        pset.StrikeOutType = int(style["strikeout_type"])
+    elif "strikeout" in style:
         pset.StrikeOutType = 1 if style["strikeout"] else 0
+    if "strikeout_color" in style:
+        sc = style["strikeout_color"]
+        try:
+            pset.StrikeOutColor = hwp.RGBColor(sc[0], sc[1], sc[2])
+        except Exception as e:
+            print(f"[WARN] StrikeOutColor: {e}", file=sys.stderr)
     if "char_spacing" in style:
         try:
             pset.SpacingHangul = int(style["char_spacing"])
@@ -120,6 +148,43 @@ def insert_text_with_style(hwp, text, style=None):
             pset.FaceNameJapanese = style["font_name_japanese"]
         except Exception as e:
             print(f"[WARN] {e}", file=sys.stderr)
+    # 위/아래 첨자
+    if "superscript" in style:
+        try:
+            pset.SuperScript = 1 if style["superscript"] else 0
+        except Exception as e:
+            print(f"[WARN] SuperScript: {e}", file=sys.stderr)
+    if "subscript" in style:
+        try:
+            pset.SubScript = 1 if style["subscript"] else 0
+        except Exception as e:
+            print(f"[WARN] SubScript: {e}", file=sys.stderr)
+    # 외곽선/그림자/양각/음각/작은대문자
+    if "outline" in style:
+        try:
+            pset.OutLineType = 1 if style["outline"] else 0
+        except Exception as e:
+            print(f"[WARN] OutLineType: {e}", file=sys.stderr)
+    if "shadow" in style:
+        try:
+            pset.ShadowType = 1 if style["shadow"] else 0
+        except Exception as e:
+            print(f"[WARN] ShadowType: {e}", file=sys.stderr)
+    if "emboss" in style:
+        try:
+            pset.Emboss = 1 if style["emboss"] else 0
+        except Exception as e:
+            print(f"[WARN] Emboss: {e}", file=sys.stderr)
+    if "engrave" in style:
+        try:
+            pset.Engrave = 1 if style["engrave"] else 0
+        except Exception as e:
+            print(f"[WARN] Engrave: {e}", file=sys.stderr)
+    if "small_caps" in style:
+        try:
+            pset.SmallCaps = 1 if style["small_caps"] else 0
+        except Exception as e:
+            print(f"[WARN] SmallCaps: {e}", file=sys.stderr)
 
     act.Execute("CharShape", pset.HSet)
 
@@ -127,24 +192,24 @@ def insert_text_with_style(hwp, text, style=None):
 
     # 원래 서식 복원
     act.GetDefault("CharShape", pset.HSet)
-    pset.TextColor = saved_color
-    pset.Bold = saved_bold
-    pset.Italic = saved_italic
-    pset.UnderlineType = saved_underline
-    pset.Height = saved_height
-    pset.StrikeOutType = saved_strikeout
-    if saved_char_spacing is not None:
-        try:
-            pset.SpacingHangul = saved_char_spacing
-            pset.SpacingLatin = saved_char_spacing
-        except Exception as e:
-            print(f"[WARN] {e}", file=sys.stderr)
-    if saved_width_ratio is not None:
-        try:
-            pset.RatioHangul = saved_width_ratio
-            pset.RatioLatin = saved_width_ratio
-        except Exception as e:
-            print(f"[WARN] {e}", file=sys.stderr)
+    pset.TextColor = saved['TextColor']
+    pset.Bold = saved['Bold']
+    pset.Italic = saved['Italic']
+    pset.UnderlineType = saved['UnderlineType']
+    pset.Height = saved['Height']
+    pset.StrikeOutType = saved['StrikeOutType']
+    for attr in ['SpacingHangul', 'RatioHangul', 'SuperScript', 'SubScript',
+                 'OutLineType', 'ShadowType', 'Emboss', 'Engrave', 'SmallCaps',
+                 'UnderlineColor', 'StrikeOutColor']:
+        if saved.get(attr) is not None:
+            try:
+                setattr(pset, attr, saved[attr])
+                if attr == 'SpacingHangul':
+                    pset.SpacingLatin = saved[attr]
+                if attr == 'RatioHangul':
+                    pset.RatioLatin = saved[attr]
+            except Exception as e:
+                print(f"[WARN] Restore {attr}: {e}", file=sys.stderr)
     act.Execute("CharShape", pset.HSet)
 
 
@@ -206,6 +271,36 @@ def set_paragraph_style(hwp, style=None):
             pset.RightMargin = int(style["right_margin"] * 100)
         except Exception as e:
             print(f"[WARN] {e}", file=sys.stderr)
+    # 문단 앞 페이지 나누기
+    if "page_break_before" in style:
+        try:
+            pset.PagebreakBefore = 1 if style["page_break_before"] else 0
+        except Exception as e:
+            print(f"[WARN] PagebreakBefore: {e}", file=sys.stderr)
+    # 다음 문단과 함께
+    if "keep_with_next" in style:
+        try:
+            pset.KeepWithNext = 1 if style["keep_with_next"] else 0
+        except Exception as e:
+            print(f"[WARN] KeepWithNext: {e}", file=sys.stderr)
+    # 과부/고아 방지
+    if "widow_orphan" in style:
+        try:
+            pset.WidowOrphan = 1 if style["widow_orphan"] else 0
+        except Exception as e:
+            print(f"[WARN] WidowOrphan: {e}", file=sys.stderr)
+    # 줄 바꿈
+    if "line_wrap" in style:
+        try:
+            pset.LineWrap = int(style["line_wrap"])
+        except Exception as e:
+            print(f"[WARN] LineWrap: {e}", file=sys.stderr)
+    # 그리드에 맞춤
+    if "snap_to_grid" in style:
+        try:
+            pset.SnapToGrid = 1 if style["snap_to_grid"] else 0
+        except Exception as e:
+            print(f"[WARN] SnapToGrid: {e}", file=sys.stderr)
 
     act.Execute("ParaShape", pset.HSet)
 
@@ -462,9 +557,25 @@ def fill_table_cells_by_tab(hwp, table_idx, cells):
                 hwp.HAction.Run("SelectAll")
                 cell_style = cell.get("style")
                 if cell_style:
+                    # 셀 수준 정렬은 ParaShape로 설정
+                    if "align" in cell_style:
+                        set_paragraph_style(hwp, {"align": cell_style["align"]})
                     insert_text_with_style(hwp, text, cell_style)
                 else:
                     hwp.insert_text(text)
+
+                # 셀 수직 정렬/여백 설정 (HCell)
+                vert_align = cell.get("vert_align")  # "top"|"middle"|"bottom"
+                if vert_align:
+                    try:
+                        va_map = {"top": 0, "middle": 1, "bottom": 2}
+                        pset_cell = hwp.HParameterSet.HCell
+                        hwp.HAction.GetDefault("CellShape", pset_cell.HSet)
+                        pset_cell.VertAlign = va_map.get(vert_align, 0)
+                        hwp.HAction.Execute("CellShape", pset_cell.HSet)
+                    except Exception as e:
+                        print(f"[WARN] VertAlign: {e}", file=sys.stderr)
+
                 result["filled"] += 1
 
             except Exception as e:
@@ -936,14 +1047,19 @@ def set_table_border_style(hwp, table_idx, cells=None, style=None):
 
     table_idx: 표 인덱스
     cells: 특정 셀만 적용 시 [{"tab": int}, ...] (None이면 표 전체)
-    style: {"line_type": int, "line_width": int} — HWP 테두리 속성
-           line_type: 0=없음, 1=실선, 2=파선, 3=점선, 4=1점쇄선, 5=2점쇄선
-           line_width: pt 단위 (기본 0.12mm → 약 0.4pt)
+    style: {
+        "line_type": int,       # 0=없음, 1=실선, 2=파선, 3=점선, 4=1점쇄선, 5=2점쇄선
+        "line_width": int,      # pt 단위
+        "color": "#RRGGBB",     # 테두리 색상
+        "edges": ["left","right","top","bottom"],  # 적용할 방향 (생략 시 전체)
+    }
     """
     if style is None:
         style = {}
-    line_type = style.get("line_type", 1)  # 기본: 실선
+    line_type = style.get("line_type", 1)
     line_width = style.get("line_width", 0)
+    border_color = style.get("color")  # "#RRGGBB" 또는 None
+    edges = style.get("edges", ["left", "right", "top", "bottom"])  # 기본: 전체
 
     try:
         hwp.get_into_nth_table(table_idx)
@@ -960,16 +1076,21 @@ def set_table_border_style(hwp, table_idx, cells=None, style=None):
                     act = hwp.HAction
                     pset = hwp.HParameterSet.HCellBorderFill
                     act.GetDefault("CellBorderFill", pset.HSet)
-                    # 4방향 테두리 설정 (BorderType/BorderWidth 속성)
-                    pset.BorderTypeLeft = line_type
-                    pset.BorderTypeRight = line_type
-                    pset.BorderTypeTop = line_type
-                    pset.BorderTypeBottom = line_type
-                    if line_width:
-                        pset.BorderWidthLeft = line_width
-                        pset.BorderWidthRight = line_width
-                        pset.BorderWidthTop = line_width
-                        pset.BorderWidthBottom = line_width
+                    # 방향별 테두리 설정
+                    edge_map = {"left": "Left", "right": "Right", "top": "Top", "bottom": "Bottom"}
+                    for edge_name in edges:
+                        prop = edge_map.get(edge_name)
+                        if prop:
+                            setattr(pset, f"BorderType{prop}", line_type)
+                            if line_width:
+                                setattr(pset, f"BorderWidth{prop}", line_width)
+                            if border_color:
+                                try:
+                                    r, g, b = _hex_to_rgb(border_color)
+                                    color_attr = f"BorderColor{prop}" if prop != "Left" else "BorderCorlorLeft"  # typo in COM
+                                    setattr(pset, color_attr, hwp.RGBColor(r, g, b))
+                                except Exception as e:
+                                    print(f"[WARN] BorderColor {prop}: {e}", file=sys.stderr)
                     act.Execute("CellBorderFill", pset.HSet)
                     modified += 1
                 except Exception as e:
@@ -982,15 +1103,20 @@ def set_table_border_style(hwp, table_idx, cells=None, style=None):
             act = hwp.HAction
             pset = hwp.HParameterSet.HCellBorderFill
             act.GetDefault("CellBorderFill", pset.HSet)
-            pset.BorderTypeLeft = line_type
-            pset.BorderTypeRight = line_type
-            pset.BorderTypeTop = line_type
-            pset.BorderTypeBottom = line_type
-            if line_width:
-                pset.BorderWidthLeft = line_width
-                pset.BorderWidthRight = line_width
-                pset.BorderWidthTop = line_width
-                pset.BorderWidthBottom = line_width
+            edge_map = {"left": "Left", "right": "Right", "top": "Top", "bottom": "Bottom"}
+            for edge_name in edges:
+                prop = edge_map.get(edge_name)
+                if prop:
+                    setattr(pset, f"BorderType{prop}", line_type)
+                    if line_width:
+                        setattr(pset, f"BorderWidth{prop}", line_width)
+                    if border_color:
+                        try:
+                            r, g, b = _hex_to_rgb(border_color)
+                            color_attr = f"BorderColor{prop}" if prop != "Left" else "BorderCorlorLeft"
+                            setattr(pset, color_attr, hwp.RGBColor(r, g, b))
+                        except Exception as e:
+                            print(f"[WARN] BorderColor {prop}: {e}", file=sys.stderr)
             act.Execute("CellBorderFill", pset.HSet)
             return {"status": "ok", "applied": "whole_table"}
     finally:

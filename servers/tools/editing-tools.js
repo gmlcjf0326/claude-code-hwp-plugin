@@ -53,7 +53,9 @@ export function registerEditingTools(server, bridge, toolset = 'standard') {
                     font_name: z.string().optional().describe('글꼴 이름'),
                     char_spacing: z.number().optional().describe('자간 (%)'),
                     width_ratio: z.number().optional().describe('장평 (%)'),
+                    align: z.enum(['left', 'center', 'right', 'justify']).optional().describe('셀 텍스트 정렬'),
                 }).optional().describe('셀별 서식 (생략 시 기존 셀 서식 상속)'),
+                vert_align: z.enum(['top', 'middle', 'bottom']).optional().describe('셀 수직 정렬'),
             })).describe('채울 셀 목록. label, tab, row+col 중 하나 필수'),
         })).describe('채울 표 배열'),
     }, async ({ file_path, tables }) => {
@@ -81,7 +83,7 @@ export function registerEditingTools(server, bridge, toolset = 'standard') {
                 if (tabCells.length > 0) {
                     const resp = await bridge.send('fill_by_tab', {
                         table_index: table.index,
-                        cells: tabCells.map(c => ({ tab: c.tab, text: c.text, ...(c.style ? { style: c.style } : {}) })),
+                        cells: tabCells.map(c => ({ tab: c.tab, text: c.text, ...(c.style ? { style: c.style } : {}), ...(c.vert_align ? { vert_align: c.vert_align } : {}) })),
                     }, FILL_TIMEOUT);
                     if (!resp.success) {
                         return { content: [{ type: 'text', text: JSON.stringify({ error: resp.error }) }], isError: true };
@@ -280,6 +282,18 @@ export function registerEditingTools(server, bridge, toolset = 'standard') {
             width_ratio: z.number().optional().describe('장평 (%, 기본 100. 100 미만=좁게, 100 초과=넓게)'),
             font_name_hanja: z.string().optional().describe('한자 글꼴 이름'),
             font_name_japanese: z.string().optional().describe('일본어 글꼴 이름'),
+            font_name_latin: z.string().optional().describe('라틴(영문) 전용 글꼴'),
+            underline_type: z.number().int().min(0).max(7).optional().describe('밑줄 종류 (0=없음,1=실선,2=이중,3=점선,4=파선,5=1점쇄선,6=물결,7=굵은실선)'),
+            underline_color: z.array(z.number().int().min(0).max(255)).length(3).optional().describe('밑줄 색상 [R,G,B]'),
+            strikeout_type: z.number().int().min(0).max(3).optional().describe('취소선 종류 (0=없음,1=단일,2=이중,3=굵은)'),
+            strikeout_color: z.array(z.number().int().min(0).max(255)).length(3).optional().describe('취소선 색상 [R,G,B]'),
+            superscript: z.boolean().optional().describe('위 첨자'),
+            subscript: z.boolean().optional().describe('아래 첨자'),
+            outline: z.boolean().optional().describe('외곽선'),
+            shadow: z.boolean().optional().describe('그림자'),
+            emboss: z.boolean().optional().describe('양각'),
+            engrave: z.boolean().optional().describe('음각'),
+            small_caps: z.boolean().optional().describe('작은 대문자'),
         }).optional().describe('텍스트 서식 옵션'),
     }, async ({ text, color, style }) => {
         if (!bridge.getCurrentDocument()) {
@@ -317,7 +331,12 @@ export function registerEditingTools(server, bridge, toolset = 'standard') {
             indent: z.number().optional().describe('첫 줄 들여쓰기 (pt, 양수=들여쓰기, 음수=내어쓰기)'),
             left_margin: z.number().optional().describe('왼쪽 여백/나머지 줄 시작위치 (pt)'),
             right_margin: z.number().optional().describe('오른쪽 여백 (pt)'),
-        }, async ({ align, line_spacing, line_spacing_type, space_before, space_after, indent, left_margin, right_margin }) => {
+            page_break_before: z.boolean().optional().describe('문단 앞 페이지 나누기'),
+            keep_with_next: z.boolean().optional().describe('다음 문단과 함께 (제목+본문 분리 방지)'),
+            widow_orphan: z.boolean().optional().describe('과부/고아 방지'),
+            line_wrap: z.number().int().optional().describe('줄 바꿈 방식'),
+            snap_to_grid: z.boolean().optional().describe('그리드에 맞춤'),
+        }, async ({ align, line_spacing, line_spacing_type, space_before, space_after, indent, left_margin, right_margin, page_break_before, keep_with_next, widow_orphan, line_wrap, snap_to_grid }) => {
             if (!bridge.getCurrentDocument()) {
                 return { content: [{ type: 'text', text: JSON.stringify({ error: '열린 문서가 없습니다.' }) }], isError: true };
             }
@@ -340,6 +359,16 @@ export function registerEditingTools(server, bridge, toolset = 'standard') {
                     style.left_margin = left_margin;
                 if (right_margin !== undefined)
                     style.right_margin = right_margin;
+                if (page_break_before !== undefined)
+                    style.page_break_before = page_break_before;
+                if (keep_with_next !== undefined)
+                    style.keep_with_next = keep_with_next;
+                if (widow_orphan !== undefined)
+                    style.widow_orphan = widow_orphan;
+                if (line_wrap !== undefined)
+                    style.line_wrap = line_wrap;
+                if (snap_to_grid !== undefined)
+                    style.snap_to_grid = snap_to_grid;
                 const response = await bridge.send('set_paragraph_style', { style });
                 if (!response.success) {
                     return { content: [{ type: 'text', text: JSON.stringify({ error: response.error }) }], isError: true };
