@@ -621,6 +621,24 @@ def dispatch(hwp, method, params):
                 "path": save_path, "format": fmt,
                 "success": bool(result), "file_exists": file_exists, "file_size": file_size}
 
+    if method == "verify_layout":
+        # PDF로 내보내고 경로 반환 → Claude Code의 Read로 시각적 검증
+        import tempfile
+        tmp_pdf = os.path.join(tempfile.gettempdir(), "hwp_verify_layout.pdf")
+        try:
+            hwp.save_as(tmp_pdf, "PDF")
+            file_exists = os.path.exists(tmp_pdf)
+            file_size = os.path.getsize(tmp_pdf) if file_exists else 0
+            return {
+                "status": "ok" if file_exists else "error",
+                "pdf_path": tmp_pdf,
+                "pages": hwp.PageCount,
+                "file_size": file_size,
+                "hint": "Read 도구로 이 PDF 파일을 열면 문서 레이아웃을 시각적으로 확인할 수 있습니다."
+            }
+        except Exception as e:
+            return {"status": "error", "error": f"PDF 생성 실패: {e}"}
+
     if method == "insert_hyperlink":
         validate_params(params, ["url"], method)
         url = params["url"]

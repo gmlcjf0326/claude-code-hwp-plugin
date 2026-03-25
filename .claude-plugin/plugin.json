@@ -1,6 +1,6 @@
 {
   "name": "claude-code-hwp-plugin",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "한글(HWP/HWPX) 문서 자동화 플러그인. 85개+ MCP 도구 + 8개 워크플로우 커맨드 + HWPX 규칙 hooks. 양식 채우기, 문서 작성, 분석, 변환, 개인정보 스캔까지.",
   "author": {
     "name": "김희철",

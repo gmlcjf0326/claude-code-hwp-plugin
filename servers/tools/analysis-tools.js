@@ -428,5 +428,20 @@ export function registerAnalysisTools(server, bridge, toolset = 'standard') {
                 return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
             }
         });
+        // ── 시각적 레이아웃 검증 ──
+        server.tool('hwp_verify_layout', '현재 문서를 PDF로 내보내고 파일 경로를 반환합니다. Claude가 Read 도구로 PDF를 읽어 표 구조, 셀 병합, 열 너비, 정렬 등 레이아웃을 시각적으로 검증할 수 있습니다. 공문서 생성 후 결과물 확인에 사용하세요.', {}, async () => {
+            if (!bridge.getCurrentDocument())
+                return { content: [{ type: 'text', text: JSON.stringify({ error: '열린 문서가 없습니다.' }) }], isError: true };
+            try {
+                await bridge.ensureRunning();
+                const r = await bridge.send('verify_layout', {}, 60000);
+                if (!r.success)
+                    return { content: [{ type: 'text', text: JSON.stringify({ error: r.error }) }], isError: true };
+                return { content: [{ type: 'text', text: JSON.stringify(r.data) }] };
+            }
+            catch (err) {
+                return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+            }
+        });
     } // end toolset !== 'minimal'
 }

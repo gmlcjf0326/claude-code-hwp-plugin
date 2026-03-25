@@ -20,7 +20,7 @@ const resolvedToolset = validToolsets.includes(toolset)
 const bridge = new HwpBridge();
 const server = new McpServer({
     name: 'hwp-studio',
-    version: '0.4.0',
+    version: '0.4.1',
 });
 setupServer(server, bridge, resolvedToolset);
 const transport = new StdioServerTransport();

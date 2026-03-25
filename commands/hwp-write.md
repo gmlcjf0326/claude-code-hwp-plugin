@@ -33,6 +33,10 @@ allowed-tools:
   - "mcp__plugin_hwp-studio_hwp-studio__hwp_save_document"
   - "mcp__hwp-studio__hwp_read_reference"
   - "mcp__plugin_hwp-studio_hwp-studio__hwp_read_reference"
+  - "mcp__hwp-studio__hwp_verify_layout"
+  - "mcp__plugin_hwp-studio_hwp-studio__hwp_verify_layout"
+  - "mcp__hwp-studio__hwp_table_merge_cells"
+  - "mcp__plugin_hwp-studio_hwp-studio__hwp_table_merge_cells"
 ---
 
 # HWP 문서 작성
@@ -49,10 +53,13 @@ allowed-tools:
 2. hwp_delete_guide_text → 작성요령/가이드 텍스트 삭제
 3. hwp_insert_heading → 제목 (서식 프로파일의 글꼴/크기 적용)
 4. hwp_insert_text / hwp_insert_markdown → 본문 내용
-5. hwp_table_create_from_data → 필요 시 표 생성
-6. hwp_create_gantt_chart → 추진일정표 (사업계획서)
-7. hwp_generate_toc → 목차 (필요 시)
-8. hwp_save_document → 저장
+5. hwp_table_create_from_data → 필요 시 표 생성 (col_widths/row_heights 지정)
+6. hwp_table_merge_cells → 셀 병합 (start/end_row/col, 하단→상단 순서)
+7. hwp_create_gantt_chart → 추진일정표 (사업계획서)
+8. hwp_generate_toc → 목차 (필요 시)
+9. **hwp_verify_layout → PDF로 내보내서 레이아웃 시각적 확인**
+10. 문제 발견 시 → 조정 후 다시 verify_layout → 반복
+11. hwp_save_document → 저장
 
 ## 공문서(기안문/시행문) 작성 시
 

@@ -33,6 +33,8 @@ allowed-tools:
   - "mcp__plugin_hwp-studio_hwp-studio__hwp_save_document"
   - "mcp__plugin_hwp-studio_hwp-studio__hwp_extract_style_profile"
   - "mcp__plugin_hwp-studio_hwp-studio__hwp_map_table_cells"
+  - "mcp__hwp-studio__hwp_verify_layout"
+  - "mcp__plugin_hwp-studio_hwp-studio__hwp_verify_layout"
 ---
 
 # HWP 양식 자동 채우기
