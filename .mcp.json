@@ -1,7 +1,7 @@
 {
   "hwp-studio": {
     "command": "node",
-    "args": ["${CLAUDE_PLUGIN_ROOT}/servers/index.js"],
+    "args": ["${CLAUDE_PLUGIN_ROOT}/servers/bundle.mjs"],
     "env": {
       "PYTHONUNBUFFERED": "1"
     }

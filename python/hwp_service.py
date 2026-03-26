@@ -1659,9 +1659,17 @@ def main():
                 if hwp is None:
                     from pyhwpx import Hwp
                     hwp = Hwp()
-                    # 메시지박스(얼럿/다이얼로그) 자동 확인 — COM 무한 대기 방지
+                    # 모든 대화상자 자동 수락 — COM 무한 대기 방지
                     try:
                         hwp.XHwpMessageBoxMode = 1  # 0=표시, 1=자동OK
+                    except Exception:
+                        pass
+                    try:
+                        hwp.SetMessageBoxMode(0x10000)  # 모든 대화상자 자동 OK
+                    except Exception:
+                        pass
+                    try:
+                        hwp.RegisterModule('FilePathCheckDLL', 'FilePathCheckerModule')
                     except Exception:
                         pass
 
