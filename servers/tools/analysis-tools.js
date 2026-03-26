@@ -151,6 +151,9 @@ export function registerAnalysisTools(server, bridge, toolset = 'standard') {
             // HWPX → XML 직접 검색 시도. EBUSY 시 COM 폴백.
             if (bridge.getCurrentDocumentFormat() === 'HWPX') {
                 try {
+                    // COM 메모리 변경사항을 파일에 반영 (XML 엔진이 최신 내용을 읽도록)
+                    await bridge.ensureRunning();
+                    await bridge.send('save_document', {});
                     const doc = await readHwpxXml(filePath, 'Contents/section0.xml');
                     const result = searchTextInSection(doc, search);
                     const limited = max_results ? result.results.slice(0, max_results) : result.results.slice(0, 50);

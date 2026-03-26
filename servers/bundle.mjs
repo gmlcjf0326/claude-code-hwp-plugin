@@ -36227,6 +36227,8 @@ function registerAnalysisTools(server2, bridge2, toolset2 = "standard") {
     try {
       if (bridge2.getCurrentDocumentFormat() === "HWPX") {
         try {
+          await bridge2.ensureRunning();
+          await bridge2.send("save_document", {});
           const doc = await readHwpxXml(filePath, "Contents/section0.xml");
           const result = searchTextInSection(doc, search);
           const limited = max_results ? result.results.slice(0, max_results) : result.results.slice(0, 50);
@@ -36777,6 +36779,8 @@ function registerEditingTools(server2, bridge2, toolset2 = "standard") {
     try {
       if (bridge2.getCurrentDocumentFormat() === "HWPX" && !use_regex) {
         try {
+          await bridge2.ensureRunning();
+          await bridge2.send("save_document", {});
           const doc = await readHwpxXml(filePath, "Contents/section0.xml");
           const count = replaceTextInSection(doc, find, replace);
           await writeHwpxXml(filePath, filePath, "Contents/section0.xml", doc);
@@ -36824,6 +36828,8 @@ function registerEditingTools(server2, bridge2, toolset2 = "standard") {
       try {
         if (bridge2.getCurrentDocumentFormat() === "HWPX" && !use_regex) {
           try {
+            await bridge2.ensureRunning();
+            await bridge2.send("save_document", {});
             const doc = await readHwpxXml(filePath, "Contents/section0.xml");
             const results = [];
             let totalCount = 0;
@@ -36875,6 +36881,8 @@ function registerEditingTools(server2, bridge2, toolset2 = "standard") {
       try {
         if (bridge2.getCurrentDocumentFormat() === "HWPX" && !color) {
           try {
+            await bridge2.ensureRunning();
+            await bridge2.send("save_document", {});
             const doc = await readHwpxXml(filePath, "Contents/section0.xml");
             const found = findAndAppendInSection(doc, find, append_text);
             if (!found) {
@@ -37050,6 +37058,8 @@ function registerEditingTools(server2, bridge2, toolset2 = "standard") {
       try {
         if (bridge2.getCurrentDocumentFormat() === "HWPX") {
           try {
+            await bridge2.ensureRunning();
+            await bridge2.send("save_document", {});
             const doc = await readHwpxXml(filePath, "Contents/section0.xml");
             const replaced = replaceTextNthInSection(doc, find, replace, nth);
             if (replaced) {

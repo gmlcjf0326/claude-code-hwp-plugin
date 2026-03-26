@@ -135,6 +135,9 @@ export function registerEditingTools(server, bridge, toolset = 'standard') {
             // HWPX → XML 직접 치환 시도 (COM 우회). EBUSY 시 COM 폴백.
             if (bridge.getCurrentDocumentFormat() === 'HWPX' && !use_regex) {
                 try {
+                    // COM 메모리 변경사항을 파일에 반영 (XML 엔진이 최신 내용을 읽도록)
+                    await bridge.ensureRunning();
+                    await bridge.send('save_document', {});
                     const doc = await readHwpxXml(filePath, 'Contents/section0.xml');
                     const count = replaceTextInSection(doc, find, replace);
                     await writeHwpxXml(filePath, filePath, 'Contents/section0.xml', doc);
@@ -183,6 +186,9 @@ export function registerEditingTools(server, bridge, toolset = 'standard') {
                 // HWPX → XML 직접 다건 치환 시도. EBUSY 시 COM 폴백.
                 if (bridge.getCurrentDocumentFormat() === 'HWPX' && !use_regex) {
                     try {
+                        // COM 메모리 변경사항을 파일에 반영
+                        await bridge.ensureRunning();
+                        await bridge.send('save_document', {});
                         const doc = await readHwpxXml(filePath, 'Contents/section0.xml');
                         const results = [];
                         let totalCount = 0;
@@ -235,6 +241,8 @@ export function registerEditingTools(server, bridge, toolset = 'standard') {
                 // HWPX → XML 직접 조작 시도. EBUSY 시 COM 폴백.
                 if (bridge.getCurrentDocumentFormat() === 'HWPX' && !color) {
                     try {
+                        await bridge.ensureRunning();
+                        await bridge.send('save_document', {});
                         const doc = await readHwpxXml(filePath, 'Contents/section0.xml');
                         const found = findAndAppendInSection(doc, find, append_text);
                         if (!found) {
@@ -418,6 +426,8 @@ export function registerEditingTools(server, bridge, toolset = 'standard') {
                 // HWPX → XML 직접 N번째 치환 시도. EBUSY 시 COM 폴백.
                 if (bridge.getCurrentDocumentFormat() === 'HWPX') {
                     try {
+                        await bridge.ensureRunning();
+                        await bridge.send('save_document', {});
                         const doc = await readHwpxXml(filePath, 'Contents/section0.xml');
                         const replaced = replaceTextNthInSection(doc, find, replace, nth);
                         if (replaced) {

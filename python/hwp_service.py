@@ -201,6 +201,12 @@ def dispatch(hwp, method, params):
         validate_params(params, ["path"], method)
         save_path = validate_file_path(params["path"], must_exist=False)
         fmt = params.get("format", "HWP").upper()  # pyhwpx는 대문자 포맷 필요 (HWP, HWPX, PDF 등)
+        # 내보내기 전 현재 문서 저장 (COM 메모리 → 파일 반영, 빈 PDF 방지)
+        if _current_doc_path and fmt in ("PDF", "DOCX", "HTML"):
+            try:
+                hwp.save()
+            except Exception:
+                pass
         hwp.save_as(save_path, fmt)
         # 파일 실제 생성 확인
         if not os.path.exists(save_path):
@@ -654,6 +660,21 @@ def dispatch(hwp, method, params):
         validate_params(params, ["path", "format"], method)
         save_path = validate_file_path(params["path"], must_exist=False)
         fmt = params["format"].upper()  # HWP, HWPX, PDF, HTML, TXT 등
+        # DOCX/HTML은 HWP COM에서 미지원 — 타임아웃 방지
+        if fmt in ("DOCX", "DOC"):
+            return {"status": "not_supported",
+                    "message": "DOCX 직접 내보내기는 한/글 COM에서 지원되지 않습니다. PDF로 내보내기를 권장합니다.",
+                    "alternative": "hwp_export_pdf"}
+        if fmt == "HTML":
+            return {"status": "not_supported",
+                    "message": "HTML 직접 내보내기는 한/글 COM에서 지원되지 않습니다. hwp_get_as_markdown으로 마크다운 변환 후 HTML로 변환하세요.",
+                    "alternative": "hwp_get_as_markdown"}
+        # PDF/내보내기 전 현재 문서 저장 (COM 메모리 → 파일 반영, 빈 PDF 방지)
+        if _current_doc_path:
+            try:
+                hwp.save()
+            except Exception:
+                pass
         result = hwp.save_as(save_path, fmt)
         # 파일 실제 생성 확인
         file_exists = os.path.exists(save_path)
@@ -665,6 +686,12 @@ def dispatch(hwp, method, params):
     if method == "verify_layout":
         # PDF로 내보내고 PNG 이미지로 변환 → Claude Code의 Read로 시각적 검증
         import tempfile
+        # 먼저 현재 문서 저장 (COM 메모리 → 파일 반영, 빈 PDF 방지)
+        if _current_doc_path:
+            try:
+                hwp.save()
+            except Exception:
+                pass
         tmp_pdf = os.path.join(tempfile.gettempdir(), "hwp_verify_layout.pdf")
         try:
             hwp.save_as(tmp_pdf, "PDF")
