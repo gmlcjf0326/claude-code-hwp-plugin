@@ -34,8 +34,9 @@ export default function preToolUse({ tool, input }) {
   }
 
   // 4. raw win32com 사용 차단 (CLAUDE.md 규칙 1)
-  if (tool === 'Write' && typeof input?.content === 'string') {
-    if (input.content.includes('import win32com') && !input.content.includes('from pyhwpx')) {
+  const writeContent = (tool === 'Write' && input?.content) || (tool === 'Edit' && input?.new_string) || '';
+  if (writeContent && typeof writeContent === 'string') {
+    if (writeContent.includes('import win32com') && !writeContent.includes('from pyhwpx')) {
       return {
         decision: 'block',
         message: '[HWP 규칙 위반] raw win32com 직접 사용 금지.\n→ from pyhwpx import Hwp를 사용하세요.\n→ CLAUDE.md 규칙 1번 참조'

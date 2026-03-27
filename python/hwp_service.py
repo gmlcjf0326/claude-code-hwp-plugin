@@ -197,6 +197,17 @@ def dispatch(hwp, method, params):
             context["current_page"] = None
         return context
 
+    if method == "save_document":
+        # COM 메모리 → 파일 저장 (XML 엔진 동기화용)
+        if _current_doc_path:
+            try:
+                hwp.save()
+                return {"status": "ok", "saved": True, "path": _current_doc_path}
+            except Exception as e:
+                print(f"[WARN] save_document failed: {e}", file=sys.stderr)
+                return {"status": "ok", "saved": False, "error": str(e)}
+        return {"status": "ok", "saved": False, "reason": "no document open"}
+
     if method == "save_as":
         validate_params(params, ["path"], method)
         save_path = validate_file_path(params["path"], must_exist=False)

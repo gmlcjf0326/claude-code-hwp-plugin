@@ -664,6 +664,7 @@ def fill_table_cells_by_tab(hwp, table_idx, cells):
     finally:
         try:
             hwp.Cancel()
+            hwp.HAction.Run("MoveDocEnd")  # 표 밖으로 안전하게 복귀
         except Exception as e:
             print(f"[WARN] {e}", file=sys.stderr)
 
