@@ -120,11 +120,12 @@ export function registerEditingTools(server, bridge, toolset = 'standard') {
             return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
         }
     });
-    server.tool('hwp_find_replace', '문서 전체에서 텍스트를 찾아 바꿉니다. use_regex=true로 정규식 패턴도 사용 가능합니다.', {
+    server.tool('hwp_find_replace', '문서 전체에서 텍스트를 찾아 바꿉니다. use_regex=true로 정규식 패턴도 사용 가능합니다. case_sensitive=false로 대소문자 무시 검색 가능.', {
         find: z.string().describe('찾을 텍스트 (use_regex=true 시 정규식 패턴)'),
         replace: z.string().describe('바꿀 텍스트'),
         use_regex: z.boolean().optional().describe('정규식 사용 여부 (기본: false)'),
-    }, async ({ find, replace, use_regex }) => {
+        case_sensitive: z.boolean().optional().describe('대소문자 구분 (기본: true). false면 대소문자 무시'),
+    }, async ({ find, replace, use_regex, case_sensitive }) => {
         const filePath = bridge.getCurrentDocument();
         if (!filePath) {
             return { content: [{ type: 'text', text: JSON.stringify({
@@ -156,6 +157,8 @@ export function registerEditingTools(server, bridge, toolset = 'standard') {
             const params = { find, replace };
             if (use_regex)
                 params.use_regex = true;
+            if (case_sensitive === false)
+                params.case_sensitive = false;
             const response = await bridge.send('find_replace', params, FILL_TIMEOUT);
             if (!response.success) {
                 return { content: [{ type: 'text', text: JSON.stringify({ error: response.error }) }], isError: true };
@@ -186,9 +189,10 @@ export function registerEditingTools(server, bridge, toolset = 'standard') {
                 // HWPX → XML 직접 다건 치환 시도. EBUSY 시 COM 폴백.
                 if (bridge.getCurrentDocumentFormat() === 'HWPX' && !use_regex) {
                     try {
-                        // COM 메모리 변경사항을 파일에 반영
+                        // COM 메모리 변경사항을 파일에 반영 + 파일 시스템 동기 대기
                         await bridge.ensureRunning();
                         await bridge.send('save_document', {});
+                        await new Promise(r => setTimeout(r, 200)); // 파일 I/O 완료 대기
                         const doc = await readHwpxXml(filePath, 'Contents/section0.xml');
                         const results = [];
                         let totalCount = 0;
@@ -258,6 +262,8 @@ export function registerEditingTools(server, bridge, toolset = 'standard') {
                 }
                 // COM 경로 (HWP 또는 HWPX XML 실패 시 폴백)
                 await bridge.ensureRunning();
+                // COM도 최신 파일 상태에서 검색하도록 save 선행
+                await bridge.send('save_document', {});
                 const params = { find, append_text };
                 if (color)
                     params.color = color;

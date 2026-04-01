@@ -19,6 +19,11 @@ async function ensureAnalysis(bridge, filePath) {
         if (!HWP_EXTENSIONS.has(ext)) {
             throw new Error('HWP 또는 HWPX 파일만 지원합니다.');
         }
+        // COM 메모리 변경사항을 파일에 반영 (미저장 표/텍스트 감지용)
+        try {
+            await bridge.send('save_document', {});
+        }
+        catch { }
         const response = await bridge.send('analyze_document', { file_path: resolved }, ANALYSIS_TIMEOUT);
         if (!response.success)
             throw new Error(response.error ?? '분석 실패');
@@ -543,15 +548,25 @@ export function registerAnalysisTools(server, bridge, toolset = 'standard') {
             }
         });
         // ── 머리글/바닥글 ──
-        server.tool('hwp_set_header_footer', '머리글 또는 바닥글을 설정합니다. 기관명, 페이지번호 등을 삽입할 때 사용하세요.', {
+        server.tool('hwp_set_header_footer', '머리글 또는 바닥글을 설정합니다. 기관명, 페이지번호 등을 삽입할 때 사용하세요. style로 서식(굵게/정렬/크기)을 지정할 수 있습니다.', {
             type: z.enum(['header', 'footer']).describe('머리글 또는 바닥글'),
             text: z.string().optional().describe('삽입할 텍스트'),
-        }, async ({ type, text }) => {
+            style: z.object({
+                font_size: z.number().optional().describe('글자 크기 (pt)'),
+                bold: z.boolean().optional().describe('굵게'),
+                align: z.enum(['left', 'center', 'right']).optional().describe('정렬'),
+                font_name: z.string().optional().describe('글꼴'),
+                color: z.array(z.number()).optional().describe('색상 [R,G,B]'),
+            }).optional().describe('텍스트 서식'),
+        }, async ({ type, text, style }) => {
             if (!bridge.getCurrentDocument())
                 return { content: [{ type: 'text', text: JSON.stringify({ error: '열린 문서가 없습니다.' }) }], isError: true };
             try {
                 await bridge.ensureRunning();
-                const r = await bridge.send('set_header_footer', { type, text });
+                const params = { type, text };
+                if (style)
+                    params.style = style;
+                const r = await bridge.send('set_header_footer', params);
                 if (!r.success)
                     return { content: [{ type: 'text', text: JSON.stringify({ error: r.error }) }], isError: true };
                 return { content: [{ type: 'text', text: JSON.stringify(r.data) }] };

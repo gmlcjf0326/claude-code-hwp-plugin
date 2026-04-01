@@ -24,7 +24,7 @@ def validate_file_path(file_path, must_exist=True):
     return real
 
 
-def _execute_all_replace(hwp, find_str, replace_str, use_regex=False):
+def _execute_all_replace(hwp, find_str, replace_str, use_regex=False, case_sensitive=True):
     """AllReplace 공통 함수. 전후 텍스트 비교로 검증. H4: 타임아웃 시 낙관적 가정."""
     # 치환 전 텍스트 캡처
     before = None
@@ -42,6 +42,11 @@ def _execute_all_replace(hwp, find_str, replace_str, use_regex=False):
     pset.Direction = 0
     pset.FindRegExp = 1 if use_regex else 0
     pset.FindJaso = 0
+    # 대소문자 구분 옵션
+    try:
+        pset.MatchCase = 1 if case_sensitive else 0
+    except Exception:
+        pass  # 일부 한글 버전에서 미지원
     pset.AllWordForms = 0
     pset.SeveralWords = 0
     act.Execute("AllReplace", pset.HSet)
@@ -64,13 +69,17 @@ def _execute_all_replace(hwp, find_str, replace_str, use_regex=False):
     return before != after
 
 
-def respond(req_id, success, data=None, error=None):
+def respond(req_id, success, data=None, error=None, error_type=None, guide=None):
     """Send JSON response to stdout."""
     response = {"id": req_id, "success": success}
     if data is not None:
         response["data"] = data
     if error is not None:
         response["error"] = error
+    if error_type:
+        response["error_type"] = error_type
+    if guide:
+        response["guide"] = guide
     sys.stdout.write(json.dumps(response, ensure_ascii=False) + "\n")
     sys.stdout.flush()
 
@@ -279,7 +288,8 @@ def dispatch(hwp, method, params):
     if method == "find_replace":
         validate_params(params, ["find", "replace"], method)
         use_regex = params.get("use_regex", False)
-        replaced = _execute_all_replace(hwp, params["find"], params["replace"], use_regex)
+        case_sensitive = params.get("case_sensitive", True)
+        replaced = _execute_all_replace(hwp, params["find"], params["replace"], use_regex, case_sensitive)
         return {"status": "ok", "find": params["find"], "replace": params["replace"], "replaced": replaced}
 
     if method == "find_replace_multi":
@@ -547,6 +557,16 @@ def dispatch(hwp, method, params):
         row_heights = params.get("row_heights")  # [mm, mm, ...]
         alignment = params.get("alignment")  # left/center/right
 
+        # col_widths 합계 검증 (A4 가용 너비 ≈ 170mm)
+        col_width_warning = None
+        if col_widths:
+            total_width = sum(col_widths)
+            if total_width > 170:
+                # 자동 비율 축소
+                ratio = 170.0 / total_width
+                col_widths = [round(w * ratio, 1) for w in col_widths]
+                col_width_warning = f"col_widths 합계({total_width}mm)가 A4 가용 너비(170mm)를 초과하여 자동 축소되었습니다."
+
         # H1: col_widths/row_heights가 있으면 HTableCreation으로 정밀 생성
         if col_widths or row_heights:
             try:
@@ -603,7 +623,10 @@ def dispatch(hwp, method, params):
             print(f"[WARN] Table exit: {e}", file=sys.stderr)
         # header_style: Bold는 이미 표 생성 시 적용됨
         # 배경색은 set_cell_color로 별도 적용 (표 진입/탈출 부작용 방지)
-        return {"status": "ok", "rows": rows, "cols": cols, "filled": filled, "header_styled": bool(header_style)}
+        result = {"status": "ok", "rows": rows, "cols": cols, "filled": filled, "header_styled": bool(header_style)}
+        if col_width_warning:
+            result["warning"] = col_width_warning
+        return result
 
     if method == "table_insert_from_csv":
         validate_params(params, ["file_path"], method)
@@ -730,6 +753,11 @@ def dispatch(hwp, method, params):
                     image_paths.append(png_path)
 
                 doc.close()
+                # 임시 PDF 정리 (PNG만 유지)
+                try:
+                    os.remove(tmp_pdf)
+                except Exception:
+                    pass
                 return {
                     "status": "ok",
                     "image_paths": image_paths,
@@ -881,6 +909,7 @@ def dispatch(hwp, method, params):
         # 머리글/바닥글 설정 (CreateAction 방식)
         hf_type = params.get("type", "header")  # "header" or "footer"
         text = params.get("text", "")
+        style = params.get("style")  # {font_size, bold, align}
         try:
             act = hwp.CreateAction("HeaderFooter")
             ps = act.CreateSet()
@@ -892,7 +921,15 @@ def dispatch(hwp, method, params):
                 raise RuntimeError("HeaderFooter Execute 실패")
             # 머리글/바닥글 편집 모드 진입됨 — 텍스트 삽입
             if text:
-                hwp.insert_text(text)
+                if style:
+                    from hwp_editor import insert_text_with_style
+                    insert_text_with_style(hwp, text, style)
+                else:
+                    hwp.insert_text(text)
+            # 정렬 적용 (머리글/바닥글 영역 내)
+            if style and "align" in style:
+                from hwp_editor import set_paragraph_style
+                set_paragraph_style(hwp, {"align": style["align"]})
             # 본문으로 복귀
             hwp.HAction.Run("CloseEx")
             return {"status": "ok", "type": hf_type, "text": text}
@@ -1716,11 +1753,27 @@ def main():
 
             except Exception as e:
                 err_str = str(e)
-                # RPC/COM 연결 끊김 시 다음 요청에서 자동 재초기화
+                # 에러 유형 분류 (구조화된 에러 응답)
+                error_type = "unknown"
+                guide = ""
                 if 'RPC' in err_str or '사용할 수 없' in err_str or 'disconnected' in err_str.lower():
+                    error_type = "com_disconnected"
+                    guide = "한글 프로그램을 종료하고 다시 실행하세요."
                     print("[WARN] COM connection lost — will reinitialize on next request", file=sys.stderr)
                     hwp = None
-                respond(req_id, False, error=err_str)
+                elif '파일을 찾을 수 없' in err_str or 'FileNotFoundError' in err_str:
+                    error_type = "file_not_found"
+                    guide = "파일 경로를 확인하세요. hwp_list_files로 파일 목록을 검색할 수 있습니다."
+                elif 'EBUSY' in err_str or '잠' in err_str or 'lock' in err_str.lower():
+                    error_type = "file_locked"
+                    guide = "파일이 다른 프로그램에서 열려있습니다. 닫고 다시 시도하세요."
+                elif '열린 문서가 없' in err_str:
+                    error_type = "no_document"
+                    guide = "hwp_open_document로 먼저 문서를 열어주세요."
+                elif '암호' in err_str or 'encrypt' in err_str.lower():
+                    error_type = "encrypted"
+                    guide = "암호화된 문서입니다. 비밀번호를 입력하세요."
+                respond(req_id, False, error=err_str, error_type=error_type, guide=guide)
                 print(f"[ERROR] {e}", file=sys.stderr)
                 sys.stderr.flush()
 

@@ -36103,6 +36103,10 @@ async function ensureAnalysis(bridge2, filePath) {
     if (!HWP_EXTENSIONS2.has(ext)) {
       throw new Error("HWP \uB610\uB294 HWPX \uD30C\uC77C\uB9CC \uC9C0\uC6D0\uD569\uB2C8\uB2E4.");
     }
+    try {
+      await bridge2.send("save_document", {});
+    } catch {
+    }
     const response2 = await bridge2.send("analyze_document", { file_path: resolved }, ANALYSIS_TIMEOUT);
     if (!response2.success)
       throw new Error(response2.error ?? "\uBD84\uC11D \uC2E4\uD328");
@@ -36590,15 +36594,25 @@ function registerAnalysisTools(server2, bridge2, toolset2 = "standard") {
         return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }], isError: true };
       }
     });
-    server2.tool("hwp_set_header_footer", "\uBA38\uB9AC\uAE00 \uB610\uB294 \uBC14\uB2E5\uAE00\uC744 \uC124\uC815\uD569\uB2C8\uB2E4. \uAE30\uAD00\uBA85, \uD398\uC774\uC9C0\uBC88\uD638 \uB4F1\uC744 \uC0BD\uC785\uD560 \uB54C \uC0AC\uC6A9\uD558\uC138\uC694.", {
+    server2.tool("hwp_set_header_footer", "\uBA38\uB9AC\uAE00 \uB610\uB294 \uBC14\uB2E5\uAE00\uC744 \uC124\uC815\uD569\uB2C8\uB2E4. \uAE30\uAD00\uBA85, \uD398\uC774\uC9C0\uBC88\uD638 \uB4F1\uC744 \uC0BD\uC785\uD560 \uB54C \uC0AC\uC6A9\uD558\uC138\uC694. style\uB85C \uC11C\uC2DD(\uAD75\uAC8C/\uC815\uB82C/\uD06C\uAE30)\uC744 \uC9C0\uC815\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4.", {
       type: external_exports.enum(["header", "footer"]).describe("\uBA38\uB9AC\uAE00 \uB610\uB294 \uBC14\uB2E5\uAE00"),
-      text: external_exports.string().optional().describe("\uC0BD\uC785\uD560 \uD14D\uC2A4\uD2B8")
-    }, async ({ type, text }) => {
+      text: external_exports.string().optional().describe("\uC0BD\uC785\uD560 \uD14D\uC2A4\uD2B8"),
+      style: external_exports.object({
+        font_size: external_exports.number().optional().describe("\uAE00\uC790 \uD06C\uAE30 (pt)"),
+        bold: external_exports.boolean().optional().describe("\uAD75\uAC8C"),
+        align: external_exports.enum(["left", "center", "right"]).optional().describe("\uC815\uB82C"),
+        font_name: external_exports.string().optional().describe("\uAE00\uAF34"),
+        color: external_exports.array(external_exports.number()).optional().describe("\uC0C9\uC0C1 [R,G,B]")
+      }).optional().describe("\uD14D\uC2A4\uD2B8 \uC11C\uC2DD")
+    }, async ({ type, text, style }) => {
       if (!bridge2.getCurrentDocument())
         return { content: [{ type: "text", text: JSON.stringify({ error: "\uC5F4\uB9B0 \uBB38\uC11C\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4." }) }], isError: true };
       try {
         await bridge2.ensureRunning();
-        const r = await bridge2.send("set_header_footer", { type, text });
+        const params = { type, text };
+        if (style)
+          params.style = style;
+        const r = await bridge2.send("set_header_footer", params);
         if (!r.success)
           return { content: [{ type: "text", text: JSON.stringify({ error: r.error }) }], isError: true };
         return { content: [{ type: "text", text: JSON.stringify(r.data) }] };
@@ -36765,11 +36779,12 @@ function registerEditingTools(server2, bridge2, toolset2 = "standard") {
       return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }], isError: true };
     }
   });
-  server2.tool("hwp_find_replace", "\uBB38\uC11C \uC804\uCCB4\uC5D0\uC11C \uD14D\uC2A4\uD2B8\uB97C \uCC3E\uC544 \uBC14\uAFC9\uB2C8\uB2E4. use_regex=true\uB85C \uC815\uADDC\uC2DD \uD328\uD134\uB3C4 \uC0AC\uC6A9 \uAC00\uB2A5\uD569\uB2C8\uB2E4.", {
+  server2.tool("hwp_find_replace", "\uBB38\uC11C \uC804\uCCB4\uC5D0\uC11C \uD14D\uC2A4\uD2B8\uB97C \uCC3E\uC544 \uBC14\uAFC9\uB2C8\uB2E4. use_regex=true\uB85C \uC815\uADDC\uC2DD \uD328\uD134\uB3C4 \uC0AC\uC6A9 \uAC00\uB2A5\uD569\uB2C8\uB2E4. case_sensitive=false\uB85C \uB300\uC18C\uBB38\uC790 \uBB34\uC2DC \uAC80\uC0C9 \uAC00\uB2A5.", {
     find: external_exports.string().describe("\uCC3E\uC744 \uD14D\uC2A4\uD2B8 (use_regex=true \uC2DC \uC815\uADDC\uC2DD \uD328\uD134)"),
     replace: external_exports.string().describe("\uBC14\uAFC0 \uD14D\uC2A4\uD2B8"),
-    use_regex: external_exports.boolean().optional().describe("\uC815\uADDC\uC2DD \uC0AC\uC6A9 \uC5EC\uBD80 (\uAE30\uBCF8: false)")
-  }, async ({ find, replace, use_regex }) => {
+    use_regex: external_exports.boolean().optional().describe("\uC815\uADDC\uC2DD \uC0AC\uC6A9 \uC5EC\uBD80 (\uAE30\uBCF8: false)"),
+    case_sensitive: external_exports.boolean().optional().describe("\uB300\uC18C\uBB38\uC790 \uAD6C\uBD84 (\uAE30\uBCF8: true). false\uBA74 \uB300\uC18C\uBB38\uC790 \uBB34\uC2DC")
+  }, async ({ find, replace, use_regex, case_sensitive }) => {
     const filePath = bridge2.getCurrentDocument();
     if (!filePath) {
       return { content: [{ type: "text", text: JSON.stringify({
@@ -36801,6 +36816,8 @@ function registerEditingTools(server2, bridge2, toolset2 = "standard") {
       const params = { find, replace };
       if (use_regex)
         params.use_regex = true;
+      if (case_sensitive === false)
+        params.case_sensitive = false;
       const response = await bridge2.send("find_replace", params, FILL_TIMEOUT);
       if (!response.success) {
         return { content: [{ type: "text", text: JSON.stringify({ error: response.error }) }], isError: true };
@@ -36830,6 +36847,7 @@ function registerEditingTools(server2, bridge2, toolset2 = "standard") {
           try {
             await bridge2.ensureRunning();
             await bridge2.send("save_document", {});
+            await new Promise((r) => setTimeout(r, 200));
             const doc = await readHwpxXml(filePath, "Contents/section0.xml");
             const results = [];
             let totalCount = 0;
@@ -36896,6 +36914,7 @@ function registerEditingTools(server2, bridge2, toolset2 = "standard") {
           }
         }
         await bridge2.ensureRunning();
+        await bridge2.send("save_document", {});
         const params = { find, append_text };
         if (color)
           params.color = color;
