@@ -852,36 +852,34 @@ def dispatch(hwp, method, params):
         text = params.get("text", "")
         border = params.get("border", True)
         try:
+            # 방법 1: HParameterSet.HShapeObject로 위치/크기 지정
             act = hwp.HAction
-            # CreateAction으로 글상자 생성
-            act_tb = hwp.CreateAction("DrawTextBox")
-            ps = act_tb.CreateSet()
-            act_tb.GetDefault(ps)
-            # ShapeObject로 위치/크기 설정
-            so = ps.Item("ShapeObject")
-            so.HorzRelTo = 0  # 페이지 기준
-            so.VertRelTo = 0  # 페이지 기준
-            so.HorzOffset = hwp.MiliToHwpUnit(x)
-            so.VertOffset = hwp.MiliToHwpUnit(y)
-            so.Width = hwp.MiliToHwpUnit(width)
-            so.Height = hwp.MiliToHwpUnit(height)
-            act_tb.Execute(ps)
-            # 텍스트 삽입
+            pset = hwp.HParameterSet.HShapeObject
+            act.GetDefault("InsertDrawObj", pset.HSet)
+            pset.ShapeType = 1  # 1=사각형(글상자)
+            pset.HorzRelTo = 0  # 0=페이지 기준
+            pset.VertRelTo = 0
+            pset.HorzOffset = int(x * 283.465)  # mm → HWPUNIT (1mm=283.465)
+            pset.VertOffset = int(y * 283.465)
+            pset.Width = int(width * 283.465)
+            pset.Height = int(height * 283.465)
+            act.Execute("InsertDrawObj", pset.HSet)
             if text:
                 hwp.insert_text(text)
-            # 글상자 밖으로 나가기
             hwp.HAction.Run("Cancel")
             return {"status": "ok", "x": x, "y": y, "width": width, "height": height}
         except Exception as e:
-            # 대안: 간단한 글상자 생성 (위치/크기 무시)
+            # 방법 2: CreateAction 방식
             try:
-                print(f"[WARN] 글상자 위치/크기 파라미터 무시됨 (fallback): {e}", file=sys.stderr)
-                hwp.HAction.Run("DrawTextBox")
+                act_tb = hwp.CreateAction("DrawTextBox")
+                ps = act_tb.CreateSet()
+                act_tb.GetDefault(ps)
+                act_tb.Execute(ps)
                 if text:
                     hwp.insert_text(text)
                 hwp.HAction.Run("Cancel")
                 return {"status": "ok", "method": "fallback", "text": text,
-                        "warning": "위치/크기 파라미터가 적용되지 않았습니다 (fallback 방식)"}
+                        "warning": f"위치/크기 파라미터가 적용되지 않았습니다: {e}"}
             except Exception as e2:
                 raise RuntimeError(f"글상자 생성 실패: {e} / {e2}")
 
@@ -922,16 +920,13 @@ def dispatch(hwp, method, params):
             if not result:
                 raise RuntimeError("HeaderFooter Execute 실패")
             # 머리글/바닥글 편집 모드 진입됨 — 텍스트 삽입
-            if text:
-                if style:
-                    from hwp_editor import insert_text_with_style
-                    insert_text_with_style(hwp, text, style)
-                else:
-                    hwp.insert_text(text)
-            # 정렬 적용 (머리글/바닥글 영역 내)
-            if style and "align" in style:
-                from hwp_editor import set_paragraph_style
-                set_paragraph_style(hwp, {"align": style["align"]})
+            if text and style:
+                from hwp_editor import insert_text_with_style, set_paragraph_style
+                insert_text_with_style(hwp, text, style)
+                if "align" in style:
+                    set_paragraph_style(hwp, {"align": style["align"]})
+            elif text:
+                hwp.insert_text(text)
             # 본문으로 복귀
             hwp.HAction.Run("CloseEx")
             return {"status": "ok", "type": hf_type, "text": text}

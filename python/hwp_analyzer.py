@@ -137,8 +137,9 @@ def analyze_document(hwp, file_path, already_open=False):
                     result["tables"].append(table_info)
                     try:
                         hwp.Cancel()
+                        hwp.MovePos(2)  # 문서 처음으로 복귀 (다음 get_into_nth_table 정확도 보장)
                     except Exception as e:
-                        print(f"[WARN] Cancel failed: {e}", file=sys.stderr)
+                        print(f"[WARN] Cancel/MovePos failed: {e}", file=sys.stderr)
                     table_idx += 1
                 except Exception as e:
                     print(f"[INFO] Table scan stopped at idx {table_idx}: {e}", file=sys.stderr)
