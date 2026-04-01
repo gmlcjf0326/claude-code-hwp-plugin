@@ -562,6 +562,36 @@
 
 ---
 
+## Phase 17: v0.5.4 근본 수정 검증
+
+### 17-1. get_tables (4회 연속 FAIL → v0.5.4 수정)
+- [ ] 새 문서에서 표 생성 → hwp_get_tables → total_count > 0 확인
+- [ ] hwp_analyze_document → tables 배열에 표 데이터 있는지 확인
+- [ ] hwp_map_table_cells → 표 셀 매핑 정상 (기존 PASS 유지)
+- [ ] 표 2개 생성 → get_tables → total_count = 2 확인
+
+### 17-2. find_and_append (4회 연속 FAIL → v0.5.4 수정)
+- [ ] 텍스트 "테스트문장" 삽입 → hwp_find_and_append("테스트문장", " 추가됨") → status: "ok"
+- [ ] 결과 확인: "테스트문장 추가됨"으로 변경되었는지
+- [ ] HWPX 파일에서 find_and_append → XML 경로 정상 동작
+- [ ] HWP 파일에서 find_and_append → COM 경로 정상 동작
+
+### 17-3. 머리글 성능 (20.4초 퇴보 → v0.5.4 최적화)
+- [ ] hwp_set_header_footer(type="header", text="테스트") → 15초 이내 완료
+- [ ] style 없이 호출 시 10초대 복귀 확인
+- [ ] style={bold:true, align:"center"} 포함 시에도 20초 미만
+
+### 17-4. insert_textbox 위치/크기 (4회 연속 WARN → v0.5.4 수정)
+- [ ] hwp_insert_textbox(x=50, y=50, width=80, height=30, text="글상자") → method 확인
+- [ ] "fallback" 아닌 정상 경로로 생성되는지
+- [ ] verify_layout에서 글상자 위치 시각 확인
+
+### 17-5. 표 카운트 정확도 (50개 중복 → v0.5.4 수정)
+- [ ] 표 1개 문서 → analyze_document → total_count = 1 (50이 아닌지)
+- [ ] 표 3개 문서 → total_count = 3
+
+---
+
 ## 발견된 이슈 기록
 
 | #   | Phase | 이슈 | 심각도 | 상태 | 비고 |
@@ -586,4 +616,5 @@
 | 1차 | v0.5.0 | 75.6% | 기본 기능 검증 |
 | 2차 | v0.3.1 | 87.1% | SetMessageBoxMode, 스타일, 바닥글 |
 | 3차 | v0.5.2 | 88.7% | PDF 정상화, 표 배경색, DOCX/HTML |
-| 4차 | v0.5.3 | 목표 93%+ | 에러 분류, 머리글 스타일, case_sensitive |
+| 4차 | v0.5.3 | 82.6% (캐시 미갱신) | Phase 16 미구현으로 하락 (기존 90%) |
+| 5차 | v0.5.4 | 목표 95%+ | get_tables/find_and_append 근본수정, textbox 좌표 |
