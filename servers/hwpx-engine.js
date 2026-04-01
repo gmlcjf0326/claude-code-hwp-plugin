@@ -172,15 +172,40 @@ export function replaceTextNthInSection(doc, find, replace, nth) {
  * HWPX section XML에서 텍스트를 찾아 그 뒤에 추가.
  */
 export function findAndAppendInSection(doc, find, appendText) {
-    const tNodes = doc.getElementsByTagNameNS(NS_HP, 't');
-    for (let i = 0; i < tNodes.length; i++) {
-        const t = tNodes[i];
-        const text = t.textContent || '';
-        const pos = text.indexOf(find);
+    // 문단(p) 단위로 run/t 텍스트를 연결하여 검색 (searchTextInSection과 동일 패턴)
+    const paragraphs = doc.getElementsByTagNameNS(NS_HP, 'p');
+    for (let i = 0; i < paragraphs.length; i++) {
+        const runs = paragraphs[i].getElementsByTagNameNS(NS_HP, 'run');
+        let paraText = '';
+        const tNodeList = [];
+        for (let j = 0; j < runs.length; j++) {
+            const tNodes = runs[j].getElementsByTagNameNS(NS_HP, 't');
+            for (let k = 0; k < tNodes.length; k++) {
+                const nodeText = tNodes[k].textContent || '';
+                tNodeList.push({ node: tNodes[k], offset: paraText.length });
+                paraText += nodeText;
+            }
+        }
+        const pos = paraText.indexOf(find);
         if (pos !== -1) {
-            t.textContent = text.slice(0, pos + find.length) + appendText + text.slice(pos + find.length);
-            removeLinesegarray(doc);
-            return true;
+            const endPos = pos + find.length;
+            for (let n = tNodeList.length - 1; n >= 0; n--) {
+                const entry = tNodeList[n];
+                const nodeText = entry.node.textContent || '';
+                if (entry.offset <= endPos && endPos <= entry.offset + nodeText.length) {
+                    const localOffset = endPos - entry.offset;
+                    entry.node.textContent = nodeText.slice(0, localOffset) + appendText + nodeText.slice(localOffset);
+                    removeLinesegarray(doc);
+                    return true;
+                }
+            }
+            // fallback: 마지막 t 노드에 추가
+            if (tNodeList.length > 0) {
+                const last = tNodeList[tNodeList.length - 1];
+                last.node.textContent = (last.node.textContent || '') + appendText;
+                removeLinesegarray(doc);
+                return true;
+            }
         }
     }
     return false;

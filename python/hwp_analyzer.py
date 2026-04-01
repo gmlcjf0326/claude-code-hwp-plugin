@@ -116,6 +116,12 @@ def analyze_document(hwp, file_path, already_open=False):
 
         # Extract tables (with data for AI context, max MAX_TABLES)
         try:
+            # 커서를 문서 시작으로 초기화 (표 탐색 안정성 보장)
+            try:
+                hwp.MovePos(2)  # 문서 처음으로
+            except Exception as e:
+                print(f"[WARN] MovePos before table scan failed: {e}", file=sys.stderr)
+
             table_idx = 0
             while table_idx < MAX_TABLES:
                 try:
@@ -134,7 +140,8 @@ def analyze_document(hwp, file_path, already_open=False):
                     except Exception as e:
                         print(f"[WARN] Cancel failed: {e}", file=sys.stderr)
                     table_idx += 1
-                except Exception:
+                except Exception as e:
+                    print(f"[INFO] Table scan stopped at idx {table_idx}: {e}", file=sys.stderr)
                     break
             # BUG-7 fix: 실제 발견된 표 수와 스캔 상한 분리
             result["scanned_tables"] = table_idx

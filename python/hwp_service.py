@@ -305,6 +305,8 @@ def dispatch(hwp, method, params):
 
     if method == "find_and_append":
         validate_params(params, ["find", "append_text"], method)
+        # 커서를 문서 시작으로 초기화 (전체 문서 검색 보장)
+        hwp.MovePos(2)
         act = hwp.HAction
         pset = hwp.HParameterSet.HFindReplace
         act.GetDefault("FindReplace", pset.HSet)
