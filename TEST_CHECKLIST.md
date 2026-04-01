@@ -528,6 +528,40 @@
 
 ---
 
+## Phase 16: v0.5.3 신규 기능 테스트
+
+### 16-1. 구조화된 에러 응답
+- [ ] 한글 미실행 상태에서 도구 호출 → error_type: "com_disconnected" + guide 확인
+- [ ] 없는 파일 경로 → error_type: "file_not_found" + guide 확인
+- [ ] 문서 안 열고 편집 → error_type: "no_document" + guide 확인
+- [ ] 잠긴 파일 접근 → error_type: "file_locked" + guide 확인
+
+### 16-2. 머리글/바닥글 스타일
+- [ ] 머리글 bold + center: `/hwp-studio:hwp-help` 후 "머리글을 굵게 가운데로 넣어줘"
+- [ ] 바닥글 font_size=8 + right: "바닥글 8pt 오른쪽 정렬로"
+- [ ] verify_layout으로 머리글/바닥글 스타일 시각 확인
+
+### 16-3. 검색 대소문자 무시
+- [ ] "ABC" 입력 후 find_replace("abc", "XYZ", case_sensitive=false) → 치환 성공
+- [ ] case_sensitive=true (기본) → "abc"는 못 찾음 확인
+
+### 16-4. col_widths 자동 축소
+- [ ] table_create_from_data col_widths=[100, 100, 100] → 경고 + 자동 축소 확인
+- [ ] col_widths=[30, 40, 50, 40] (합계 160mm) → 경고 없이 정상
+
+### 16-5. find_and_append (이전 FAIL → 수정)
+- [ ] 텍스트 삽입 후 find_and_append → "found" 반환 확인
+
+### 16-6. get_tables (이전 FAIL → 수정)
+- [ ] 표 생성 후 get_tables → total_count > 0 확인
+- [ ] analyze_document → 표 감지 확인
+
+### 16-7. 임시 파일 정리
+- [ ] verify_layout 실행 후 %TEMP%에 hwp_verify_layout.pdf 없는지 확인
+- [ ] PNG 파일만 남아있는지 확인
+
+---
+
 ## 발견된 이슈 기록
 
 | #   | Phase | 이슈 | 심각도 | 상태 | 비고 |
@@ -539,8 +573,17 @@
 ## 테스트 환경
 
 - Windows 11
-- Python 3.13 + pyhwpx 1.7.1
-- 한글 2024
+- Python 3.8+ / pyhwpx 1.7+
+- 한글 2014 이상
 - Claude Code (최신)
-- 플러그인: claude-code-hwp-plugin v0.5.0
-- MCP: claude-code-hwp-mcp v0.5.0 (플러그인에 포함)
+- 플러그인: claude-code-hwp-plugin v0.5.3
+- MCP: claude-code-hwp-mcp v0.5.3 (플러그인에 포함)
+
+## 테스트 이력
+
+| 회차 | 버전 | 통과율 | 핵심 개선 |
+|------|------|--------|----------|
+| 1차 | v0.5.0 | 75.6% | 기본 기능 검증 |
+| 2차 | v0.3.1 | 87.1% | SetMessageBoxMode, 스타일, 바닥글 |
+| 3차 | v0.5.2 | 88.7% | PDF 정상화, 표 배경색, DOCX/HTML |
+| 4차 | v0.5.3 | 목표 93%+ | 에러 분류, 머리글 스타일, case_sensitive |
