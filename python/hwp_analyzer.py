@@ -123,21 +123,32 @@ def analyze_document(hwp, file_path, already_open=False):
                 print(f"[WARN] MovePos before table scan failed: {e}", file=sys.stderr)
 
             table_idx = 0
+            prev_data = None
             while table_idx < MAX_TABLES:
                 try:
                     hwp.get_into_nth_table(table_idx)
                     df = hwp.table_to_df()
+                    current_data = df.values.tolist()
+                    # 중복 감지: 이전 표와 동일한 데이터면 같은 표 반복 접근 → 중단
+                    if prev_data is not None and current_data == prev_data:
+                        print(f"[INFO] Table {table_idx} is duplicate of previous — stopping scan", file=sys.stderr)
+                        try:
+                            hwp.Cancel()
+                        except Exception:
+                            pass
+                        break
+                    prev_data = current_data
                     table_info = {
                         "index": table_idx,
                         "rows": len(df) + 1,  # +1 for header
                         "cols": len(df.columns) if len(df) > 0 else 0,
                         "headers": [str(c) for c in df.columns],
-                        "data": df.values.tolist(),
+                        "data": current_data,
                     }
                     result["tables"].append(table_info)
                     try:
                         hwp.Cancel()
-                        hwp.MovePos(2)  # 문서 처음으로 복귀 (다음 get_into_nth_table 정확도 보장)
+                        hwp.MovePos(2)
                     except Exception as e:
                         print(f"[WARN] Cancel/MovePos failed: {e}", file=sys.stderr)
                     table_idx += 1

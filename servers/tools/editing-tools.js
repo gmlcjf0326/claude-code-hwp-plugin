@@ -4,7 +4,6 @@
  */
 import { z } from 'zod';
 import path from 'node:path';
-import { readHwpxXml, writeHwpxXml, replaceTextInSection, replaceTextNthInSection, findAndAppendInSection } from '../hwpx-engine.js';
 const FILL_TIMEOUT = 60000;
 export function registerEditingTools(server, bridge, toolset = 'standard') {
     // --- standard 이상에서만: fill_fields ---
@@ -133,26 +132,7 @@ export function registerEditingTools(server, bridge, toolset = 'standard') {
                         }) }], isError: true };
         }
         try {
-            // HWPX → XML 직접 치환 시도 (COM 우회). EBUSY 시 COM 폴백.
-            if (bridge.getCurrentDocumentFormat() === 'HWPX' && !use_regex) {
-                try {
-                    // COM 메모리 변경사항을 파일에 반영 (XML 엔진이 최신 내용을 읽도록)
-                    await bridge.ensureRunning();
-                    await bridge.send('save_document', {});
-                    const doc = await readHwpxXml(filePath, 'Contents/section0.xml');
-                    const count = replaceTextInSection(doc, find, replace);
-                    await writeHwpxXml(filePath, filePath, 'Contents/section0.xml', doc);
-                    bridge.setCachedAnalysis(null);
-                    return { content: [{ type: 'text', text: JSON.stringify({
-                                    status: 'ok', find, replace, replaced: count > 0, count, engine: 'xml',
-                                }) }] };
-                }
-                catch (xmlErr) {
-                    // 파일 잠금(EBUSY) 등 XML 실패 시 COM 폴백
-                    console.error('[find_replace] XML failed, falling back to COM:', xmlErr.message);
-                }
-            }
-            // COM 경로 (HWP 또는 HWPX XML 실패 시 폴백)
+            // COM 우선 검색 (HWP/HWPX 모두 COM으로 처리 — XML 단절 문제 해결)
             await bridge.ensureRunning();
             const params = { find, replace };
             if (use_regex)
@@ -186,35 +166,7 @@ export function registerEditingTools(server, bridge, toolset = 'standard') {
                             }) }], isError: true };
             }
             try {
-                // HWPX → XML 직접 다건 치환 시도. EBUSY 시 COM 폴백.
-                if (bridge.getCurrentDocumentFormat() === 'HWPX' && !use_regex) {
-                    try {
-                        // COM 메모리 변경사항을 파일에 반영 + 파일 시스템 동기 대기
-                        await bridge.ensureRunning();
-                        await bridge.send('save_document', {});
-                        await new Promise(r => setTimeout(r, 200)); // 파일 I/O 완료 대기
-                        const doc = await readHwpxXml(filePath, 'Contents/section0.xml');
-                        const results = [];
-                        let totalCount = 0;
-                        for (const item of replacements) {
-                            const count = replaceTextInSection(doc, item.find, item.replace);
-                            results.push({ find: item.find, replaced: count > 0, count });
-                            totalCount += count;
-                        }
-                        if (totalCount > 0) {
-                            await writeHwpxXml(filePath, filePath, 'Contents/section0.xml', doc);
-                        }
-                        bridge.setCachedAnalysis(null);
-                        return { content: [{ type: 'text', text: JSON.stringify({
-                                        status: 'ok', results, total: results.length,
-                                        success: results.filter(r => r.replaced).length, engine: 'xml',
-                                    }) }] };
-                    }
-                    catch (xmlErr) {
-                        console.error('[find_replace_multi] XML failed, falling back to COM:', xmlErr.message);
-                    }
-                }
-                // COM 경로 (HWP 또는 HWPX XML 실패 시 폴백)
+                // COM 우선 (HWP/HWPX 모두)
                 await bridge.ensureRunning();
                 const params = { replacements };
                 if (use_regex)
@@ -242,25 +194,7 @@ export function registerEditingTools(server, bridge, toolset = 'standard') {
                             }) }], isError: true };
             }
             try {
-                // HWPX → XML 직접 조작 시도. EBUSY 시 COM 폴백.
-                if (bridge.getCurrentDocumentFormat() === 'HWPX' && !color) {
-                    try {
-                        await bridge.ensureRunning();
-                        await bridge.send('save_document', {});
-                        const doc = await readHwpxXml(filePath, 'Contents/section0.xml');
-                        const found = findAndAppendInSection(doc, find, append_text);
-                        if (!found) {
-                            return { content: [{ type: 'text', text: JSON.stringify({ status: 'not_found', find, engine: 'xml' }) }] };
-                        }
-                        await writeHwpxXml(filePath, filePath, 'Contents/section0.xml', doc);
-                        bridge.setCachedAnalysis(null);
-                        return { content: [{ type: 'text', text: JSON.stringify({ status: 'ok', find, appended: true, engine: 'xml' }) }] };
-                    }
-                    catch (xmlErr) {
-                        console.error('[find_and_append] XML failed, falling back to COM:', xmlErr.message);
-                    }
-                }
-                // COM 경로 (HWP 또는 HWPX XML 실패 시 폴백)
+                // COM 우선 (HWP/HWPX 모두)
                 await bridge.ensureRunning();
                 // COM도 최신 파일 상태에서 검색하도록 save 선행
                 await bridge.send('save_document', {});
@@ -429,26 +363,7 @@ export function registerEditingTools(server, bridge, toolset = 'standard') {
                             }) }], isError: true };
             }
             try {
-                // HWPX → XML 직접 N번째 치환 시도. EBUSY 시 COM 폴백.
-                if (bridge.getCurrentDocumentFormat() === 'HWPX') {
-                    try {
-                        await bridge.ensureRunning();
-                        await bridge.send('save_document', {});
-                        const doc = await readHwpxXml(filePath, 'Contents/section0.xml');
-                        const replaced = replaceTextNthInSection(doc, find, replace, nth);
-                        if (replaced) {
-                            await writeHwpxXml(filePath, filePath, 'Contents/section0.xml', doc);
-                        }
-                        bridge.setCachedAnalysis(null);
-                        return { content: [{ type: 'text', text: JSON.stringify({
-                                        status: 'ok', find, replace, nth, replaced, engine: 'xml',
-                                    }) }] };
-                    }
-                    catch (xmlErr) {
-                        console.error('[find_replace_nth] XML failed, falling back to COM:', xmlErr.message);
-                    }
-                }
-                // HWP → Python COM
+                // COM 우선 (HWP/HWPX 모두)
                 await bridge.ensureRunning();
                 const response = await bridge.send('find_replace_nth', { find, replace, nth });
                 if (!response.success) {

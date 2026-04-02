@@ -5,7 +5,6 @@
 import { z } from 'zod';
 import path from 'node:path';
 import fs from 'node:fs';
-import { readHwpxXml, searchTextInSection } from '../hwpx-engine.js';
 const HWP_EXTENSIONS = new Set(['.hwp', '.hwpx']);
 const ANALYSIS_TIMEOUT = 60000;
 async function ensureAnalysis(bridge, filePath) {
@@ -153,24 +152,7 @@ export function registerAnalysisTools(server, bridge, toolset = 'standard') {
             return { content: [{ type: 'text', text: JSON.stringify({ error: '열린 문서가 없습니다. hwp_open_document로 문서를 열어주세요.' }) }], isError: true };
         }
         try {
-            // HWPX → XML 직접 검색 시도. EBUSY 시 COM 폴백.
-            if (bridge.getCurrentDocumentFormat() === 'HWPX') {
-                try {
-                    // COM 메모리 변경사항을 파일에 반영 (XML 엔진이 최신 내용을 읽도록)
-                    await bridge.ensureRunning();
-                    await bridge.send('save_document', {});
-                    const doc = await readHwpxXml(filePath, 'Contents/section0.xml');
-                    const result = searchTextInSection(doc, search);
-                    const limited = max_results ? result.results.slice(0, max_results) : result.results.slice(0, 50);
-                    return { content: [{ type: 'text', text: JSON.stringify({
-                                    search, total_found: result.total, results: limited, engine: 'xml',
-                                }) }] };
-                }
-                catch (xmlErr) {
-                    console.error('[text_search] XML failed, falling back to COM:', xmlErr.message);
-                }
-            }
-            // COM 경로 (HWP 또는 HWPX XML 실패 시 폴백)
+            // COM 우선 검색 (HWP/HWPX 모두 — XML 단절 문제 근본 해결)
             await bridge.ensureRunning();
             const params = { search };
             if (max_results)

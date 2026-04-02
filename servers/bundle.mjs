@@ -20847,10 +20847,10 @@ __export(hwpx_engine_exports, {
   searchTextInSection: () => searchTextInSection,
   writeHwpxXml: () => writeHwpxXml
 });
-import fs3 from "node:fs";
-import path3 from "node:path";
+import fs4 from "node:fs";
+import path5 from "node:path";
 async function readHwpxXml(hwpxPath, xmlName) {
-  const data = fs3.readFileSync(hwpxPath);
+  const data = fs4.readFileSync(hwpxPath);
   const zip = await import_jszip.default.loadAsync(data);
   const xmlFile = zip.file(xmlName);
   if (!xmlFile) {
@@ -20863,11 +20863,11 @@ async function readHwpxXml(hwpxPath, xmlName) {
 async function writeHwpxXml(sourcePath, outputPath, xmlName, doc) {
   const serializer = new import_xmldom.XMLSerializer();
   const xmlStr = serializer.serializeToString(doc);
-  const data = fs3.readFileSync(sourcePath);
+  const data = fs4.readFileSync(sourcePath);
   const zip = await import_jszip.default.loadAsync(data);
   zip.file(xmlName, xmlStr);
   const newData = await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
-  fs3.writeFileSync(outputPath, newData);
+  fs4.writeFileSync(outputPath, newData);
 }
 function extractTextFromSection(doc) {
   const texts = [];
@@ -21021,19 +21021,19 @@ async function createMinimalHwpx(outputPath, title) {
   </hp:p>
 </hp:sec>`);
   const buffer = await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
-  fs3.writeFileSync(outputPath, buffer);
+  fs4.writeFileSync(outputPath, buffer);
 }
 function getTemplatePath() {
   const thisFile = new URL(import.meta.url).pathname.replace(/^\/([A-Z]:)/, "$1");
-  return path3.join(path3.dirname(thisFile), "../../blank_template.hwpx");
+  return path5.join(path5.dirname(thisFile), "../../blank_template.hwpx");
 }
 async function createBlankHwpx(outputPath, title) {
   const templatePath = getTemplatePath();
-  if (!fs3.existsSync(templatePath)) {
+  if (!fs4.existsSync(templatePath)) {
     await createMinimalHwpx(outputPath, title);
     return;
   }
-  fs3.copyFileSync(templatePath, outputPath);
+  fs4.copyFileSync(templatePath, outputPath);
   if (title) {
     const doc = await readHwpxXml(outputPath, "Contents/section0.xml");
     const tNodes = doc.getElementsByTagNameNS(NS_HP, "t");
@@ -36110,19 +36110,18 @@ function registerDocumentTools(server2, bridge2) {
 }
 
 // servers/tools/analysis-tools.js
-init_hwpx_engine();
-import path4 from "node:path";
-import fs4 from "node:fs";
+import path3 from "node:path";
+import fs3 from "node:fs";
 var HWP_EXTENSIONS2 = /* @__PURE__ */ new Set([".hwp", ".hwpx"]);
 var ANALYSIS_TIMEOUT = 6e4;
 async function ensureAnalysis(bridge2, filePath) {
   await bridge2.ensureRunning();
   if (filePath) {
-    const resolved = path4.resolve(filePath);
-    if (!fs4.existsSync(resolved)) {
+    const resolved = path3.resolve(filePath);
+    if (!fs3.existsSync(resolved)) {
       throw new Error(`\uD30C\uC77C\uC744 \uCC3E\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4: ${resolved}`);
     }
-    const ext = path4.extname(resolved).toLowerCase();
+    const ext = path3.extname(resolved).toLowerCase();
     if (!HWP_EXTENSIONS2.has(ext)) {
       throw new Error("HWP \uB610\uB294 HWPX \uD30C\uC77C\uB9CC \uC9C0\uC6D0\uD569\uB2C8\uB2E4.");
     }
@@ -36252,23 +36251,6 @@ function registerAnalysisTools(server2, bridge2, toolset2 = "standard") {
       return { content: [{ type: "text", text: JSON.stringify({ error: "\uC5F4\uB9B0 \uBB38\uC11C\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4. hwp_open_document\uB85C \uBB38\uC11C\uB97C \uC5F4\uC5B4\uC8FC\uC138\uC694." }) }], isError: true };
     }
     try {
-      if (bridge2.getCurrentDocumentFormat() === "HWPX") {
-        try {
-          await bridge2.ensureRunning();
-          await bridge2.send("save_document", {});
-          const doc = await readHwpxXml(filePath, "Contents/section0.xml");
-          const result = searchTextInSection(doc, search);
-          const limited = max_results ? result.results.slice(0, max_results) : result.results.slice(0, 50);
-          return { content: [{ type: "text", text: JSON.stringify({
-            search,
-            total_found: result.total,
-            results: limited,
-            engine: "xml"
-          }) }] };
-        } catch (xmlErr) {
-          console.error("[text_search] XML failed, falling back to COM:", xmlErr.message);
-        }
-      }
       await bridge2.ensureRunning();
       const params = { search };
       if (max_results)
@@ -36326,8 +36308,8 @@ function registerAnalysisTools(server2, bridge2, toolset2 = "standard") {
       file_path: external_exports.string().describe("\uCC38\uACE0\uC790\uB8CC \uD30C\uC77C \uACBD\uB85C"),
       max_chars: external_exports.number().optional().describe("\uCD5C\uB300 \uBB38\uC790 \uC218 (\uAE30\uBCF8 30000)")
     }, async ({ file_path, max_chars }) => {
-      const resolved = path4.resolve(file_path);
-      if (!fs4.existsSync(resolved)) {
+      const resolved = path3.resolve(file_path);
+      if (!fs3.existsSync(resolved)) {
         return { content: [{ type: "text", text: JSON.stringify({ error: `\uD30C\uC77C\uC744 \uCC3E\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4: ${resolved}` }) }], isError: true };
       }
       try {
@@ -36461,7 +36443,7 @@ function registerAnalysisTools(server2, bridge2, toolset2 = "standard") {
         return { content: [{ type: "text", text: JSON.stringify({ error: "\uC5F4\uB9B0 \uBB38\uC11C\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4." }) }], isError: true };
       try {
         await bridge2.ensureRunning();
-        const resolved = path4.resolve(output_dir);
+        const resolved = path3.resolve(output_dir);
         const r = await bridge2.send("image_extract", { output_dir: resolved }, ANALYSIS_TIMEOUT);
         if (!r.success)
           return { content: [{ type: "text", text: JSON.stringify({ error: r.error }) }], isError: true };
@@ -36478,7 +36460,7 @@ function registerAnalysisTools(server2, bridge2, toolset2 = "standard") {
         return { content: [{ type: "text", text: JSON.stringify({ error: "\uC5F4\uB9B0 \uBB38\uC11C\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4." }) }], isError: true };
       try {
         await bridge2.ensureRunning();
-        const resolved = path4.resolve(output_dir);
+        const resolved = path3.resolve(output_dir);
         const params = { output_dir: resolved };
         if (pages_per_split)
           params.pages_per_split = pages_per_split;
@@ -36695,8 +36677,7 @@ function registerAnalysisTools(server2, bridge2, toolset2 = "standard") {
 }
 
 // servers/tools/editing-tools.js
-init_hwpx_engine();
-import path5 from "node:path";
+import path4 from "node:path";
 var FILL_TIMEOUT = 6e4;
 function registerEditingTools(server2, bridge2, toolset2 = "standard") {
   if (toolset2 !== "minimal") {
@@ -36708,7 +36689,7 @@ function registerEditingTools(server2, bridge2, toolset2 = "standard") {
         await bridge2.ensureRunning();
         const params = { fields };
         if (file_path) {
-          params.file_path = path5.resolve(file_path);
+          params.file_path = path4.resolve(file_path);
         }
         const response = await bridge2.send("fill_document", params, FILL_TIMEOUT);
         if (!response.success) {
@@ -36780,7 +36761,7 @@ function registerEditingTools(server2, bridge2, toolset2 = "standard") {
             tables: [{ index: table.index, cells: rowColCells }]
           };
           if (file_path)
-            params.file_path = path5.resolve(file_path);
+            params.file_path = path4.resolve(file_path);
           const resp = await bridge2.send("fill_document", params, FILL_TIMEOUT);
           if (!resp.success) {
             return { content: [{ type: "text", text: JSON.stringify({ error: resp.error }) }], isError: true };
@@ -36815,26 +36796,6 @@ function registerEditingTools(server2, bridge2, toolset2 = "standard") {
       }) }], isError: true };
     }
     try {
-      if (bridge2.getCurrentDocumentFormat() === "HWPX" && !use_regex) {
-        try {
-          await bridge2.ensureRunning();
-          await bridge2.send("save_document", {});
-          const doc = await readHwpxXml(filePath, "Contents/section0.xml");
-          const count = replaceTextInSection(doc, find, replace);
-          await writeHwpxXml(filePath, filePath, "Contents/section0.xml", doc);
-          bridge2.setCachedAnalysis(null);
-          return { content: [{ type: "text", text: JSON.stringify({
-            status: "ok",
-            find,
-            replace,
-            replaced: count > 0,
-            count,
-            engine: "xml"
-          }) }] };
-        } catch (xmlErr) {
-          console.error("[find_replace] XML failed, falling back to COM:", xmlErr.message);
-        }
-      }
       await bridge2.ensureRunning();
       const params = { find, replace };
       if (use_regex)
@@ -36866,34 +36827,6 @@ function registerEditingTools(server2, bridge2, toolset2 = "standard") {
         }) }], isError: true };
       }
       try {
-        if (bridge2.getCurrentDocumentFormat() === "HWPX" && !use_regex) {
-          try {
-            await bridge2.ensureRunning();
-            await bridge2.send("save_document", {});
-            await new Promise((r) => setTimeout(r, 200));
-            const doc = await readHwpxXml(filePath, "Contents/section0.xml");
-            const results = [];
-            let totalCount = 0;
-            for (const item of replacements) {
-              const count = replaceTextInSection(doc, item.find, item.replace);
-              results.push({ find: item.find, replaced: count > 0, count });
-              totalCount += count;
-            }
-            if (totalCount > 0) {
-              await writeHwpxXml(filePath, filePath, "Contents/section0.xml", doc);
-            }
-            bridge2.setCachedAnalysis(null);
-            return { content: [{ type: "text", text: JSON.stringify({
-              status: "ok",
-              results,
-              total: results.length,
-              success: results.filter((r) => r.replaced).length,
-              engine: "xml"
-            }) }] };
-          } catch (xmlErr) {
-            console.error("[find_replace_multi] XML failed, falling back to COM:", xmlErr.message);
-          }
-        }
         await bridge2.ensureRunning();
         const params = { replacements };
         if (use_regex)
@@ -36920,22 +36853,6 @@ function registerEditingTools(server2, bridge2, toolset2 = "standard") {
         }) }], isError: true };
       }
       try {
-        if (bridge2.getCurrentDocumentFormat() === "HWPX" && !color) {
-          try {
-            await bridge2.ensureRunning();
-            await bridge2.send("save_document", {});
-            const doc = await readHwpxXml(filePath, "Contents/section0.xml");
-            const found = findAndAppendInSection(doc, find, append_text);
-            if (!found) {
-              return { content: [{ type: "text", text: JSON.stringify({ status: "not_found", find, engine: "xml" }) }] };
-            }
-            await writeHwpxXml(filePath, filePath, "Contents/section0.xml", doc);
-            bridge2.setCachedAnalysis(null);
-            return { content: [{ type: "text", text: JSON.stringify({ status: "ok", find, appended: true, engine: "xml" }) }] };
-          } catch (xmlErr) {
-            console.error("[find_and_append] XML failed, falling back to COM:", xmlErr.message);
-          }
-        }
         await bridge2.ensureRunning();
         await bridge2.send("save_document", {});
         const params = { find, append_text };
@@ -37098,28 +37015,6 @@ function registerEditingTools(server2, bridge2, toolset2 = "standard") {
         }) }], isError: true };
       }
       try {
-        if (bridge2.getCurrentDocumentFormat() === "HWPX") {
-          try {
-            await bridge2.ensureRunning();
-            await bridge2.send("save_document", {});
-            const doc = await readHwpxXml(filePath, "Contents/section0.xml");
-            const replaced = replaceTextNthInSection(doc, find, replace, nth);
-            if (replaced) {
-              await writeHwpxXml(filePath, filePath, "Contents/section0.xml", doc);
-            }
-            bridge2.setCachedAnalysis(null);
-            return { content: [{ type: "text", text: JSON.stringify({
-              status: "ok",
-              find,
-              replace,
-              nth,
-              replaced,
-              engine: "xml"
-            }) }] };
-          } catch (xmlErr) {
-            console.error("[find_replace_nth] XML failed, falling back to COM:", xmlErr.message);
-          }
-        }
         await bridge2.ensureRunning();
         const response = await bridge2.send("find_replace_nth", { find, replace, nth });
         if (!response.success) {
@@ -37143,7 +37038,7 @@ function registerEditingTools(server2, bridge2, toolset2 = "standard") {
       }
       try {
         await bridge2.ensureRunning();
-        const params = { file_path: path5.resolve(file_path) };
+        const params = { file_path: path4.resolve(file_path) };
         if (width)
           params.width = width;
         if (height)
@@ -37338,7 +37233,7 @@ function registerEditingTools(server2, bridge2, toolset2 = "standard") {
         return { content: [{ type: "text", text: JSON.stringify({ error: "\uC5F4\uB9B0 \uBB38\uC11C\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4." }) }], isError: true };
       try {
         await bridge2.ensureRunning();
-        const resolved = path5.resolve(output_path);
+        const resolved = path4.resolve(output_path);
         const r = await bridge2.send("export_format", { path: resolved, format: "OOXML" }, 12e4);
         if (!r.success)
           return { content: [{ type: "text", text: JSON.stringify({ error: r.error }) }], isError: true };
@@ -37352,7 +37247,7 @@ function registerEditingTools(server2, bridge2, toolset2 = "standard") {
         return { content: [{ type: "text", text: JSON.stringify({ error: "\uC5F4\uB9B0 \uBB38\uC11C\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4." }) }], isError: true };
       try {
         await bridge2.ensureRunning();
-        const resolved = path5.resolve(output_path);
+        const resolved = path4.resolve(output_path);
         const r = await bridge2.send("export_format", { path: resolved, format: "HTML" }, 6e4);
         if (!r.success)
           return { content: [{ type: "text", text: JSON.stringify({ error: r.error }) }], isError: true };
@@ -37366,7 +37261,7 @@ function registerEditingTools(server2, bridge2, toolset2 = "standard") {
         return { content: [{ type: "text", text: JSON.stringify({ error: "\uC5F4\uB9B0 \uBB38\uC11C\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4." }) }], isError: true };
       try {
         await bridge2.ensureRunning();
-        const resolved = path5.resolve(file_path);
+        const resolved = path4.resolve(file_path);
         const r = await bridge2.send("set_background_picture", { file_path: resolved }, FILL_TIMEOUT);
         if (!r.success)
           return { content: [{ type: "text", text: JSON.stringify({ error: r.error }) }], isError: true };
@@ -37500,7 +37395,7 @@ function registerEditingTools(server2, bridge2, toolset2 = "standard") {
         return { content: [{ type: "text", text: JSON.stringify({ error: "\uC5F4\uB9B0 \uBB38\uC11C\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4." }) }], isError: true };
       try {
         await bridge2.ensureRunning();
-        const r = await bridge2.send("table_to_csv", { table_index, output_path: path5.resolve(output_path) }, FILL_TIMEOUT);
+        const r = await bridge2.send("table_to_csv", { table_index, output_path: path4.resolve(output_path) }, FILL_TIMEOUT);
         if (!r.success)
           return { content: [{ type: "text", text: JSON.stringify({ error: r.error }) }], isError: true };
         return { content: [{ type: "text", text: JSON.stringify(r.data) }] };
