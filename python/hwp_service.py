@@ -15,12 +15,29 @@ from hwp_editor import (fill_document, fill_table_cells_by_tab, fill_table_cells
 
 
 def validate_file_path(file_path, must_exist=True):
-    """경로 보안 검증. 심볼릭 링크 거부, 존재 여부 확인."""
+    """경로 보안 검증. 심볼릭 링크 거부, 존재/권한 확인. 한글 에러 대화상자 사전 방지."""
     real = os.path.abspath(file_path)
-    if must_exist and not os.path.exists(real):
-        raise FileNotFoundError(f"파일을 찾을 수 없습니다: {real}")
     if os.path.islink(file_path):
         raise ValueError(f"심볼릭 링크는 허용되지 않습니다: {file_path}")
+    if must_exist and not os.path.exists(real):
+        raise FileNotFoundError(f"파일을 찾을 수 없습니다: {real}")
+    if not must_exist:
+        # 저장 대상 경로: 디렉토리 존재 + 쓰기 권한 사전 확인
+        dir_path = os.path.dirname(real) or '.'
+        if not os.path.exists(dir_path):
+            raise FileNotFoundError(f"저장 디렉토리가 존재하지 않습니다: {dir_path}")
+        if not os.access(dir_path, os.W_OK):
+            raise PermissionError(f"디렉토리 쓰기 권한이 없습니다: {dir_path}")
+        # 기존 파일 덮어쓰기: 쓰기 권한 + 잠금 확인
+        if os.path.exists(real):
+            if not os.access(real, os.W_OK):
+                raise PermissionError(f"파일 쓰기 권한이 없습니다 (읽기 전용 또는 잠김): {real}")
+            # 파일 잠금 사전 확인 (한글 에러 대화상자 방지)
+            try:
+                with open(real, 'a'):
+                    pass
+            except (PermissionError, IOError) as e:
+                raise PermissionError(f"파일이 다른 프로그램에서 사용 중입니다: {real}")
     return real
 
 
@@ -119,6 +136,12 @@ def dispatch(hwp, method, params):
     if method == "open_document":
         validate_params(params, ["file_path"], method)
         file_path = validate_file_path(params["file_path"], must_exist=True)
+
+        # COM 상태 초기화 (이전 문서 캐시 정리)
+        try:
+            hwp.MovePos(2)  # 커서 초기화
+        except Exception:
+            pass
 
         # 원본 백업 (기본 활성, backup=False로 비활성 가능)
         if params.get("backup", True):
@@ -1770,6 +1793,12 @@ def main():
                 elif '암호' in err_str or 'encrypt' in err_str.lower():
                     error_type = "encrypted"
                     guide = "암호화된 문서입니다. 비밀번호를 입력하세요."
+                elif 'PermissionError' in err_str or '권한' in err_str or '쓰기' in err_str:
+                    error_type = "permission_denied"
+                    guide = "파일 또는 폴더의 쓰기 권한을 확인하세요. 다른 프로그램에서 파일을 닫아주세요."
+                elif '디렉토리' in err_str and ('존재' in err_str or '없' in err_str):
+                    error_type = "invalid_path"
+                    guide = "저장할 폴더가 존재하는지 확인하세요."
                 respond(req_id, False, error=err_str, error_type=error_type, guide=guide)
                 print(f"[ERROR] {e}", file=sys.stderr)
                 sys.stderr.flush()
