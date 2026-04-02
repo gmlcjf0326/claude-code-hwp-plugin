@@ -202,6 +202,48 @@ def dispatch(hwp, method, params):
         text = hwp.get_selected_text()
         return {"text": text}
 
+    if method == "get_font_list":
+        from presets import get_font_list
+        category = params.get("category")
+        gov_only = params.get("gov_only", False)
+        fonts = get_font_list(category=category, gov_only=gov_only)
+        return {"status": "ok", "fonts": fonts, "count": len(fonts)}
+
+    if method == "get_preset_list":
+        from presets import DOCUMENT_PRESETS, TABLE_STYLES
+        doc_presets = [{"name": k, "page": v.get("page", {})} for k, v in DOCUMENT_PRESETS.items()]
+        table_styles = [{"name": k, "header_bg": v.get("header_bg")} for k, v in TABLE_STYLES.items()]
+        return {"status": "ok", "document_presets": doc_presets, "table_styles": table_styles}
+
+    if method == "apply_document_preset":
+        validate_params(params, ["preset_name"], method)
+        from presets import DOCUMENT_PRESETS
+        preset_name = params["preset_name"]
+        if preset_name not in DOCUMENT_PRESETS:
+            return {"error": f"프리셋 '{preset_name}' 없음. 사용 가능: {list(DOCUMENT_PRESETS.keys())}"}
+        preset = DOCUMENT_PRESETS[preset_name]
+        # 1. 용지 설정 적용
+        page = preset.get("page", {})
+        if page:
+            dispatch(hwp, "set_page_setup", {
+                "top_margin": page.get("top", 20),
+                "bottom_margin": page.get("bottom", 15),
+                "left_margin": page.get("left", 20),
+                "right_margin": page.get("right", 20),
+            })
+        # 2. 본문 서식 적용
+        body = preset.get("body", {})
+        if body:
+            from hwp_editor import set_paragraph_style
+            para_params = {}
+            if "line_spacing" in body:
+                para_params["line_spacing"] = body["line_spacing"]
+            if "align" in body:
+                para_params["align"] = body["align"]
+            if para_params:
+                set_paragraph_style(hwp, para_params)
+        return {"status": "ok", "preset": preset_name, "applied": preset}
+
     if method == "get_table_dimensions":
         # 표 치수 추출 — 표 전체 너비, 셀 여백, 행/열 구조
         table_index = params.get("table_index", 0)

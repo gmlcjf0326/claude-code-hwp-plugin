@@ -36673,6 +36673,87 @@ function registerAnalysisTools(server2, bridge2, toolset2 = "standard") {
         return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }], isError: true };
       }
     });
+    server2.tool("hwp_get_page_setup", "\uD604\uC7AC \uBB38\uC11C\uC758 \uC6A9\uC9C0 \uC124\uC815\uC744 \uC77D\uC2B5\uB2C8\uB2E4. \uC6A9\uC9C0 \uD06C\uAE30, \uBC29\uD5A5, \uC5EC\uBC31(\uC704/\uC544\uB798/\uC88C/\uC6B0/\uBA38\uB9AC\uB9D0/\uAF2C\uB9AC\uB9D0), \uC81C\uBCF8 \uC5EC\uBC31, \uC0AC\uC6A9 \uAC00\uB2A5 \uC601\uC5ED\uC744 \uBC18\uD658\uD569\uB2C8\uB2E4.", {}, async () => {
+      if (!bridge2.getCurrentDocument())
+        return { content: [{ type: "text", text: JSON.stringify({ error: "\uC5F4\uB9B0 \uBB38\uC11C\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4." }) }], isError: true };
+      try {
+        await bridge2.ensureRunning();
+        const r = await bridge2.send("get_page_setup", {});
+        if (!r.success)
+          return { content: [{ type: "text", text: JSON.stringify({ error: r.error }) }], isError: true };
+        return { content: [{ type: "text", text: JSON.stringify(r.data) }] };
+      } catch (err) {
+        return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }], isError: true };
+      }
+    });
+    server2.tool("hwp_get_table_dimensions", "\uD45C\uC758 \uC804\uCCB4 \uB108\uBE44, \uC140 \uC5EC\uBC31, \uBC14\uAE65 \uC5EC\uBC31\uC744 \uBC18\uD658\uD569\uB2C8\uB2E4. \uC591\uC2DD \uBD84\uC11D \uC2DC \uD45C \uAD6C\uC870\uB97C \uC815\uD655\uD788 \uC7AC\uD604\uD558\uAE30 \uC704\uD574 \uC0AC\uC6A9\uD569\uB2C8\uB2E4.", {
+      table_index: external_exports.number().int().min(0).describe("\uD45C \uC778\uB371\uC2A4 (0\uBD80\uD130)")
+    }, async ({ table_index }) => {
+      if (!bridge2.getCurrentDocument())
+        return { content: [{ type: "text", text: JSON.stringify({ error: "\uC5F4\uB9B0 \uBB38\uC11C\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4." }) }], isError: true };
+      try {
+        await bridge2.ensureRunning();
+        const r = await bridge2.send("get_table_dimensions", { table_index });
+        if (!r.success)
+          return { content: [{ type: "text", text: JSON.stringify({ error: r.error }) }], isError: true };
+        return { content: [{ type: "text", text: JSON.stringify(r.data) }] };
+      } catch (err) {
+        return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }], isError: true };
+      }
+    });
+    server2.tool("hwp_extract_full_profile", "\uBB38\uC11C\uC758 \uC591\uC2DD\uC744 \uC815\uBC00 \uBD84\uC11D\uD569\uB2C8\uB2E4. \uC6A9\uC9C0 \uC124\uC815 + \uBCF8\uBB38 \uAE00\uC790/\uBB38\uB2E8 \uC11C\uC2DD(19\uAC1C \uC18D\uC131) + \uD45C \uCE58\uC218(\uCD5C\uB300 5\uAC1C)\uB97C \uD55C\uBC88\uC5D0 \uBC18\uD658\uD569\uB2C8\uB2E4. \uC591\uC2DD \uAE30\uBC18 \uBB38\uC11C \uC791\uC131 \uC804 \uBC18\uB4DC\uC2DC \uD638\uCD9C\uD558\uC138\uC694.", {}, async () => {
+      if (!bridge2.getCurrentDocument())
+        return { content: [{ type: "text", text: JSON.stringify({ error: "\uC5F4\uB9B0 \uBB38\uC11C\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4." }) }], isError: true };
+      try {
+        await bridge2.ensureRunning();
+        const r = await bridge2.send("extract_full_profile", {}, 6e4);
+        if (!r.success)
+          return { content: [{ type: "text", text: JSON.stringify({ error: r.error }) }], isError: true };
+        return { content: [{ type: "text", text: JSON.stringify(r.data) }] };
+      } catch (err) {
+        return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }], isError: true };
+      }
+    });
+    server2.tool("hwp_get_font_list", "\uC0AC\uC6A9 \uAC00\uB2A5\uD55C \uD55C\uAE00 \uD3F0\uD2B8 \uBAA9\uB85D\uC744 \uBC18\uD658\uD569\uB2C8\uB2E4. \uCE74\uD14C\uACE0\uB9AC\uBCC4(serif/sans/display) \uB610\uB294 \uACF5\uBB38\uC11C\uC6A9(gov) \uD544\uD130 \uAC00\uB2A5. 40+\uC885 \uD55C\uAD6D\uC5B4 \uD3F0\uD2B8 \uD3EC\uD568.", {
+      category: external_exports.string().optional().describe("\uD3F0\uD2B8 \uCE74\uD14C\uACE0\uB9AC \uD544\uD130 (serif/sans/display/mono \uB4F1)"),
+      gov_only: external_exports.boolean().optional().describe("\uACF5\uBB38\uC11C \uD45C\uC900 \uD3F0\uD2B8\uB9CC (\uAE30\uBCF8: false)")
+    }, async ({ category, gov_only }) => {
+      try {
+        await bridge2.ensureRunning();
+        const r = await bridge2.send("get_font_list", { category, gov_only: gov_only || false });
+        if (!r.success)
+          return { content: [{ type: "text", text: JSON.stringify({ error: r.error }) }], isError: true };
+        return { content: [{ type: "text", text: JSON.stringify(r.data) }] };
+      } catch (err) {
+        return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }], isError: true };
+      }
+    });
+    server2.tool("hwp_get_preset_list", "\uC0AC\uC6A9 \uAC00\uB2A5\uD55C \uBB38\uC11C/\uD45C \uD504\uB9AC\uC14B \uBAA9\uB85D\uC744 \uBC18\uD658\uD569\uB2C8\uB2E4. \uACF5\uBB38\uC11C, \uC0AC\uC5C5\uACC4\uD68D\uC11C, \uC81C\uC548\uC11C, \uBCF4\uACE0\uC11C \uB4F1 6\uC885 \uBB38\uC11C \uD504\uB9AC\uC14B + 4\uC885 \uD45C \uC2A4\uD0C0\uC77C.", {}, async () => {
+      try {
+        await bridge2.ensureRunning();
+        const r = await bridge2.send("get_preset_list", {});
+        if (!r.success)
+          return { content: [{ type: "text", text: JSON.stringify({ error: r.error }) }], isError: true };
+        return { content: [{ type: "text", text: JSON.stringify(r.data) }] };
+      } catch (err) {
+        return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }], isError: true };
+      }
+    });
+    server2.tool("hwp_apply_document_preset", "\uBB38\uC11C \uD504\uB9AC\uC14B\uC744 \uC801\uC6A9\uD569\uB2C8\uB2E4. \uC6A9\uC9C0 \uC124\uC815 + \uAE30\uBCF8 \uD3F0\uD2B8/\uC904\uAC04\uACA9\uC744 \uC77C\uAD04 \uC801\uC6A9\uD569\uB2C8\uB2E4. \uD504\uB9AC\uC14B: \uACF5\uBB38\uC11C, \uC0AC\uC5C5\uACC4\uD68D\uC11C, \uC81C\uC548\uC11C, \uBCF4\uACE0\uC11C, \uACC4\uC57D\uC11C, \uB3D9\uC758\uC11C.", {
+      preset_name: external_exports.string().describe("\uD504\uB9AC\uC14B \uC774\uB984 (\uACF5\uBB38\uC11C/\uC0AC\uC5C5\uACC4\uD68D\uC11C/\uC81C\uC548\uC11C/\uBCF4\uACE0\uC11C/\uACC4\uC57D\uC11C/\uB3D9\uC758\uC11C)")
+    }, async ({ preset_name }) => {
+      if (!bridge2.getCurrentDocument())
+        return { content: [{ type: "text", text: JSON.stringify({ error: "\uC5F4\uB9B0 \uBB38\uC11C\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4." }) }], isError: true };
+      try {
+        await bridge2.ensureRunning();
+        const r = await bridge2.send("apply_document_preset", { preset_name });
+        if (!r.success)
+          return { content: [{ type: "text", text: JSON.stringify({ error: r.error }) }], isError: true };
+        return { content: [{ type: "text", text: JSON.stringify(r.data) }] };
+      } catch (err) {
+        return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }], isError: true };
+      }
+    });
   }
 }
 

@@ -611,5 +611,98 @@ export function registerAnalysisTools(server, bridge, toolset = 'standard') {
                 return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
             }
         });
+        // ── 용지 설정 읽기 (F7 용지편집) ──
+        server.tool('hwp_get_page_setup', '현재 문서의 용지 설정을 읽습니다. 용지 크기, 방향, 여백(위/아래/좌/우/머리말/꼬리말), 제본 여백, 사용 가능 영역을 반환합니다.', {}, async () => {
+            if (!bridge.getCurrentDocument())
+                return { content: [{ type: 'text', text: JSON.stringify({ error: '열린 문서가 없습니다.' }) }], isError: true };
+            try {
+                await bridge.ensureRunning();
+                const r = await bridge.send('get_page_setup', {});
+                if (!r.success)
+                    return { content: [{ type: 'text', text: JSON.stringify({ error: r.error }) }], isError: true };
+                return { content: [{ type: 'text', text: JSON.stringify(r.data) }] };
+            }
+            catch (err) {
+                return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+            }
+        });
+        // ── 표 치수 추출 ──
+        server.tool('hwp_get_table_dimensions', '표의 전체 너비, 셀 여백, 바깥 여백을 반환합니다. 양식 분석 시 표 구조를 정확히 재현하기 위해 사용합니다.', {
+            table_index: z.number().int().min(0).describe('표 인덱스 (0부터)'),
+        }, async ({ table_index }) => {
+            if (!bridge.getCurrentDocument())
+                return { content: [{ type: 'text', text: JSON.stringify({ error: '열린 문서가 없습니다.' }) }], isError: true };
+            try {
+                await bridge.ensureRunning();
+                const r = await bridge.send('get_table_dimensions', { table_index });
+                if (!r.success)
+                    return { content: [{ type: 'text', text: JSON.stringify({ error: r.error }) }], isError: true };
+                return { content: [{ type: 'text', text: JSON.stringify(r.data) }] };
+            }
+            catch (err) {
+                return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+            }
+        });
+        // ── 양식 종합 프로파일 ──
+        server.tool('hwp_extract_full_profile', '문서의 양식을 정밀 분석합니다. 용지 설정 + 본문 글자/문단 서식(19개 속성) + 표 치수(최대 5개)를 한번에 반환합니다. 양식 기반 문서 작성 전 반드시 호출하세요.', {}, async () => {
+            if (!bridge.getCurrentDocument())
+                return { content: [{ type: 'text', text: JSON.stringify({ error: '열린 문서가 없습니다.' }) }], isError: true };
+            try {
+                await bridge.ensureRunning();
+                const r = await bridge.send('extract_full_profile', {}, 60000);
+                if (!r.success)
+                    return { content: [{ type: 'text', text: JSON.stringify({ error: r.error }) }], isError: true };
+                return { content: [{ type: 'text', text: JSON.stringify(r.data) }] };
+            }
+            catch (err) {
+                return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+            }
+        });
+        // ── 폰트 목록 조회 ──
+        server.tool('hwp_get_font_list', '사용 가능한 한글 폰트 목록을 반환합니다. 카테고리별(serif/sans/display) 또는 공문서용(gov) 필터 가능. 40+종 한국어 폰트 포함.', {
+            category: z.string().optional().describe('폰트 카테고리 필터 (serif/sans/display/mono 등)'),
+            gov_only: z.boolean().optional().describe('공문서 표준 폰트만 (기본: false)'),
+        }, async ({ category, gov_only }) => {
+            try {
+                await bridge.ensureRunning();
+                const r = await bridge.send('get_font_list', { category, gov_only: gov_only || false });
+                if (!r.success)
+                    return { content: [{ type: 'text', text: JSON.stringify({ error: r.error }) }], isError: true };
+                return { content: [{ type: 'text', text: JSON.stringify(r.data) }] };
+            }
+            catch (err) {
+                return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+            }
+        });
+        // ── 문서 프리셋 목록 ──
+        server.tool('hwp_get_preset_list', '사용 가능한 문서/표 프리셋 목록을 반환합니다. 공문서, 사업계획서, 제안서, 보고서 등 6종 문서 프리셋 + 4종 표 스타일.', {}, async () => {
+            try {
+                await bridge.ensureRunning();
+                const r = await bridge.send('get_preset_list', {});
+                if (!r.success)
+                    return { content: [{ type: 'text', text: JSON.stringify({ error: r.error }) }], isError: true };
+                return { content: [{ type: 'text', text: JSON.stringify(r.data) }] };
+            }
+            catch (err) {
+                return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+            }
+        });
+        // ── 문서 프리셋 적용 ──
+        server.tool('hwp_apply_document_preset', '문서 프리셋을 적용합니다. 용지 설정 + 기본 폰트/줄간격을 일괄 적용합니다. 프리셋: 공문서, 사업계획서, 제안서, 보고서, 계약서, 동의서.', {
+            preset_name: z.string().describe('프리셋 이름 (공문서/사업계획서/제안서/보고서/계약서/동의서)'),
+        }, async ({ preset_name }) => {
+            if (!bridge.getCurrentDocument())
+                return { content: [{ type: 'text', text: JSON.stringify({ error: '열린 문서가 없습니다.' }) }], isError: true };
+            try {
+                await bridge.ensureRunning();
+                const r = await bridge.send('apply_document_preset', { preset_name });
+                if (!r.success)
+                    return { content: [{ type: 'text', text: JSON.stringify({ error: r.error }) }], isError: true };
+                return { content: [{ type: 'text', text: JSON.stringify(r.data) }] };
+            }
+            catch (err) {
+                return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+            }
+        });
     } // end toolset !== 'minimal'
 }
