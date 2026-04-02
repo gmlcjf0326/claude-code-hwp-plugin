@@ -39,6 +39,20 @@ export const TEMPLATES = [
     { id: 'personal_resume', name: '이력서', category: '개인', fields: ['이름', '생년월일', '연락처', '이메일', '학력', '경력', '자격증'] },
     { id: 'personal_letter', name: '자기소개서', category: '개인', fields: ['이름', '지원분야', '성장배경', '지원동기', '입사후포부'] },
     { id: 'personal_certificate', name: '증명서', category: '개인', fields: ['성명', '생년월일', '발급사유', '발급일'] },
+    // ── v0.6.0 추가 13개 (총 35종) ──
+    { id: 'gov_appointment', name: '인사발령', category: '공문서', fields: ['대상자', '현직급', '현부서', '발령직급', '발령부서', '발령사유', '발령일'] },
+    { id: 'gov_audit', name: '감사보고서', category: '공문서', fields: ['감사기간', '감사대상', '감사결과', '지적사항', '개선권고', '기관명'] },
+    { id: 'legal_power_of_attorney', name: '위임장', category: '법무', fields: ['위임인', '위임인주소', '수임인', '수임인주소', '위임사항', '위임기간', '작성일'] },
+    { id: 'legal_content_cert', name: '내용증명', category: '법무', fields: ['발신인', '발신주소', '수신인', '수신주소', '내용', '요청사항', '발송일'] },
+    { id: 'hr_leave_request', name: '휴가신청서', category: 'HR', fields: ['신청인', '부서', '직급', '휴가종류', '시작일', '종료일', '사유'] },
+    { id: 'hr_employment_contract', name: '고용계약서', category: 'HR', fields: ['갑', '을', '직위', '근무장소', '급여', '근무시간', '계약기간'] },
+    { id: 'hr_resignation', name: '퇴사서', category: 'HR', fields: ['성명', '부서', '직급', '입사일', '퇴사일', '퇴사사유'] },
+    { id: 'hr_performance_review', name: '성과평가서', category: 'HR', fields: ['평가대상', '평가기간', '업무성과', '역량평가', '종합등급', '평가자'] },
+    { id: 'biz_purchase_order', name: '구매발주서', category: '기업', fields: ['발주처', '납품처', '품목', '수량', '단가', '금액', '납기일'] },
+    { id: 'biz_expense_claim', name: '경비청구서', category: '기업', fields: ['청구인', '부서', '항목', '금액', '사용일', '증빙', '승인자'] },
+    { id: 'biz_work_report', name: '업무보고서', category: '기업', fields: ['보고자', '부서', '보고기간', '주요실적', '이슈', '다음계획'] },
+    { id: 'biz_training_plan', name: '교육훈련계획', category: '기업', fields: ['교육명', '교육대상', '교육기간', '교육장소', '교육내용', '예산'] },
+    { id: 'finance_payslip', name: '급여명세서', category: '재무', fields: ['성명', '부서', '직급', '기본급', '수당', '공제', '실수령액', '지급일'] },
 ];
 // ── HWPX 네임스페이스 ──
 const NS_HP = 'http://www.hancom.co.kr/hwpml/2011/paragraph';

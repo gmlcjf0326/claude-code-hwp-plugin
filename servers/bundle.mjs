@@ -21097,7 +21097,21 @@ var init_hwpx_engine = __esm({
       // 개인
       { id: "personal_resume", name: "\uC774\uB825\uC11C", category: "\uAC1C\uC778", fields: ["\uC774\uB984", "\uC0DD\uB144\uC6D4\uC77C", "\uC5F0\uB77D\uCC98", "\uC774\uBA54\uC77C", "\uD559\uB825", "\uACBD\uB825", "\uC790\uACA9\uC99D"] },
       { id: "personal_letter", name: "\uC790\uAE30\uC18C\uAC1C\uC11C", category: "\uAC1C\uC778", fields: ["\uC774\uB984", "\uC9C0\uC6D0\uBD84\uC57C", "\uC131\uC7A5\uBC30\uACBD", "\uC9C0\uC6D0\uB3D9\uAE30", "\uC785\uC0AC\uD6C4\uD3EC\uBD80"] },
-      { id: "personal_certificate", name: "\uC99D\uBA85\uC11C", category: "\uAC1C\uC778", fields: ["\uC131\uBA85", "\uC0DD\uB144\uC6D4\uC77C", "\uBC1C\uAE09\uC0AC\uC720", "\uBC1C\uAE09\uC77C"] }
+      { id: "personal_certificate", name: "\uC99D\uBA85\uC11C", category: "\uAC1C\uC778", fields: ["\uC131\uBA85", "\uC0DD\uB144\uC6D4\uC77C", "\uBC1C\uAE09\uC0AC\uC720", "\uBC1C\uAE09\uC77C"] },
+      // ── v0.6.0 추가 13개 (총 35종) ──
+      { id: "gov_appointment", name: "\uC778\uC0AC\uBC1C\uB839", category: "\uACF5\uBB38\uC11C", fields: ["\uB300\uC0C1\uC790", "\uD604\uC9C1\uAE09", "\uD604\uBD80\uC11C", "\uBC1C\uB839\uC9C1\uAE09", "\uBC1C\uB839\uBD80\uC11C", "\uBC1C\uB839\uC0AC\uC720", "\uBC1C\uB839\uC77C"] },
+      { id: "gov_audit", name: "\uAC10\uC0AC\uBCF4\uACE0\uC11C", category: "\uACF5\uBB38\uC11C", fields: ["\uAC10\uC0AC\uAE30\uAC04", "\uAC10\uC0AC\uB300\uC0C1", "\uAC10\uC0AC\uACB0\uACFC", "\uC9C0\uC801\uC0AC\uD56D", "\uAC1C\uC120\uAD8C\uACE0", "\uAE30\uAD00\uBA85"] },
+      { id: "legal_power_of_attorney", name: "\uC704\uC784\uC7A5", category: "\uBC95\uBB34", fields: ["\uC704\uC784\uC778", "\uC704\uC784\uC778\uC8FC\uC18C", "\uC218\uC784\uC778", "\uC218\uC784\uC778\uC8FC\uC18C", "\uC704\uC784\uC0AC\uD56D", "\uC704\uC784\uAE30\uAC04", "\uC791\uC131\uC77C"] },
+      { id: "legal_content_cert", name: "\uB0B4\uC6A9\uC99D\uBA85", category: "\uBC95\uBB34", fields: ["\uBC1C\uC2E0\uC778", "\uBC1C\uC2E0\uC8FC\uC18C", "\uC218\uC2E0\uC778", "\uC218\uC2E0\uC8FC\uC18C", "\uB0B4\uC6A9", "\uC694\uCCAD\uC0AC\uD56D", "\uBC1C\uC1A1\uC77C"] },
+      { id: "hr_leave_request", name: "\uD734\uAC00\uC2E0\uCCAD\uC11C", category: "HR", fields: ["\uC2E0\uCCAD\uC778", "\uBD80\uC11C", "\uC9C1\uAE09", "\uD734\uAC00\uC885\uB958", "\uC2DC\uC791\uC77C", "\uC885\uB8CC\uC77C", "\uC0AC\uC720"] },
+      { id: "hr_employment_contract", name: "\uACE0\uC6A9\uACC4\uC57D\uC11C", category: "HR", fields: ["\uAC11", "\uC744", "\uC9C1\uC704", "\uADFC\uBB34\uC7A5\uC18C", "\uAE09\uC5EC", "\uADFC\uBB34\uC2DC\uAC04", "\uACC4\uC57D\uAE30\uAC04"] },
+      { id: "hr_resignation", name: "\uD1F4\uC0AC\uC11C", category: "HR", fields: ["\uC131\uBA85", "\uBD80\uC11C", "\uC9C1\uAE09", "\uC785\uC0AC\uC77C", "\uD1F4\uC0AC\uC77C", "\uD1F4\uC0AC\uC0AC\uC720"] },
+      { id: "hr_performance_review", name: "\uC131\uACFC\uD3C9\uAC00\uC11C", category: "HR", fields: ["\uD3C9\uAC00\uB300\uC0C1", "\uD3C9\uAC00\uAE30\uAC04", "\uC5C5\uBB34\uC131\uACFC", "\uC5ED\uB7C9\uD3C9\uAC00", "\uC885\uD569\uB4F1\uAE09", "\uD3C9\uAC00\uC790"] },
+      { id: "biz_purchase_order", name: "\uAD6C\uB9E4\uBC1C\uC8FC\uC11C", category: "\uAE30\uC5C5", fields: ["\uBC1C\uC8FC\uCC98", "\uB0A9\uD488\uCC98", "\uD488\uBAA9", "\uC218\uB7C9", "\uB2E8\uAC00", "\uAE08\uC561", "\uB0A9\uAE30\uC77C"] },
+      { id: "biz_expense_claim", name: "\uACBD\uBE44\uCCAD\uAD6C\uC11C", category: "\uAE30\uC5C5", fields: ["\uCCAD\uAD6C\uC778", "\uBD80\uC11C", "\uD56D\uBAA9", "\uAE08\uC561", "\uC0AC\uC6A9\uC77C", "\uC99D\uBE59", "\uC2B9\uC778\uC790"] },
+      { id: "biz_work_report", name: "\uC5C5\uBB34\uBCF4\uACE0\uC11C", category: "\uAE30\uC5C5", fields: ["\uBCF4\uACE0\uC790", "\uBD80\uC11C", "\uBCF4\uACE0\uAE30\uAC04", "\uC8FC\uC694\uC2E4\uC801", "\uC774\uC288", "\uB2E4\uC74C\uACC4\uD68D"] },
+      { id: "biz_training_plan", name: "\uAD50\uC721\uD6C8\uB828\uACC4\uD68D", category: "\uAE30\uC5C5", fields: ["\uAD50\uC721\uBA85", "\uAD50\uC721\uB300\uC0C1", "\uAD50\uC721\uAE30\uAC04", "\uAD50\uC721\uC7A5\uC18C", "\uAD50\uC721\uB0B4\uC6A9", "\uC608\uC0B0"] },
+      { id: "finance_payslip", name: "\uAE09\uC5EC\uBA85\uC138\uC11C", category: "\uC7AC\uBB34", fields: ["\uC131\uBA85", "\uBD80\uC11C", "\uC9C1\uAE09", "\uAE30\uBCF8\uAE09", "\uC218\uB2F9", "\uACF5\uC81C", "\uC2E4\uC218\uB839\uC561", "\uC9C0\uAE09\uC77C"] }
     ];
     NS_HP = "http://www.hancom.co.kr/hwpml/2011/paragraph";
   }

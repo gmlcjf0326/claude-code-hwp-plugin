@@ -14,6 +14,24 @@ from hwp_editor import (fill_document, fill_table_cells_by_tab, fill_table_cells
                         verify_after_fill)
 
 
+def _exit_table_safely(hwp):
+    """표에서 안전하게 탈출. is_cell() 확인 후 Cancel 반복."""
+    for _ in range(5):
+        try:
+            if not hwp.is_cell():
+                break
+            hwp.HAction.Run("Cancel")
+        except Exception:
+            break
+    # 표 밖 확인 후 문서 끝으로
+    try:
+        if not hwp.is_cell():
+            hwp.HAction.Run("MoveDocEnd")
+            hwp.HAction.Run("BreakPara")
+    except Exception:
+        pass
+
+
 def validate_file_path(file_path, must_exist=True):
     """경로 보안 검증. 심볼릭 링크 거부, 존재/권한 확인. 한글 에러 대화상자 사전 방지."""
     real = os.path.abspath(file_path)
@@ -532,6 +550,12 @@ def dispatch(hwp, method, params):
 
     if method == "insert_text":
         validate_params(params, ["text"], method)
+        # 표 안에 커서가 있으면 먼저 탈출 (표 간격/넘침 방지)
+        try:
+            if hwp.is_cell():
+                _exit_table_safely(hwp)
+        except Exception:
+            pass
         text = params["text"]
         # 각 insert_text 호출을 독립 문단으로 — 끝에 줄바꿈 자동 추가
         if not text.endswith("\r\n") and not text.endswith("\n"):
@@ -844,11 +868,10 @@ def dispatch(hwp, method, params):
                     filled += 1
                 if c < len(row) - 1 or r < rows - 1:
                     hwp.TableRightCell()
-        # 표 밖으로 커서 이동 (표 생성 후 커서가 표 안에 남아있음)
+        # 표 밖으로 안전하게 탈출 (is_cell 확인 후 Cancel 반복)
+        _exit_table_safely(hwp)
         try:
-            hwp.Cancel()  # 셀 선택 해제
-            hwp.HAction.Run("MoveDocEnd")  # 문서 끝으로 이동
-            hwp.HAction.Run("BreakPara")   # 새 문단 생성 (표 아래)
+            pass  # _exit_table_safely에서 이미 MoveDocEnd + BreakPara 수행
         except Exception as e:
             print(f"[WARN] Table exit: {e}", file=sys.stderr)
         # header_style: Bold는 이미 표 생성 시 적용됨
@@ -857,6 +880,36 @@ def dispatch(hwp, method, params):
         if col_width_warning:
             result["warning"] = col_width_warning
         return result
+
+    if method == "create_approval_box":
+        # 결재란 자동 생성 (4×N 표 + 서식)
+        levels = params.get("levels", ["기안", "검토", "결재"])
+        position = params.get("position", "right")  # right or center
+        cols = len(levels) + 1  # 구분열 + 결재자 수
+        rows = 4  # 구분, 직급, 성명, 서명
+        # 표 데이터 구성
+        data = [["구분"] + levels]
+        data.append(["직급"] + ["" for _ in levels])
+        data.append(["성명"] + ["" for _ in levels])
+        data.append(["서명"] + ["" for _ in levels])
+        col_widths = [18] + [25 for _ in levels]
+        row_heights = [8, 8, 12, 12]
+        # 표 생성
+        result = dispatch(hwp, "table_create_from_data", {
+            "data": data,
+            "col_widths": col_widths,
+            "row_heights": row_heights,
+            "alignment": position,
+            "header_style": True,
+        })
+        # 헤더행 배경색 (진남색) + 흰색 글자
+        try:
+            from hwp_editor import set_cell_background_color
+            cells = [{"tab": i, "color": "#E8E8E8"} for i in range(cols)]
+            set_cell_background_color(hwp, 0, cells)
+        except Exception as e:
+            print(f"[WARN] Approval box style: {e}", file=sys.stderr)
+        return {"status": "ok", "rows": rows, "cols": cols, "levels": levels}
 
     if method == "table_insert_from_csv":
         validate_params(params, ["file_path"], method)
