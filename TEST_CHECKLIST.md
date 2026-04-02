@@ -592,6 +592,41 @@
 
 ---
 
+## Phase 18: v0.5.5~v0.5.6 근본 원인 해결 검증
+
+### 18-1. COM 우선 검색 — XML 라우팅 완전 제거 (원인 A)
+- [ ] HWPX 파일에서 텍스트 삽입 후 hwp_find_replace → replaced=true (COM 직행)
+- [ ] HWPX 파일에서 텍스트 삽입 후 hwp_text_search → total_found > 0
+- [ ] HWPX 파일에서 hwp_find_replace_multi → success > 0
+- [ ] HWPX 파일에서 hwp_find_and_append → status: "ok"
+- [ ] HWPX 파일에서 hwp_find_replace_nth → replaced=true
+- [ ] 응답에 engine:"xml" 이 아닌 engine 없음 또는 "com" 확인
+
+### 18-2. 파일 경로 사전 검증 — 에러 대화상자 방지 (원인 F)
+- [ ] 존재하지 않는 폴더에 저장 → error_type: "file_not_found" 또는 "invalid_path" (한글 얼럿 안 뜸)
+- [ ] 읽기 전용 파일에 저장 → error_type: "permission_denied" (한글 얼럿 안 뜸)
+- [ ] 다른 프로그램이 열고 있는 파일에 저장 → error_type: "file_locked" (한글 얼럿 안 뜸)
+- [ ] 정상 경로에 저장 → status: "ok" (정상 동작)
+
+### 18-3. 표 중복 감지 — 50 팬텀 방지 (원인 D)
+- [ ] 표 1개 문서 → hwp_analyze_document → tables 배열 1개
+- [ ] total_count가 50이 아닌 실제 표 수인지 확인
+- [ ] 표 2개 문서 → total_count = 2
+
+### 18-4. open_document COM 캐시 초기화 (원인 D)
+- [ ] 문서 A 열기 → 표 생성 → 문서 B 열기 → hwp_get_tables → 문서 B의 표만 반환 (A의 캐시 안 남음)
+
+### 18-5. 에러 타입 추가 분류
+- [ ] permission_denied 에러 시 guide 메시지 확인
+- [ ] invalid_path 에러 시 guide 메시지 확인
+
+### 18-6. 캐시 동기화 확인
+- [ ] Claude Code 재시작 후 MCP 도구 94개 로딩 확인
+- [ ] hwp_check_setup 정상 동작
+- [ ] 새 기능(case_sensitive, style 등) 동작 확인
+
+---
+
 ## 발견된 이슈 기록
 
 | #   | Phase | 이슈 | 심각도 | 상태 | 비고 |
@@ -617,4 +652,5 @@
 | 2차 | v0.3.1 | 87.1% | SetMessageBoxMode, 스타일, 바닥글 |
 | 3차 | v0.5.2 | 88.7% | PDF 정상화, 표 배경색, DOCX/HTML |
 | 4차 | v0.5.3 | 82.6% (캐시 미갱신) | Phase 16 미구현으로 하락 (기존 90%) |
-| 5차 | v0.5.4 | 목표 95%+ | get_tables/find_and_append 근본수정, textbox 좌표 |
+| 5차 | v0.5.4 | 74.7% | 캐시 미갱신 + COM↔XML 단절 |
+| 6차 | v0.5.6 | 목표 95%+ | COM 우선, 경로 검증, 표 중복 감지, 캐시 직접 동기화 |
