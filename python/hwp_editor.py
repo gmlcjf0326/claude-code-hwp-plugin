@@ -480,17 +480,41 @@ def get_para_shape(hwp):
     except Exception:
         pass
 
-    return {
+    # 추가 속성 11개 (v0.6.0 양식 정밀 분석용)
+    extra = {}
+    for attr, key in [
+        ("PagebreakBefore", "page_break_before"),
+        ("KeepWithNext", "keep_with_next"),
+        ("WidowOrphan", "widow_orphan"),
+        ("KeepLinesTogether", "keep_lines_together"),
+        ("AutoSpaceEAsianEng", "auto_space_eAsian_eng"),
+        ("AutoSpaceEAsianNum", "auto_space_eAsian_num"),
+        ("BreakLatinWord", "break_latin_word"),
+        ("LineWrap", "line_wrap"),
+        ("SnapToGrid", "snap_to_grid"),
+        ("HeadingType", "heading_type"),
+        ("Condense", "condense"),
+    ]:
+        try:
+            val = getattr(pset, attr)
+            extra[key] = bool(val) if isinstance(val, int) and val in (0, 1) else val
+        except Exception:
+            pass
+
+    result = {
         "align": align_names.get(alignment, "left"),
         "line_spacing": line_spacing,
         "line_spacing_type": spacing_type_names.get(line_spacing_type, "percent"),
         "space_before": space_before,
         "space_after": space_after,
-        "indent": indent,              # 첫 줄 들여쓰기 (양수=들여쓰기, 음수=내어쓰기)
-        "left_margin": left_margin,    # 왼쪽 여백 = 나머지 줄 시작위치
-        "right_margin": right_margin,  # 오른쪽 여백
-        # 첫 줄 시작위치 = left_margin + indent
+        "indent": indent,
+        "indent_type": "들여쓰기" if indent > 0 else ("내어쓰기" if indent < 0 else "없음"),
+        "left_margin": left_margin,
+        "right_margin": right_margin,
+        "first_line_start": round(left_margin + indent, 1),  # 첫 줄 시작위치
     }
+    result.update(extra)
+    return result
 
 
 def get_cell_format(hwp, table_idx, cell_tab):

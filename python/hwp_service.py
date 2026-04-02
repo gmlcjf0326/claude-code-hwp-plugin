@@ -202,6 +202,38 @@ def dispatch(hwp, method, params):
         text = hwp.get_selected_text()
         return {"text": text}
 
+    if method == "get_page_setup":
+        # F7 용지편집 정보 — 용지 크기, 방향, 여백, 사용 가능 영역
+        try:
+            d = hwp.get_pagedef_as_dict()
+            pw = d.get("용지폭", 210)
+            ph = d.get("용지길이", 297)
+            lm = d.get("왼쪽", 30)
+            rm = d.get("오른쪽", 30)
+            tm = d.get("위쪽", 20)
+            bm = d.get("아래쪽", 15)
+            hm = d.get("머리말", 15)
+            fm = d.get("꼬리말", 15)
+            orient = d.get("용지방향", 0)
+            binding = d.get("제본여백", 0)
+            return {
+                "status": "ok",
+                "paper_width_mm": pw,
+                "paper_height_mm": ph,
+                "orientation": "landscape" if orient == 1 else "portrait",
+                "top_margin_mm": tm,
+                "bottom_margin_mm": bm,
+                "left_margin_mm": lm,
+                "right_margin_mm": rm,
+                "header_margin_mm": hm,
+                "footer_margin_mm": fm,
+                "binding_margin_mm": binding,
+                "usable_width_mm": round(pw - lm - rm, 1),
+                "usable_height_mm": round(ph - tm - bm, 1),
+            }
+        except Exception as e:
+            raise RuntimeError(f"용지 설정 읽기 실패: {e}")
+
     if method == "get_cursor_context":
         # 실제 커서 위치의 서식 + 주변 텍스트 반환
         from hwp_editor import get_char_shape, get_para_shape
