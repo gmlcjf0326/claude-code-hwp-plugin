@@ -202,6 +202,71 @@ def dispatch(hwp, method, params):
         text = hwp.get_selected_text()
         return {"text": text}
 
+    if method == "get_table_dimensions":
+        # 표 치수 추출 — 표 전체 너비, 셀 여백, 행/열 구조
+        table_index = params.get("table_index", 0)
+        hwp.get_into_nth_table(table_index)
+        result = {"status": "ok", "table_index": table_index}
+        try:
+            result["table_width_mm"] = hwp.get_table_width()
+        except Exception:
+            result["table_width_mm"] = None
+        try:
+            result["cell_margin"] = hwp.get_cell_margin()
+        except Exception:
+            result["cell_margin"] = None
+        try:
+            result["outside_margin"] = {
+                "top": hwp.get_table_outside_margin_top(),
+                "bottom": hwp.get_table_outside_margin_bottom(),
+                "left": hwp.get_table_outside_margin_left(),
+                "right": hwp.get_table_outside_margin_right(),
+            }
+        except Exception:
+            result["outside_margin"] = None
+        # 셀 맵에서 행/열 구조 추출
+        try:
+            from hwp_editor import map_table_cells as _map
+            cell_data = _map(hwp, table_index)
+            result["total_cells"] = cell_data.get("total_cells", 0)
+        except Exception:
+            pass
+        try:
+            hwp.Cancel()
+        except Exception:
+            pass
+        return result
+
+    if method == "extract_full_profile":
+        # 양식 종합 프로파일 — 용지 + 문단 + 글자 + 표 치수
+        from hwp_editor import get_char_shape, get_para_shape
+        profile = {"status": "ok"}
+        # 1. 용지 설정
+        try:
+            profile["page_setup"] = dispatch(hwp, "get_page_setup", {})
+        except Exception as e:
+            profile["page_setup"] = {"error": str(e)}
+        # 2. 본문 서식 (커서가 본문에 있을 때)
+        hwp.MovePos(2)
+        try:
+            profile["body_char"] = get_char_shape(hwp)
+        except Exception as e:
+            profile["body_char"] = {"error": str(e)}
+        try:
+            profile["body_para"] = get_para_shape(hwp)
+        except Exception as e:
+            profile["body_para"] = {"error": str(e)}
+        # 3. 표 치수 (최대 5개 표)
+        profile["tables"] = []
+        for i in range(5):
+            try:
+                dims = dispatch(hwp, "get_table_dimensions", {"table_index": i})
+                if dims.get("status") == "ok":
+                    profile["tables"].append(dims)
+            except Exception:
+                break
+        return profile
+
     if method == "get_page_setup":
         # F7 용지편집 정보 — 용지 크기, 방향, 여백, 사용 가능 영역
         try:
