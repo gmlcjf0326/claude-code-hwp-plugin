@@ -32,12 +32,14 @@ def validate_file_path(file_path, must_exist=True):
         if os.path.exists(real):
             if not os.access(real, os.W_OK):
                 raise PermissionError(f"파일 쓰기 권한이 없습니다 (읽기 전용 또는 잠김): {real}")
-            # 파일 잠금 사전 확인 (한글 에러 대화상자 방지)
-            try:
-                with open(real, 'a'):
-                    pass
-            except (PermissionError, IOError) as e:
-                raise PermissionError(f"파일이 다른 프로그램에서 사용 중입니다: {real}")
+            # 파일 잠금 사전 확인 — HWP/HWPX 파일은 제외 (한글이 잠금 보유 중)
+            ext = os.path.splitext(real)[1].lower()
+            if ext not in ('.hwp', '.hwpx'):
+                try:
+                    with open(real, 'a'):
+                        pass
+                except (PermissionError, IOError):
+                    raise PermissionError(f"파일이 다른 프로그램에서 사용 중입니다: {real}")
     return real
 
 
@@ -279,7 +281,39 @@ def dispatch(hwp, method, params):
         validate_params(params, ["search"], method)
         search_text = params["search"]
         max_results = min(max(params.get("max_results", 50), 1), 1000)
-        hwp.MovePos(2)  # 문서 시작
+
+        # 방법 1: 전체 텍스트에서 직접 검색 (COM FindReplace 반환값 불신뢰 대안)
+        full_text = ""
+        try:
+            full_text = hwp.get_text_file("TEXT", "")
+        except Exception:
+            pass
+
+        if full_text and search_text in full_text:
+            results = []
+            pos = 0
+            idx = 0
+            while idx < max_results:
+                found = full_text.find(search_text, pos)
+                if found == -1:
+                    break
+                start = max(0, found - 20)
+                end = min(len(full_text), found + len(search_text) + 20)
+                results.append({
+                    "index": idx + 1,
+                    "matched_text": search_text,
+                    "context": full_text[start:end],
+                })
+                pos = found + len(search_text)
+                idx += 1
+            return {
+                "search": search_text,
+                "total_found": len(results),
+                "results": results,
+            }
+
+        # 방법 2: COM FindReplace 기반 (fallback)
+        hwp.MovePos(2)
         results = []
         for i in range(max_results):
             act = hwp.HAction
@@ -289,14 +323,13 @@ def dispatch(hwp, method, params):
             pset.Direction = 0
             pset.IgnoreMessage = 1
             act.Execute("FindReplace", pset.HSet)
-            # BUG-3 fix: 반환값 대신 선택 영역 존재 여부로 판단
             context = ""
             try:
                 context = hwp.GetTextFile("TEXT", "saveblock").strip()[:200]
             except Exception:
                 pass
             if not context:
-                break  # 선택 영역이 없으면 더 이상 찾을 수 없음
+                break
             hwp.HAction.Run("Cancel")
             results.append({
                 "index": i + 1,
@@ -328,37 +361,35 @@ def dispatch(hwp, method, params):
 
     if method == "find_and_append":
         validate_params(params, ["find", "append_text"], method)
-        # 커서를 문서 시작으로 초기화 (전체 문서 검색 보장)
-        hwp.MovePos(2)
-        act = hwp.HAction
-        pset = hwp.HParameterSet.HFindReplace
-        act.GetDefault("FindReplace", pset.HSet)
-        pset.FindString = params["find"]
-        pset.Direction = 0
-        pset.IgnoreMessage = 1
-        act.Execute("FindReplace", pset.HSet)
+        find_text = params["find"]
+        append_text = params["append_text"]
 
-        # BUG-4 fix: 반환값 대신 선택 영역으로 찾기 성공 판단
+        # 방법 1: AllReplace로 find → find+append 치환 (반환값 무시, 텍스트 검증)
+        before = ""
         try:
-            selected = hwp.GetTextFile("TEXT", "saveblock").strip()
+            before = hwp.get_text_file("TEXT", "")
         except Exception:
-            selected = ""
-        if not selected:
-            return {"status": "not_found", "find": params["find"]}
+            pass
 
-        # 2C2 fix: 찾은 텍스트 끝으로 커서 이동
-        # FindReplace가 텍스트를 선택한 상태에서 MoveRight → 선택 해제 + 선택 끝으로 이동
-        hwp.HAction.Run("MoveRight")
+        if find_text not in before:
+            return {"status": "not_found", "find": find_text}
 
-        # 색상 설정 (옵션)
-        color = params.get("color")  # [r, g, b]
-        if color:
-            from hwp_editor import insert_text_with_color
-            insert_text_with_color(hwp, params["append_text"], tuple(color))
+        # AllReplace: find → find + append_text
+        replace_text = find_text + append_text
+        _execute_all_replace(hwp, find_text, replace_text)
+
+        # 실제 텍스트 변화로 성공 판단 (COM 반환값 무시)
+        after = ""
+        try:
+            after = hwp.get_text_file("TEXT", "")
+        except Exception:
+            pass
+
+        if replace_text in after:
+            return {"status": "ok", "find": find_text, "appended": True}
         else:
-            hwp.insert_text(params["append_text"])
-
-        return {"status": "ok", "find": params["find"], "appended": True}
+            return {"status": "not_found", "find": find_text,
+                    "warning": "AllReplace 실행했으나 텍스트 변화 미확인"}
 
     if method == "insert_text":
         validate_params(params, ["text"], method)
@@ -412,23 +443,58 @@ def dispatch(hwp, method, params):
 
     if method == "find_replace_nth":
         validate_params(params, ["find", "replace", "nth"], method)
+        find_text = params["find"]
+        replace_text = params["replace"]
         nth = params["nth"]  # 1-based
         if nth < 1 or nth > 10000:
             raise ValueError("nth must be between 1 and 10000")
-        hwp.MovePos(2)  # 문서 시작
-        for i in range(nth):
+
+        # 전체 텍스트에서 n번째 확인
+        before = ""
+        try:
+            before = hwp.get_text_file("TEXT", "")
+        except Exception:
+            pass
+        count = before.count(find_text)
+        if count < nth:
+            return {"status": "not_found", "find": find_text, "searched": count, "nth": nth}
+
+        # AllReplace 기반 n번째 치환: 마커 치환 → n번째만 replace → 복원
+        import uuid
+        marker = f"@@NTH{uuid.uuid4().hex[:6]}@@"
+        # 1단계: find_text → 마커 (전부 치환)
+        _execute_all_replace(hwp, find_text, marker)
+        # 2단계: n번째 마커만 replace_text로, 나머지는 find_text로 복원
+        # InitScan으로 마커를 하나씩 찾아 순번에 따라 처리
+        hwp.MovePos(2)
+        found_count = 0
+        for i in range(count):  # count = before.count(find_text)
             act = hwp.HAction
             pset = hwp.HParameterSet.HFindReplace
             act.GetDefault("FindReplace", pset.HSet)
-            pset.FindString = params["find"]
+            pset.FindString = marker
+            pset.ReplaceString = replace_text if (i == nth - 1) else find_text
             pset.Direction = 0
             pset.IgnoreMessage = 1
-            found = act.Execute("FindReplace", pset.HSet)
-            if not found:
-                return {"status": "not_found", "find": params["find"], "searched": i, "nth": nth}
-        # N번째 매칭이 선택된 상태 → 텍스트 교체
-        hwp.insert_text(params["replace"])
-        return {"status": "ok", "find": params["find"], "replace": params["replace"], "nth": nth}
+            pset.ReplaceMode = 1  # 현재 선택만 치환
+            act.Execute("FindReplace", pset.HSet)
+            # 치환 후 다음으로 이동
+            act.GetDefault("FindReplace", pset.HSet)
+            pset.FindString = marker
+            pset.Direction = 0
+            pset.IgnoreMessage = 1
+            act.Execute("FindReplace", pset.HSet)
+            found_count += 1
+        # 잔여 마커 복원 (안전)
+        _execute_all_replace(hwp, marker, find_text)
+        # 검증
+        after = ""
+        try:
+            after = hwp.get_text_file("TEXT", "")
+        except Exception:
+            pass
+        replaced = replace_text in after
+        return {"status": "ok" if replaced else "uncertain", "find": find_text, "replace": replace_text, "nth": nth, "replaced": replaced}
 
     if method == "table_add_row":
         validate_params(params, ["table_index"], method)
