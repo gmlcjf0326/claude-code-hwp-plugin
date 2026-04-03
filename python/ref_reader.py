@@ -1,5 +1,5 @@
 """참고자료 텍스트 추출기.
-지원: .txt, .csv, .xlsx, .json, .md, .pdf
+지원: .txt, .csv, .xlsx, .json, .md, .pdf, .html, .xml
 추가: .docx, .pptx, .doc, .ppt, .rtf 등 → PDF 변환 후 텍스트 추출
 HWP/HWPX는 hwp_analyzer.analyze_document 사용 (이 모듈에서는 다루지 않음)
 """
@@ -28,12 +28,16 @@ def read_reference(file_path, max_chars=30000):
         return _read_json(file_path, max_chars)
     elif ext == '.pdf':
         return _read_pdf(file_path, max_chars)
+    elif ext in ('.html', '.htm'):
+        return _read_html(file_path, max_chars)
+    elif ext == '.xml':
+        return _read_xml(file_path, max_chars)
     elif ext in ('.docx', '.doc', '.pptx', '.ppt', '.rtf', '.odt', '.odp'):
         return _read_via_pdf_conversion(file_path, max_chars)
     else:
         raise ValueError(
             f"지원하지 않는 파일 형식: {ext}. "
-            f"지원: .txt, .md, .csv, .xlsx, .json, .pdf, .docx, .pptx, .rtf"
+            f"지원: .txt, .md, .csv, .xlsx, .json, .pdf, .html, .xml, .docx, .pptx"
         )
 
 
@@ -277,4 +281,98 @@ def _read_pptx_direct(path, max_chars):
         "content": full_text[:max_chars],
         "slide_count": len(slides),
         "char_count": len(full_text[:max_chars]),
+    }
+
+
+def _read_html(path, max_chars):
+    """HTML 파일에서 텍스트 + 표 추출."""
+    import re
+    with open(path, 'r', encoding='utf-8', errors='replace') as f:
+        html = f.read(max_chars * 3)  # HTML 태그 포함이므로 더 많이 읽음
+
+    # 표 추출 (정규식 기반 — BeautifulSoup 없이)
+    tables = []
+    table_pattern = re.compile(r'<table[^>]*>(.*?)</table>', re.DOTALL | re.IGNORECASE)
+    for match in table_pattern.finditer(html):
+        table_html = match.group(1)
+        rows = []
+        row_pattern = re.compile(r'<tr[^>]*>(.*?)</tr>', re.DOTALL | re.IGNORECASE)
+        for row_match in row_pattern.finditer(table_html):
+            row_html = row_match.group(1)
+            cells = re.findall(r'<t[dh][^>]*>(.*?)</t[dh]>', row_html, re.DOTALL | re.IGNORECASE)
+            # 태그 제거
+            clean_cells = [re.sub(r'<[^>]+>', '', c).strip() for c in cells]
+            if clean_cells:
+                rows.append(clean_cells)
+        if rows:
+            headers = rows[0] if rows else []
+            data = rows[1:] if len(rows) > 1 else []
+            tables.append({"headers": headers, "data": data, "row_count": len(data)})
+
+    # 본문 텍스트 (태그 제거)
+    text = re.sub(r'<style[^>]*>.*?</style>', '', html, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r'<script[^>]*>.*?</script>', '', text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r'<[^>]+>', ' ', text)
+    text = re.sub(r'\s+', ' ', text).strip()[:max_chars]
+
+    return {
+        "format": "html",
+        "file_name": os.path.basename(path),
+        "content": text,
+        "tables": tables,
+        "table_count": len(tables),
+        "char_count": len(text),
+    }
+
+
+def _read_xml(path, max_chars):
+    """XML 파일에서 구조화된 데이터 추출."""
+    import xml.etree.ElementTree as ET
+
+    tree = ET.parse(path)
+    root = tree.getroot()
+
+    # 네임스페이스 제거 (간편 접근)
+    def strip_ns(tag):
+        return tag.split('}')[-1] if '}' in tag else tag
+
+    def elem_to_dict(elem):
+        """XML 요소를 dict로 변환 (재귀)."""
+        result = {}
+        # 속성
+        if elem.attrib:
+            result["@attributes"] = dict(elem.attrib)
+        # 텍스트
+        if elem.text and elem.text.strip():
+            result["@text"] = elem.text.strip()
+        # 자식 요소
+        children = {}
+        for child in elem:
+            tag = strip_ns(child.tag)
+            child_data = elem_to_dict(child)
+            if tag in children:
+                # 같은 태그 반복 → 리스트화
+                if not isinstance(children[tag], list):
+                    children[tag] = [children[tag]]
+                children[tag].append(child_data)
+            else:
+                children[tag] = child_data
+        result.update(children)
+        return result
+
+    data = {strip_ns(root.tag): elem_to_dict(root)}
+
+    # 텍스트 미리보기
+    text_parts = []
+    for elem in root.iter():
+        if elem.text and elem.text.strip():
+            text_parts.append(elem.text.strip())
+    content = "\n".join(text_parts)[:max_chars]
+
+    return {
+        "format": "xml",
+        "file_name": os.path.basename(path),
+        "data": data,
+        "content": content,
+        "char_count": len(content),
     }
