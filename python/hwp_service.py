@@ -808,15 +808,25 @@ def dispatch(hwp, method, params):
         row_heights = params.get("row_heights")  # [mm, mm, ...]
         alignment = params.get("alignment")  # left/center/right
 
-        # col_widths 합계 검증 (A4 가용 너비 ≈ 170mm)
+        # 표 너비를 페이지 사용 가능 폭에 맞춤 (통일된 표 너비)
         col_width_warning = None
+        try:
+            page_d = hwp.get_pagedef_as_dict()
+            usable_width = page_d.get("용지폭", 210) - page_d.get("왼쪽", 30) - page_d.get("오른쪽", 30)
+        except Exception:
+            usable_width = 160  # fallback
+        target_width = usable_width - 5  # 약간 여유 (5mm)
+
         if col_widths:
             total_width = sum(col_widths)
-            if total_width > 170:
-                # 자동 비율 축소
-                ratio = 170.0 / total_width
+            if abs(total_width - target_width) > 1:  # 1mm 이상 차이면 비율 조정
+                ratio = target_width / total_width
                 col_widths = [round(w * ratio, 1) for w in col_widths]
-                col_width_warning = f"col_widths 합계({total_width}mm)가 A4 가용 너비(170mm)를 초과하여 자동 축소되었습니다."
+                if total_width > target_width + 5:
+                    col_width_warning = f"col_widths 합계({total_width}mm)를 페이지 폭({target_width}mm)에 맞춰 조정했습니다."
+        else:
+            # col_widths 미지정 시: 균등 분배로 페이지 폭에 맞춤
+            col_widths = [round(target_width / cols, 1)] * cols
 
         # H1: col_widths/row_heights가 있으면 HTableCreation으로 정밀 생성
         if col_widths or row_heights:
@@ -2023,10 +2033,34 @@ def main():
                     except Exception:
                         pass
 
-                result = dispatch(hwp, method, params)
-                respond(req_id, True, result)
+                # 사용자 입력 차단 (COM 작업 중 커서 이동 방지)
+                locked = False
+                try:
+                    if not hwp.is_command_lock():
+                        hwp.lock_command()
+                        locked = True
+                except Exception:
+                    pass
+
+                try:
+                    result = dispatch(hwp, method, params)
+                    respond(req_id, True, result)
+                finally:
+                    # 사용자 입력 반드시 해제
+                    if locked:
+                        try:
+                            hwp.lock_command()  # toggle 해제
+                        except Exception:
+                            pass
+                    continue  # 다음 요청으로
 
             except Exception as e:
+                # 에러 시에도 잠금 해제
+                try:
+                    if hwp and hwp.is_command_lock():
+                        hwp.lock_command()
+                except Exception:
+                    pass
                 err_str = str(e)
                 # 에러 유형 분류 (구조화된 에러 응답)
                 error_type = "unknown"

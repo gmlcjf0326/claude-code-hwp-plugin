@@ -123,7 +123,7 @@ DOCUMENT_PRESETS = {
 
 TABLE_STYLES = {
     "정부표준": {
-        "header_bg": "#003366", "header_color": [255, 255, 255],
+        "header_bg": "#666666", "header_color": [255, 255, 255],
         "header_bold": True, "header_align": "center",
         "border_width": 0.3, "border_color": "#333333",
         "row_alt_bg": None,
