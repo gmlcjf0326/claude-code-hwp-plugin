@@ -606,7 +606,12 @@ def dispatch(hwp, method, params):
         if "space_after" in s:
             pset.NextSpacing = int(s["space_after"] * 100)
         if "indent" in s:
-            pset.Indentation = int(s["indent"] * 100)
+            indent_val = int(s["indent"] * 100)
+            pset.Indentation = indent_val
+            # 음수 indent(내어쓰기) + left_margin 미지정 시: 자동 보정
+            # HWP 표준: LeftMargin = |indent|로 설정하여 나머지 줄이 들여쓰기됨
+            if indent_val < 0 and "left_margin" not in s:
+                pset.LeftMargin = abs(indent_val)
         if "left_margin" in s:
             pset.LeftMargin = int(s["left_margin"] * 100)
         if "right_margin" in s:
@@ -2006,6 +2011,15 @@ def _generate_multi_documents(hwp, template_path, data_list, output_dir=None):
 
 def main():
     """Main loop: read JSON from stdin, execute, respond via stdout."""
+    # __pycache__ 정리 (코드 변경 시 캐시가 반영 안 되는 문제 방지)
+    try:
+        import shutil
+        cache_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '__pycache__')
+        if os.path.exists(cache_dir):
+            shutil.rmtree(cache_dir, ignore_errors=True)
+    except Exception:
+        pass
+
     # Windows에서 stdin/stdout을 UTF-8로 강제 설정 (Node.js는 UTF-8로 전달)
     if hasattr(sys.stdin, 'reconfigure'):
         sys.stdin.reconfigure(encoding='utf-8', errors='replace')
