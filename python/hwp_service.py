@@ -568,7 +568,34 @@ def dispatch(hwp, method, params):
 
     if method == "set_paragraph_style":
         validate_params(params, ["style"], method)
-        set_paragraph_style(hwp, params["style"])
+        s = params["style"]
+        # ParaShape 직접 실행 (hwp_editor 모듈 경유 시 임포트 캐시 문제 회피)
+        act = hwp.HAction
+        pset = hwp.HParameterSet.HParaShape
+        act.GetDefault("ParaShape", pset.HSet)
+        align_map = {"left": 0, "center": 1, "right": 2, "justify": 3}
+        if "align" in s:
+            pset.AlignType = align_map.get(s["align"], 0)
+        if "line_spacing" in s:
+            pset.LineSpacingType = s.get("line_spacing_type", 0)
+            pset.LineSpacing = int(s["line_spacing"])
+        if "space_before" in s:
+            pset.PrevSpacing = int(s["space_before"] * 100)
+        if "space_after" in s:
+            pset.NextSpacing = int(s["space_after"] * 100)
+        if "indent" in s:
+            pset.Indentation = int(s["indent"] * 100)
+        if "left_margin" in s:
+            pset.LeftMargin = int(s["left_margin"] * 100)
+        if "right_margin" in s:
+            pset.RightMargin = int(s["right_margin"] * 100)
+        if "page_break_before" in s:
+            pset.PagebreakBefore = 1 if s["page_break_before"] else 0
+        if "keep_with_next" in s:
+            pset.KeepWithNext = 1 if s["keep_with_next"] else 0
+        if "widow_orphan" in s:
+            pset.WidowOrphan = 1 if s["widow_orphan"] else 0
+        act.Execute("ParaShape", pset.HSet)
         return {"status": "ok"}
 
     if method == "get_char_shape":
@@ -2001,13 +2028,23 @@ def main():
                         pass
 
                 # 사용자 입력 차단 (COM 작업 중 커서 이동 방지)
+                # 단, ParaShape/CharShape 등 COM 메시지 펌프 필요 메서드는 lock 제외
+                NO_LOCK_METHODS = {
+                    "set_paragraph_style", "apply_style", "apply_document_preset",
+                    "set_page_setup", "set_column", "insert_heading",
+                }
+                print(f"[DEBUG-LOOP] method={method}, no_lock={method in NO_LOCK_METHODS}", file=sys.stderr)
+                sys.stderr.flush()
                 locked = False
-                try:
-                    if not hwp.is_command_lock():
-                        hwp.lock_command()
-                        locked = True
-                except Exception:
-                    pass
+                if method not in NO_LOCK_METHODS:
+                    try:
+                        if not hwp.is_command_lock():
+                            hwp.lock_command()
+                            locked = True
+                    except Exception:
+                        pass
+                print(f"[DEBUG-LOOP] locked={locked}, dispatching...", file=sys.stderr)
+                sys.stderr.flush()
 
                 try:
                     result = dispatch(hwp, method, params)
