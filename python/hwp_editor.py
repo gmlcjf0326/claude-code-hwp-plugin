@@ -686,14 +686,12 @@ def fill_table_cells_by_tab(hwp, table_idx, cells):
                 print(f"[WARN] Tab cell fill error: {e}", file=sys.stderr)
 
     finally:
-        # 표 안전 탈출 (is_cell 확인 후 Cancel 반복)
-        for _ in range(5):
-            try:
-                if not hwp.is_cell():
-                    break
-                hwp.HAction.Run("Cancel")
-            except Exception:
-                break
+        # 표 안전 탈출 (MovePos(3)으로 문서 끝 이동)
+        try:
+            if hwp.is_cell():
+                hwp.MovePos(3)
+        except Exception:
+            pass
 
     return result
 

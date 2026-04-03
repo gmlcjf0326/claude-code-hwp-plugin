@@ -15,18 +15,15 @@ from hwp_editor import (fill_document, fill_table_cells_by_tab, fill_table_cells
 
 
 def _exit_table_safely(hwp):
-    """표에서 안전하게 탈출. is_cell() 확인 후 Cancel 반복."""
-    for _ in range(5):
-        try:
-            if not hwp.is_cell():
-                break
-            hwp.HAction.Run("Cancel")
-        except Exception:
-            break
-    # 표 밖 확인 후 문서 끝으로
+    """표에서 안전하게 탈출. MovePos(3)으로 문서 끝(표 밖)으로 이동."""
+    try:
+        if hwp.is_cell():
+            hwp.MovePos(3)  # 문서 마지막 위치 (표 밖으로 탈출)
+    except Exception:
+        pass
+    # 표 밖 확인 후 새 문단 생성
     try:
         if not hwp.is_cell():
-            hwp.HAction.Run("MoveDocEnd")
             hwp.HAction.Run("BreakPara")
     except Exception:
         pass
