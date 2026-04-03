@@ -288,10 +288,7 @@ def dispatch(hwp, method, params):
             result["total_cells"] = cell_data.get("total_cells", 0)
         except Exception:
             pass
-        try:
-            hwp.Cancel()
-        except Exception:
-            pass
+        _exit_table_safely(hwp)
         return result
 
     if method == "extract_full_profile":
@@ -671,10 +668,7 @@ def dispatch(hwp, method, params):
             except Exception as e:
                 raise RuntimeError(f"표 행 추가 실패: {e}")
         finally:
-            try:
-                hwp.Cancel()
-            except Exception:
-                pass
+            _exit_table_safely(hwp)
 
     if method == "document_merge":
         validate_params(params, ["file_path"], method)
@@ -709,10 +703,7 @@ def dispatch(hwp, method, params):
         except Exception as e:
             raise RuntimeError(f"표 행 삭제 실패: {e}")
         finally:
-            try:
-                hwp.Cancel()
-            except Exception:
-                pass
+            _exit_table_safely(hwp)
 
     if method == "table_add_column":
         validate_params(params, ["table_index"], method)
@@ -723,10 +714,7 @@ def dispatch(hwp, method, params):
         except Exception as e:
             raise RuntimeError(f"표 열 추가 실패: {e}")
         finally:
-            try:
-                hwp.Cancel()
-            except Exception:
-                pass
+            _exit_table_safely(hwp)
 
     if method == "table_delete_column":
         validate_params(params, ["table_index"], method)
@@ -737,10 +725,7 @@ def dispatch(hwp, method, params):
         except Exception as e:
             raise RuntimeError(f"표 열 삭제 실패: {e}")
         finally:
-            try:
-                hwp.Cancel()
-            except Exception:
-                pass
+            _exit_table_safely(hwp)
 
     if method == "table_merge_cells":
         validate_params(params, ["table_index"], method)
@@ -777,10 +762,7 @@ def dispatch(hwp, method, params):
         except Exception as e:
             raise RuntimeError(f"셀 병합 실패: {e}")
         finally:
-            try:
-                hwp.Cancel()
-            except Exception:
-                pass
+            _exit_table_safely(hwp)
 
     if method == "table_split_cell":
         validate_params(params, ["table_index"], method)
@@ -791,10 +773,7 @@ def dispatch(hwp, method, params):
         except Exception as e:
             raise RuntimeError(f"셀 분할 실패: {e}")
         finally:
-            try:
-                hwp.Cancel()
-            except Exception:
-                pass
+            _exit_table_safely(hwp)
 
     if method == "table_create_from_data":
         validate_params(params, ["data"], method)
@@ -815,7 +794,8 @@ def dispatch(hwp, method, params):
             usable_width = page_d.get("용지폭", 210) - page_d.get("왼쪽", 30) - page_d.get("오른쪽", 30)
         except Exception:
             usable_width = 160  # fallback
-        target_width = usable_width - 5  # 약간 여유 (5mm)
+        usable_width = max(usable_width, 50)  # 최소 50mm 보장 (좁은 용지 방어)
+        target_width = max(usable_width - 5, 20)  # 약간 여유 (5mm), 최소 20mm
 
         if col_widths:
             total_width = sum(col_widths)
@@ -826,7 +806,10 @@ def dispatch(hwp, method, params):
                     col_width_warning = f"col_widths 합계({total_width}mm)를 페이지 폭({target_width}mm)에 맞춰 조정했습니다."
         else:
             # col_widths 미지정 시: 균등 분배로 페이지 폭에 맞춤
-            col_widths = [round(target_width / cols, 1)] * cols
+            if cols > 0:
+                col_widths = [round(target_width / cols, 1)] * cols
+            else:
+                col_widths = []
 
         # H1: col_widths/row_heights가 있으면 HTableCreation으로 정밀 생성
         if col_widths or row_heights:
@@ -853,6 +836,8 @@ def dispatch(hwp, method, params):
             hwp.create_table(rows, cols)
         # 셀 채우기 (alignment 적용 포함)
         align_map = {"left": 0, "center": 1, "right": 2}
+        # 넓은 표(6열+) 폰트 자동 축소
+        wide_table_font_size = 9 if cols >= 6 else None
         filled = 0
         for r, row in enumerate(data):
             for c, val in enumerate(row):
@@ -869,7 +854,13 @@ def dispatch(hwp, method, params):
                 if val:
                     if header_style and r == 0:
                         from hwp_editor import insert_text_with_style
-                        insert_text_with_style(hwp, str(val), {"bold": True})
+                        style = {"bold": True}
+                        if wide_table_font_size:
+                            style["font_size"] = wide_table_font_size
+                        insert_text_with_style(hwp, str(val), style)
+                    elif wide_table_font_size and r > 0:
+                        from hwp_editor import insert_text_with_style
+                        insert_text_with_style(hwp, str(val), {"font_size": wide_table_font_size})
                     else:
                         hwp.insert_text(str(val))
                     filled += 1
@@ -948,10 +939,7 @@ def dispatch(hwp, method, params):
                     filled += 1
                 if c < len(row) - 1 or r < rows - 1:
                     hwp.TableRightCell()
-        try:
-            hwp.Cancel()
-        except Exception as e:
-            print(f"[WARN] {e}", file=sys.stderr)
+        _exit_table_safely(hwp)
         return {"status": "ok", "file": os.path.basename(csv_path), "rows": rows, "cols": cols, "filled": filled}
 
     if method == "insert_heading":
@@ -1126,10 +1114,7 @@ def dispatch(hwp, method, params):
         except Exception as e:
             raise RuntimeError(f"셀 속성 설정 실패: {e}")
         finally:
-            try:
-                hwp.Cancel()
-            except Exception:
-                pass
+            _exit_table_safely(hwp)
 
     if method == "insert_textbox":
         # 글상자 생성 (위치/크기 지정)
@@ -1472,14 +1457,11 @@ def dispatch(hwp, method, params):
                     filled += 1
                 if c < len(row) - 1 or r < rows - 1:
                     hwp.TableRightCell()
-        try:
-            hwp.Cancel()
-        except Exception as e:
-            print(f"[WARN] {e}", file=sys.stderr)
+        _exit_table_safely(hwp)
         # 헤더행 + ■ 셀 배경색 적용
         try:
             from hwp_editor import set_cell_background_color
-            style_cells = [{"tab": i, "color": "#D9D9D9"} for i in range(cols)]  # 헤더: 연회색
+            style_cells = [{"tab": i, "color": "#666666"} for i in range(cols)]  # 헤더: 표준 헤더색
             style_cells += [{"tab": t, "color": "#C0C0C0"} for t in active_cells]  # ■셀: 음영
             set_cell_background_color(hwp, -1, style_cells)
         except Exception as e:
@@ -1502,10 +1484,7 @@ def dispatch(hwp, method, params):
         except Exception as e:
             raise RuntimeError(f"표 합계 계산 실패: {e}")
         finally:
-            try:
-                hwp.Cancel()
-            except Exception:
-                pass
+            _exit_table_safely(hwp)
 
     if method == "table_formula_avg":
         validate_params(params, ["table_index"], method)
@@ -1516,10 +1495,7 @@ def dispatch(hwp, method, params):
         except Exception as e:
             raise RuntimeError(f"표 평균 계산 실패: {e}")
         finally:
-            try:
-                hwp.Cancel()
-            except Exception:
-                pass
+            _exit_table_safely(hwp)
 
     # ── Phase B: Quick Win 8개 ──
     if method == "table_to_csv":
@@ -1538,10 +1514,7 @@ def dispatch(hwp, method, params):
                 for c in cells:
                     writer.writerow([c.get("tab", ""), c.get("text", "")])
         finally:
-            try:
-                hwp.Cancel()
-            except Exception:
-                pass
+            _exit_table_safely(hwp)
         return {"status": "ok", "table_index": params["table_index"], "path": output_path}
 
     if method == "break_section":
@@ -1572,10 +1545,7 @@ def dispatch(hwp, method, params):
         except Exception as e:
             raise RuntimeError(f"표 행/열 교환 실패: {e}")
         finally:
-            try:
-                hwp.Cancel()
-            except Exception:
-                pass
+            _exit_table_safely(hwp)
 
     if method == "insert_auto_num":
         hwp.HAction.Run("InsertAutoNum")
@@ -1597,10 +1567,7 @@ def dispatch(hwp, method, params):
         except Exception as e:
             raise RuntimeError(f"셀 너비 균등 분배 실패: {e}")
         finally:
-            try:
-                hwp.Cancel()
-            except Exception:
-                pass
+            _exit_table_safely(hwp)
 
     # ── Phase C: 복합 기능 6개 ──
     if method == "table_to_json":
@@ -1764,7 +1731,7 @@ def dispatch(hwp, method, params):
         try:
             hwp.get_into_nth_table(0)
             profiles["table_cell"] = {"char": get_char_shape(hwp), "para": get_para_shape(hwp)}
-            hwp.Cancel()
+            _exit_table_safely(hwp)
         except Exception:
             profiles["table_cell"] = None
         return {"status": "ok", "profiles": profiles}

@@ -133,9 +133,10 @@ def analyze_document(hwp, file_path, already_open=False):
                     if prev_data is not None and current_data == prev_data:
                         print(f"[INFO] Table {table_idx} is duplicate of previous — stopping scan", file=sys.stderr)
                         try:
-                            hwp.Cancel()
-                        except Exception:
-                            pass
+                            if hwp.is_cell():
+                                hwp.MovePos(3)
+                        except Exception as e:
+                            print(f"[WARN] Table exit (dup detect): {e}", file=sys.stderr)
                         break
                     prev_data = current_data
                     table_info = {
@@ -147,10 +148,11 @@ def analyze_document(hwp, file_path, already_open=False):
                     }
                     result["tables"].append(table_info)
                     try:
-                        hwp.Cancel()
+                        if hwp.is_cell():
+                            hwp.MovePos(3)
                         hwp.MovePos(2)
                     except Exception as e:
-                        print(f"[WARN] Cancel/MovePos failed: {e}", file=sys.stderr)
+                        print(f"[WARN] Table exit/MovePos failed: {e}", file=sys.stderr)
                     table_idx += 1
                 except Exception as e:
                     print(f"[INFO] Table scan stopped at idx {table_idx}: {e}", file=sys.stderr)
@@ -272,9 +274,10 @@ def map_table_cells(hwp, table_idx, max_cells=200):
             break
 
     try:
-        hwp.Cancel()
+        if hwp.is_cell():
+            hwp.MovePos(3)
     except Exception as e:
-        print(f"[WARN] Final cancel in map_table_cells: {e}", file=sys.stderr)
+        print(f"[WARN] Table exit (map_table_cells): {e}", file=sys.stderr)
 
     return {
         "table_index": table_idx,

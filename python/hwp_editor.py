@@ -551,8 +551,8 @@ def get_cell_format(hwp, table_idx, cell_tab):
         try:
             if hwp.is_cell():
                 hwp.MovePos(3)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[WARN] Table exit (get_cell_format): {e}", file=sys.stderr)
 
 
 def get_table_format_summary(hwp, table_idx, sample_tabs=None):
@@ -691,8 +691,8 @@ def fill_table_cells_by_tab(hwp, table_idx, cells):
         try:
             if hwp.is_cell():
                 hwp.MovePos(3)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[WARN] Table exit (fill_by_tab): {e}", file=sys.stderr)
 
     return result
 
@@ -745,8 +745,8 @@ def smart_fill_table_cells(hwp, table_idx, cells):
         try:
             if hwp.is_cell():
                 hwp.MovePos(3)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[WARN] Table exit (smart_fill): {e}", file=sys.stderr)
 
     return result
 
@@ -809,9 +809,10 @@ def insert_markdown(hwp, md_text):
                         if c < cols - 1 or r < rows - 1:
                             hwp.TableRightCell()
                 try:
-                    hwp.Cancel()
-                except Exception:
-                    pass
+                    if hwp.is_cell():
+                        hwp.MovePos(3)
+                except Exception as e:
+                    print(f"[WARN] Table exit after markdown table: {e}", file=sys.stderr)
                 hwp.insert_text('\r\n')
                 inserted += 1
             continue
@@ -1068,8 +1069,8 @@ def fill_document(hwp, fill_data):
                         try:
                             if hwp.is_cell():
                                 hwp.MovePos(3)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            print(f"[WARN] Table exit (fill_document): {e}", file=sys.stderr)
 
                 except Exception as e:
                     result["failed"] += 1
@@ -1154,8 +1155,8 @@ def set_cell_background_color(hwp, table_idx, cells):
         try:
             if hwp.is_cell():
                 hwp.MovePos(3)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[WARN] Table exit (set_cell_color): {e}", file=sys.stderr)
 
     return {"status": "ok", **result}
 
@@ -1241,5 +1242,5 @@ def set_table_border_style(hwp, table_idx, cells=None, style=None):
         try:
             if hwp.is_cell():
                 hwp.MovePos(3)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[WARN] Table exit (set_border): {e}", file=sys.stderr)
