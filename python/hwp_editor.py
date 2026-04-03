@@ -549,9 +549,10 @@ def get_cell_format(hwp, table_idx, cell_tab):
         }
     finally:
         try:
-            hwp.Cancel()
-        except Exception as e:
-            print(f"[WARN] {e}", file=sys.stderr)
+            if hwp.is_cell():
+                hwp.MovePos(3)
+        except Exception:
+            pass
 
 
 def get_table_format_summary(hwp, table_idx, sample_tabs=None):
@@ -742,9 +743,10 @@ def smart_fill_table_cells(hwp, table_idx, cells):
 
     finally:
         try:
-            hwp.Cancel()
-        except Exception as e:
-            print(f"[WARN] {e}", file=sys.stderr)
+            if hwp.is_cell():
+                hwp.MovePos(3)
+        except Exception:
+            pass
 
     return result
 
@@ -1064,7 +1066,8 @@ def fill_document(hwp, fill_data):
 
                     finally:
                         try:
-                            hwp.Cancel()
+                            if hwp.is_cell():
+                                hwp.MovePos(3)
                         except Exception:
                             pass
 
@@ -1123,6 +1126,22 @@ def set_cell_background_color(hwp, table_idx, cells):
 
                 # 셀 배경색 설정 (pyhwpx 내장 cell_fill 사용)
                 hwp.cell_fill((r, g, b))
+
+                # 어두운 배경색이면 자동으로 흰색 글자 + Bold + 가운데 정렬
+                brightness = (r * 299 + g * 587 + b * 114) / 1000
+                if brightness < 160 and cell.get("auto_text_style", True):
+                    try:
+                        hwp.HAction.Run("SelectAll")
+                        act = hwp.HAction
+                        cs = hwp.HParameterSet.HCharShape
+                        act.GetDefault("CharShape", cs.HSet)
+                        cs.TextColor = hwp.RGBColor(255, 255, 255)
+                        cs.Bold = 1
+                        act.Execute("CharShape", cs.HSet)
+                        hwp.HAction.Run("TableCellAlignCenterCenter")
+                    except Exception:
+                        pass
+
                 result["colored"] += 1
 
             except Exception as e:
@@ -1131,10 +1150,12 @@ def set_cell_background_color(hwp, table_idx, cells):
                 print(f"[WARN] Cell color error: {e}", file=sys.stderr)
 
     finally:
+        # 표 안전 탈출 (MovePos(3)으로 문서 끝 이동)
         try:
-            hwp.Cancel()
-        except Exception as e:
-            print(f"[WARN] {e}", file=sys.stderr)
+            if hwp.is_cell():
+                hwp.MovePos(3)
+        except Exception:
+            pass
 
     return {"status": "ok", **result}
 
@@ -1218,6 +1239,7 @@ def set_table_border_style(hwp, table_idx, cells=None, style=None):
             return {"status": "ok", "applied": "whole_table"}
     finally:
         try:
-            hwp.Cancel()
-        except Exception as e:
-            print(f"[WARN] {e}", file=sys.stderr)
+            if hwp.is_cell():
+                hwp.MovePos(3)
+        except Exception:
+            pass
