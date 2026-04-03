@@ -154,6 +154,15 @@ def dispatch(hwp, method, params):
         validate_params(params, ["file_path"], method)
         file_path = validate_file_path(params["file_path"], must_exist=True)
 
+        # HWP 자동저장 디렉토리 확인/생성 (.asv 저장 오류 방지)
+        try:
+            import tempfile
+            asv_dir = os.path.join(tempfile.gettempdir(), "Hwp90")
+            if not os.path.exists(asv_dir):
+                os.makedirs(asv_dir, exist_ok=True)
+        except Exception:
+            pass
+
         # COM 상태 초기화 (이전 문서 캐시 정리)
         try:
             hwp.MovePos(2)  # 커서 초기화
@@ -551,8 +560,21 @@ def dispatch(hwp, method, params):
         except Exception:
             pass
         text = params["text"]
-        # 각 insert_text 호출을 독립 문단으로 — 끝에 줄바꿈 자동 추가
-        if not text.endswith("\r\n") and not text.endswith("\n"):
+        # === 텍스트 전처리: 줄바꿈 정규화 + 마커 앞 자동 줄바꿈 ===
+        import re
+        # 1) \r\n → \n 통일 (혼용 방지)
+        text = text.replace("\r\n", "\n")
+        # 2) 마커 문자 앞에 줄바꿈 삽입 (이미 줄바꿈이 있으면 건너뜀)
+        _markers = r'[○□■◆●•◦※➤❶-❿▶▷►]'
+        _roman = r'(?:Ⅰ|Ⅱ|Ⅲ|Ⅳ|Ⅴ|Ⅵ|Ⅶ|Ⅷ|Ⅸ|Ⅹ)'
+        text = re.sub(rf'(?<=[^\n])({_markers})', r'\n\1', text)
+        text = re.sub(rf'(?<=[^\n])({_roman}\.)', r'\n\1', text)
+        # 3) 3개+ 연속 공백 → 줄바꿈+들여쓰기 (PDF 원본 줄바꿈 복원)
+        text = re.sub(r'  {3,}', '\n     ', text)
+        # 4) \n → \r\n (HWP 단락 구분)
+        text = text.replace("\n", "\r\n")
+        # 5) 끝에 \r\n 보장
+        if not text.endswith("\r\n"):
             text += "\r\n"
         style = params.get("style")
         color = params.get("color")  # [r, g, b] 하위 호환
@@ -2029,12 +2051,8 @@ def main():
 
                 # 사용자 입력 차단 (COM 작업 중 커서 이동 방지)
                 # 단, ParaShape/CharShape 등 COM 메시지 펌프 필요 메서드는 lock 제외
-                NO_LOCK_METHODS = {
-                    "set_paragraph_style", "apply_style", "apply_document_preset",
-                    "set_page_setup", "set_column", "insert_heading",
-                }
-                print(f"[DEBUG-LOOP] method={method}, no_lock={method in NO_LOCK_METHODS}", file=sys.stderr)
-                sys.stderr.flush()
+                # set_paragraph_style만 lock 제외 (인라인 ParaShape Execute에 COM 메시지 펌프 필요)
+                NO_LOCK_METHODS = {"set_paragraph_style"}
                 locked = False
                 if method not in NO_LOCK_METHODS:
                     try:
