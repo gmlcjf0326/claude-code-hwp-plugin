@@ -576,6 +576,8 @@ def dispatch(hwp, method, params):
         # 5) 끝에 \r\n 보장
         if not text.endswith("\r\n"):
             text += "\r\n"
+        # 원문 보존 (자동 내어쓰기 판단용)
+        original_text = params["text"]
         style = params.get("style")
         color = params.get("color")  # [r, g, b] 하위 호환
         if style:
@@ -586,43 +588,81 @@ def dispatch(hwp, method, params):
             insert_text_with_color(hwp, text, tuple(color))
         else:
             hwp.insert_text(text)
+        # === 후처리: 마커 감지 → ParagraphShapeIndentAtCaret 자동 내어쓰기 ===
+        # 원문이 마커(○□-※* 등)로 시작하면, 마커 뒤 위치에서 Shift+Tab 효과 적용
+        _INDENT_MARKERS = set('○□■◆●•◦※➤▶▷►-*')
+        auto_indent = params.get("auto_indent", True)
+        raw = original_text.lstrip()
+        if auto_indent and raw and raw[0] in _INDENT_MARKERS:
+            try:
+                hwp.HAction.Run("MovePrevParaBegin")
+                # 마커 뒤 위치 계산 (선행공백 + 마커 + 마커뒤공백)
+                skip = 0
+                ot = original_text
+                while skip < len(ot) and ot[skip] == ' ':
+                    skip += 1
+                if skip < len(ot) and ot[skip] in _INDENT_MARKERS:
+                    skip += 1
+                while skip < len(ot) and ot[skip] == ' ':
+                    skip += 1
+                for _ in range(skip):
+                    hwp.HAction.Run("MoveRight")
+                hwp.HAction.Run("ParagraphShapeIndentAtCaret")
+                hwp.MovePos(3)
+            except Exception as e:
+                print(f"[WARN] auto IndentAtCaret: {e}", file=sys.stderr)
+                try:
+                    hwp.MovePos(3)
+                except Exception:
+                    pass
         return {"status": "ok"}
 
     if method == "set_paragraph_style":
         validate_params(params, ["style"], method)
         s = params["style"]
-        # ParaShape 직접 실행 (hwp_editor 모듈 경유 시 임포트 캐시 문제 회피)
+        # Execute로 정상 작동하는 속성 (align, spacing)
         act = hwp.HAction
         pset = hwp.HParameterSet.HParaShape
         act.GetDefault("ParaShape", pset.HSet)
         align_map = {"left": 0, "center": 1, "right": 2, "justify": 3}
+        _need_execute = False
         if "align" in s:
             pset.AlignType = align_map.get(s["align"], 0)
+            _need_execute = True
         if "line_spacing" in s:
             pset.LineSpacingType = s.get("line_spacing_type", 0)
             pset.LineSpacing = int(s["line_spacing"])
+            _need_execute = True
         if "space_before" in s:
             pset.PrevSpacing = int(s["space_before"] * 100)
+            _need_execute = True
         if "space_after" in s:
             pset.NextSpacing = int(s["space_after"] * 100)
-        if "indent" in s:
-            indent_val = int(s["indent"] * 100)
-            pset.Indentation = indent_val
-            # 음수 indent(내어쓰기) + left_margin 미지정 시: 자동 보정
-            # HWP 표준: LeftMargin = |indent|로 설정하여 나머지 줄이 들여쓰기됨
-            if indent_val < 0 and "left_margin" not in s:
-                pset.LeftMargin = abs(indent_val)
-        if "left_margin" in s:
-            pset.LeftMargin = int(s["left_margin"] * 100)
-        if "right_margin" in s:
-            pset.RightMargin = int(s["right_margin"] * 100)
+            _need_execute = True
         if "page_break_before" in s:
             pset.PagebreakBefore = 1 if s["page_break_before"] else 0
+            _need_execute = True
         if "keep_with_next" in s:
             pset.KeepWithNext = 1 if s["keep_with_next"] else 0
+            _need_execute = True
         if "widow_orphan" in s:
             pset.WidowOrphan = 1 if s["widow_orphan"] else 0
-        act.Execute("ParaShape", pset.HSet)
+            _need_execute = True
+        if _need_execute:
+            act.Execute("ParaShape", pset.HSet)
+        # Execute로 미반영되는 속성 (LeftMargin, Indentation) → set_para 사용
+        _para_kwargs = {}
+        if "left_margin" in s:
+            _para_kwargs["LeftMargin"] = float(s["left_margin"])
+        if "right_margin" in s:
+            _para_kwargs["RightMargin"] = float(s["right_margin"])
+        if "indent" in s:
+            _para_kwargs["Indentation"] = float(s["indent"])
+        if _para_kwargs:
+            try:
+                hwp.set_para(**_para_kwargs)
+            except Exception as e:
+                print(f"[WARN] set_para failed: {e}", file=sys.stderr)
         return {"status": "ok"}
 
     if method == "get_char_shape":
