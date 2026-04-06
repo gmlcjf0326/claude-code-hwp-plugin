@@ -670,12 +670,72 @@ export function registerEditingTools(server, bridge, toolset = 'standard') {
                 return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
             }
         });
-        server.tool('hwp_table_split_cell', '표에서 현재 셀을 분할합니다.', { table_index: z.number().int().min(0).describe('표 인덱스') }, async ({ table_index }) => {
+        server.tool('hwp_table_split_cell', '표에서 현재 셀을 분할합니다. v0.6.8+: rows/cols 옵셔널 — 생략 시 기본 2×1 분할, 지정 시 HAction ParameterSet 경로로 정밀 분할.', {
+            table_index: z.number().int().min(0).describe('표 인덱스'),
+            rows: z.number().int().min(1).optional().describe('분할 행 수 (v0.6.8 신규)'),
+            cols: z.number().int().min(1).optional().describe('분할 열 수 (v0.6.8 신규)'),
+        }, async ({ table_index, rows, cols }) => {
             if (!bridge.getCurrentDocument())
                 return { content: [{ type: 'text', text: JSON.stringify({ error: '열린 문서가 없습니다.' }) }], isError: true };
             try {
                 await bridge.ensureRunning();
-                const r = await bridge.send('table_split_cell', { table_index }, FILL_TIMEOUT);
+                const params = { table_index };
+                if (rows !== undefined)
+                    params.rows = rows;
+                if (cols !== undefined)
+                    params.cols = cols;
+                const r = await bridge.send('table_split_cell', params, FILL_TIMEOUT);
+                if (!r.success)
+                    return { content: [{ type: 'text', text: JSON.stringify({ error: r.error }) }], isError: true };
+                bridge.setCachedAnalysis(null);
+                return { content: [{ type: 'text', text: JSON.stringify(r.data) }] };
+            }
+            catch (err) {
+                return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+            }
+        });
+        // v0.6.8 신규: 표 셀 네비게이션 (커서가 표 안에 있을 때만)
+        server.tool('hwp_navigate_cell', '현재 표 안에서 커서를 인접 셀로 이동합니다. (v0.6.8 신규) 표 바깥이면 에러. left/right/upper/lower 4방향. 사업계획서 표 정밀 편집 시 hwp_list_controls로 표 위치 확인 → 진입 → 이 도구로 셀 이동 → insert_row_at_cursor 등 조합.', {
+            direction: z.enum(['left', 'right', 'upper', 'lower']).describe('이동 방향 (left/right/upper/lower)'),
+        }, async ({ direction }) => {
+            if (!bridge.getCurrentDocument())
+                return { content: [{ type: 'text', text: JSON.stringify({ error: '열린 문서가 없습니다.' }) }], isError: true };
+            try {
+                await bridge.ensureRunning();
+                const r = await bridge.send('navigate_cell', { direction }, FILL_TIMEOUT);
+                if (!r.success)
+                    return { content: [{ type: 'text', text: JSON.stringify({ error: r.error }) }], isError: true };
+                return { content: [{ type: 'text', text: JSON.stringify(r.data) }] };
+            }
+            catch (err) {
+                return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+            }
+        });
+        // v0.6.8 신규: 현재 커서 셀 기준 행 추가 (기존 hwp_table_add_row는 table_index 기반)
+        server.tool('hwp_insert_row_at_cursor', '현재 커서가 있는 셀 기준으로 행을 추가합니다. (v0.6.8 신규) 표 바깥이면 에러. above=위, below=아래, append=표 맨 끝. 기존 hwp_table_add_row는 table_index 지정 방식이고, 이 도구는 커서 위치 기반 — 사용자가 "여기에 한 줄 더" 요청 시 유용.', {
+            position: z.enum(['above', 'below', 'append']).describe('삽입 위치 (above=위, below=아래, append=표 맨 끝)'),
+        }, async ({ position }) => {
+            if (!bridge.getCurrentDocument())
+                return { content: [{ type: 'text', text: JSON.stringify({ error: '열린 문서가 없습니다.' }) }], isError: true };
+            try {
+                await bridge.ensureRunning();
+                const r = await bridge.send('insert_row_at_cursor', { position }, FILL_TIMEOUT);
+                if (!r.success)
+                    return { content: [{ type: 'text', text: JSON.stringify({ error: r.error }) }], isError: true };
+                bridge.setCachedAnalysis(null);
+                return { content: [{ type: 'text', text: JSON.stringify(r.data) }] };
+            }
+            catch (err) {
+                return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+            }
+        });
+        // v0.6.8 신규: 이미 선택된 셀 블록을 병합 (기존 hwp_table_merge_cells는 start/end 좌표 기반)
+        server.tool('hwp_merge_current_selection', '현재 이미 선택된 표 셀 블록을 병합합니다. (v0.6.8 신규) TableCellBlock + TableCellBlockExtend로 직접 블록을 만든 뒤 이 도구로 병합. 기존 hwp_table_merge_cells는 start_row/col + end_row/col 좌표 지정 방식이고, 이 도구는 "이미 선택된 상태" 전용.', {}, async () => {
+            if (!bridge.getCurrentDocument())
+                return { content: [{ type: 'text', text: JSON.stringify({ error: '열린 문서가 없습니다.' }) }], isError: true };
+            try {
+                await bridge.ensureRunning();
+                const r = await bridge.send('merge_current_selection', {}, FILL_TIMEOUT);
                 if (!r.success)
                     return { content: [{ type: 'text', text: JSON.stringify({ error: r.error }) }], isError: true };
                 bridge.setCachedAnalysis(null);

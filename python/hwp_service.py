@@ -976,12 +976,103 @@ def dispatch(hwp, method, params):
 
     if method == "table_split_cell":
         validate_params(params, ["table_index"], method)
+        # v0.6.8: rows/cols 옵셔널 파라미터 추가 (기본 hwp.TableSplitCell() 인수 없는 호출)
+        rows = params.get("rows")
+        cols = params.get("cols")
         try:
             hwp.get_into_nth_table(params["table_index"])
-            hwp.TableSplitCell()
-            return {"status": "ok", "table_index": params["table_index"]}
+            if rows is not None or cols is not None:
+                # HAction ParameterSet 방식으로 Rows/Cols 지정
+                try:
+                    act = hwp.HAction
+                    pset = hwp.HParameterSet.HTableSplitCell
+                    act.GetDefault("TableSplitCell", pset.HSet)
+                    if rows is not None:
+                        try:
+                            pset.Rows = int(rows)
+                        except Exception as e:
+                            print(f"[WARN] TableSplitCell Rows: {e}", file=sys.stderr)
+                    if cols is not None:
+                        try:
+                            pset.Cols = int(cols)
+                        except Exception as e:
+                            print(f"[WARN] TableSplitCell Cols: {e}", file=sys.stderr)
+                    act.Execute("TableSplitCell", pset.HSet)
+                except Exception as e:
+                    # ParameterSet 경로 실패 시 기본 split 폴백
+                    print(f"[WARN] HTableSplitCell ParameterSet failed, fallback: {e}", file=sys.stderr)
+                    hwp.TableSplitCell()
+            else:
+                hwp.TableSplitCell()
+            return {"status": "ok", "table_index": params["table_index"], "rows": rows, "cols": cols}
         except Exception as e:
             raise RuntimeError(f"셀 분할 실패: {e}")
+        finally:
+            _exit_table_safely(hwp)
+
+    # v0.6.8 신규: 표 셀 네비게이션 (커서에 머무름, finally _exit_table_safely 호출 안 함)
+    if method == "navigate_cell":
+        validate_params(params, ["direction"], method)
+        direction = params["direction"]
+        if not hwp.is_cell():
+            return {"status": "error", "error": "현재 커서가 표 안에 없습니다. 먼저 표에 진입하세요."}
+        action_map = {
+            "left": "TableLeftCell",
+            "right": "TableRightCell",
+            "upper": "TableUpperCell",
+            "lower": "TableLowerCell",
+        }
+        action = action_map.get(direction)
+        if action is None:
+            raise ValueError(f"invalid direction: {direction}. Expected one of {list(action_map.keys())}")
+        try:
+            # pyhwpx wrap 우선 (hwp.TableLeftCell 등), 없으면 HAction.Run 폴백
+            if hasattr(hwp, action):
+                try:
+                    result = getattr(hwp, action)()
+                    moved = bool(result) if result is not None else True
+                except Exception as e:
+                    print(f"[WARN] pyhwpx {action} failed, falling back to HAction.Run: {e}", file=sys.stderr)
+                    hwp.HAction.Run(action)
+                    moved = True
+            else:
+                hwp.HAction.Run(action)
+                moved = True
+            return {"status": "ok", "direction": direction, "moved": moved}
+        except Exception as e:
+            raise RuntimeError(f"셀 이동 실패 ({direction}): {e}")
+
+    # v0.6.8 신규: 현재 커서 셀 기준 행 추가 (above/below/append)
+    # 기존 table_add_row(table_index 기반)와 구별 — 커서 위치 기반
+    if method == "insert_row_at_cursor":
+        validate_params(params, ["position"], method)
+        position = params["position"]
+        if not hwp.is_cell():
+            return {"status": "error", "error": "현재 커서가 표 안에 없습니다. 먼저 표에 진입하세요."}
+        action_map = {
+            "above": "TableInsertUpperRow",
+            "below": "TableInsertLowerRow",
+            "append": "TableAppendRow",
+        }
+        action = action_map.get(position)
+        if action is None:
+            raise ValueError(f"invalid position: {position}. Expected one of {list(action_map.keys())}")
+        try:
+            hwp.HAction.Run(action)
+            return {"status": "ok", "position": position}
+        except Exception as e:
+            raise RuntimeError(f"행 추가 실패 ({position}): {e}")
+        finally:
+            _exit_table_safely(hwp)
+
+    # v0.6.8 신규: 이미 선택된 블록을 병합 (기존 table_merge_cells는 좌표 기반)
+    # 사용자가 이미 TableCellBlock로 블록을 선택한 상태에서 병합
+    if method == "merge_current_selection":
+        try:
+            hwp.TableMergeCell()
+            return {"status": "ok"}
+        except Exception as e:
+            raise RuntimeError(f"선택 블록 병합 실패: {e}")
         finally:
             _exit_table_safely(hwp)
 

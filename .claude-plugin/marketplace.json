@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "hwp-marketplace",
-  "version": "0.6.7",
+  "version": "0.6.8",
   "description": "HWP Studio - 한글(HWP/HWPX) 문서 자동화 플러그인 마켓플레이스",
   "owner": {
     "name": "김희철",
@@ -10,8 +10,8 @@
   "plugins": [
     {
       "name": "claude-code-hwp-plugin",
-      "description": "한글(HWP/HWPX) 문서 자동화. 95개 MCP 도구 + 8개 워크플로우 커맨드 + HWPX 규칙 hooks. v0.6.7: ParameterSet 서식 고도화 — 문단 테두리(border_*) + first_line_indent + indent 자동 보정 + ParaShape 옵션 풀 동기화.",
-      "version": "0.6.7",
+      "description": "한글(HWP/HWPX) 문서 자동화. 98개 MCP 도구 + 8개 워크플로우 커맨드 + HWPX 규칙 hooks. v0.6.8: 표 셀 네비게이션(navigate_cell) + 커서 기반 행 추가(insert_row_at_cursor) + 선택 블록 병합(merge_current_selection) + table_split_cell Rows/Cols 확장.",
+      "version": "0.6.8",
       "author": {
         "name": "김희철",
         "email": "gmlcjf0326@hanmail.net"

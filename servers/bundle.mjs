@@ -37417,12 +37417,66 @@ function registerEditingTools(server2, bridge2, toolset2 = "standard") {
         return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }], isError: true };
       }
     });
-    server2.tool("hwp_table_split_cell", "\uD45C\uC5D0\uC11C \uD604\uC7AC \uC140\uC744 \uBD84\uD560\uD569\uB2C8\uB2E4.", { table_index: external_exports.number().int().min(0).describe("\uD45C \uC778\uB371\uC2A4") }, async ({ table_index }) => {
+    server2.tool("hwp_table_split_cell", "\uD45C\uC5D0\uC11C \uD604\uC7AC \uC140\uC744 \uBD84\uD560\uD569\uB2C8\uB2E4. v0.6.8+: rows/cols \uC635\uC154\uB110 \u2014 \uC0DD\uB7B5 \uC2DC \uAE30\uBCF8 2\xD71 \uBD84\uD560, \uC9C0\uC815 \uC2DC HAction ParameterSet \uACBD\uB85C\uB85C \uC815\uBC00 \uBD84\uD560.", {
+      table_index: external_exports.number().int().min(0).describe("\uD45C \uC778\uB371\uC2A4"),
+      rows: external_exports.number().int().min(1).optional().describe("\uBD84\uD560 \uD589 \uC218 (v0.6.8 \uC2E0\uADDC)"),
+      cols: external_exports.number().int().min(1).optional().describe("\uBD84\uD560 \uC5F4 \uC218 (v0.6.8 \uC2E0\uADDC)")
+    }, async ({ table_index, rows, cols }) => {
       if (!bridge2.getCurrentDocument())
         return { content: [{ type: "text", text: JSON.stringify({ error: "\uC5F4\uB9B0 \uBB38\uC11C\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4." }) }], isError: true };
       try {
         await bridge2.ensureRunning();
-        const r = await bridge2.send("table_split_cell", { table_index }, FILL_TIMEOUT);
+        const params = { table_index };
+        if (rows !== void 0)
+          params.rows = rows;
+        if (cols !== void 0)
+          params.cols = cols;
+        const r = await bridge2.send("table_split_cell", params, FILL_TIMEOUT);
+        if (!r.success)
+          return { content: [{ type: "text", text: JSON.stringify({ error: r.error }) }], isError: true };
+        bridge2.setCachedAnalysis(null);
+        return { content: [{ type: "text", text: JSON.stringify(r.data) }] };
+      } catch (err) {
+        return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }], isError: true };
+      }
+    });
+    server2.tool("hwp_navigate_cell", "\uD604\uC7AC \uD45C \uC548\uC5D0\uC11C \uCEE4\uC11C\uB97C \uC778\uC811 \uC140\uB85C \uC774\uB3D9\uD569\uB2C8\uB2E4. (v0.6.8 \uC2E0\uADDC) \uD45C \uBC14\uAE65\uC774\uBA74 \uC5D0\uB7EC. left/right/upper/lower 4\uBC29\uD5A5. \uC0AC\uC5C5\uACC4\uD68D\uC11C \uD45C \uC815\uBC00 \uD3B8\uC9D1 \uC2DC hwp_list_controls\uB85C \uD45C \uC704\uCE58 \uD655\uC778 \u2192 \uC9C4\uC785 \u2192 \uC774 \uB3C4\uAD6C\uB85C \uC140 \uC774\uB3D9 \u2192 insert_row_at_cursor \uB4F1 \uC870\uD569.", {
+      direction: external_exports.enum(["left", "right", "upper", "lower"]).describe("\uC774\uB3D9 \uBC29\uD5A5 (left/right/upper/lower)")
+    }, async ({ direction }) => {
+      if (!bridge2.getCurrentDocument())
+        return { content: [{ type: "text", text: JSON.stringify({ error: "\uC5F4\uB9B0 \uBB38\uC11C\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4." }) }], isError: true };
+      try {
+        await bridge2.ensureRunning();
+        const r = await bridge2.send("navigate_cell", { direction }, FILL_TIMEOUT);
+        if (!r.success)
+          return { content: [{ type: "text", text: JSON.stringify({ error: r.error }) }], isError: true };
+        return { content: [{ type: "text", text: JSON.stringify(r.data) }] };
+      } catch (err) {
+        return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }], isError: true };
+      }
+    });
+    server2.tool("hwp_insert_row_at_cursor", '\uD604\uC7AC \uCEE4\uC11C\uAC00 \uC788\uB294 \uC140 \uAE30\uC900\uC73C\uB85C \uD589\uC744 \uCD94\uAC00\uD569\uB2C8\uB2E4. (v0.6.8 \uC2E0\uADDC) \uD45C \uBC14\uAE65\uC774\uBA74 \uC5D0\uB7EC. above=\uC704, below=\uC544\uB798, append=\uD45C \uB9E8 \uB05D. \uAE30\uC874 hwp_table_add_row\uB294 table_index \uC9C0\uC815 \uBC29\uC2DD\uC774\uACE0, \uC774 \uB3C4\uAD6C\uB294 \uCEE4\uC11C \uC704\uCE58 \uAE30\uBC18 \u2014 \uC0AC\uC6A9\uC790\uAC00 "\uC5EC\uAE30\uC5D0 \uD55C \uC904 \uB354" \uC694\uCCAD \uC2DC \uC720\uC6A9.', {
+      position: external_exports.enum(["above", "below", "append"]).describe("\uC0BD\uC785 \uC704\uCE58 (above=\uC704, below=\uC544\uB798, append=\uD45C \uB9E8 \uB05D)")
+    }, async ({ position }) => {
+      if (!bridge2.getCurrentDocument())
+        return { content: [{ type: "text", text: JSON.stringify({ error: "\uC5F4\uB9B0 \uBB38\uC11C\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4." }) }], isError: true };
+      try {
+        await bridge2.ensureRunning();
+        const r = await bridge2.send("insert_row_at_cursor", { position }, FILL_TIMEOUT);
+        if (!r.success)
+          return { content: [{ type: "text", text: JSON.stringify({ error: r.error }) }], isError: true };
+        bridge2.setCachedAnalysis(null);
+        return { content: [{ type: "text", text: JSON.stringify(r.data) }] };
+      } catch (err) {
+        return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }], isError: true };
+      }
+    });
+    server2.tool("hwp_merge_current_selection", '\uD604\uC7AC \uC774\uBBF8 \uC120\uD0DD\uB41C \uD45C \uC140 \uBE14\uB85D\uC744 \uBCD1\uD569\uD569\uB2C8\uB2E4. (v0.6.8 \uC2E0\uADDC) TableCellBlock + TableCellBlockExtend\uB85C \uC9C1\uC811 \uBE14\uB85D\uC744 \uB9CC\uB4E0 \uB4A4 \uC774 \uB3C4\uAD6C\uB85C \uBCD1\uD569. \uAE30\uC874 hwp_table_merge_cells\uB294 start_row/col + end_row/col \uC88C\uD45C \uC9C0\uC815 \uBC29\uC2DD\uC774\uACE0, \uC774 \uB3C4\uAD6C\uB294 "\uC774\uBBF8 \uC120\uD0DD\uB41C \uC0C1\uD0DC" \uC804\uC6A9.', {}, async () => {
+      if (!bridge2.getCurrentDocument())
+        return { content: [{ type: "text", text: JSON.stringify({ error: "\uC5F4\uB9B0 \uBB38\uC11C\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4." }) }], isError: true };
+      try {
+        await bridge2.ensureRunning();
+        const r = await bridge2.send("merge_current_selection", {}, FILL_TIMEOUT);
         if (!r.success)
           return { content: [{ type: "text", text: JSON.stringify({ error: r.error }) }], isError: true };
         bridge2.setCachedAnalysis(null);
