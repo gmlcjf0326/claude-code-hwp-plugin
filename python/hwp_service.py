@@ -632,14 +632,40 @@ def dispatch(hwp, method, params):
                     pass
         # v0.6.9 신규: outline_level 지정 시 직전 단락의 ParaShape.OutlineLevel 설정
         # (한글 "개요 보기" + hwp_generate_toc 계층 인식 활성화)
+        # v0.6.9.3: multi-fallback (SetItem → set_style → 직접 attribute)
         if outline_level is not None:
             try:
                 hwp.HAction.Run("MovePrevPara")
-                act = hwp.HAction
-                pset = hwp.HParameterSet.HParaShape
-                act.GetDefault("ParaShape", pset.HSet)
-                pset.OutlineLevel = int(outline_level)
-                act.Execute("ParaShape", pset.HSet)
+                ol_int = int(outline_level)
+                success = False
+                # 시도 1: ParameterSet.HSet.SetItem (표준 ParameterSet API)
+                try:
+                    act = hwp.HAction
+                    pset = hwp.HParameterSet.HParaShape
+                    act.GetDefault("ParaShape", pset.HSet)
+                    pset.HSet.SetItem("OutlineLevel", ol_int)
+                    act.Execute("ParaShape", pset.HSet)
+                    success = True
+                except Exception as e1:
+                    print(f"[INFO] insert_text OutlineLevel SetItem failed: {e1}", file=sys.stderr)
+                # 시도 2: hwp.set_style("개요 N+1") — 한컴 정의된 스타일
+                if not success:
+                    try:
+                        hwp.set_style(f"개요 {ol_int + 1}")
+                        success = True
+                    except Exception as e2:
+                        print(f"[INFO] insert_text set_style 개요 {ol_int + 1} failed: {e2}", file=sys.stderr)
+                # 시도 3: pset.OutlineLevel 직접 attribute (v0.6.9 원래 방식, fallback)
+                if not success:
+                    try:
+                        act = hwp.HAction
+                        pset = hwp.HParameterSet.HParaShape
+                        act.GetDefault("ParaShape", pset.HSet)
+                        pset.OutlineLevel = ol_int
+                        act.Execute("ParaShape", pset.HSet)
+                        success = True
+                    except Exception as e3:
+                        print(f"[WARN] insert_text OutlineLevel all alternatives failed: {e3}", file=sys.stderr)
                 hwp.MovePos(3)
             except Exception as e:
                 print(f"[WARN] insert_text OutlineLevel (level={outline_level}): {e}", file=sys.stderr)
@@ -1290,17 +1316,45 @@ def dispatch(hwp, method, params):
         # v0.6.9 신규: auto_outline_level 또는 outline_level_only 지정 시
         # 직전 단락(방금 삽입한 제목)의 ParaShape.OutlineLevel 설정
         # → 한글 "개요 보기" + hwp_generate_toc 계층 인식 활성화
+        # v0.6.9.3: multi-fallback (SetItem → set_style → 직접 attribute)
         applied_outline_level = None
+        applied_via = None  # 어떤 방법으로 성공했는지 추적
         if auto_outline_level or outline_level_only:
             try:
                 hwp.HAction.Run("MovePrevPara")
-                act = hwp.HAction
-                pset = hwp.HParameterSet.HParaShape
-                act.GetDefault("ParaShape", pset.HSet)
-                pset.OutlineLevel = level - 1  # 0-based (level 1 → OutlineLevel 0)
-                act.Execute("ParaShape", pset.HSet)
+                ol_int = level - 1  # 0-based (level 1 → OutlineLevel 0)
+                # 시도 1: ParameterSet.HSet.SetItem (표준 ParameterSet API)
+                try:
+                    act = hwp.HAction
+                    pset = hwp.HParameterSet.HParaShape
+                    act.GetDefault("ParaShape", pset.HSet)
+                    pset.HSet.SetItem("OutlineLevel", ol_int)
+                    act.Execute("ParaShape", pset.HSet)
+                    applied_outline_level = ol_int
+                    applied_via = "SetItem"
+                except Exception as e1:
+                    print(f"[INFO] insert_heading SetItem failed: {e1}", file=sys.stderr)
+                # 시도 2: hwp.set_style("개요 N") — 한컴 정의된 스타일
+                if applied_outline_level is None:
+                    try:
+                        hwp.set_style(f"개요 {level}")
+                        applied_outline_level = ol_int
+                        applied_via = "set_style"
+                    except Exception as e2:
+                        print(f"[INFO] insert_heading set_style 개요 {level} failed: {e2}", file=sys.stderr)
+                # 시도 3: pset.OutlineLevel 직접 attribute (v0.6.9 원래 방식, fallback)
+                if applied_outline_level is None:
+                    try:
+                        act = hwp.HAction
+                        pset = hwp.HParameterSet.HParaShape
+                        act.GetDefault("ParaShape", pset.HSet)
+                        pset.OutlineLevel = ol_int
+                        act.Execute("ParaShape", pset.HSet)
+                        applied_outline_level = ol_int
+                        applied_via = "direct_attribute"
+                    except Exception as e3:
+                        print(f"[WARN] insert_heading OutlineLevel all alternatives failed: {e3}", file=sys.stderr)
                 hwp.MovePos(3)
-                applied_outline_level = level - 1
             except Exception as e:
                 print(f"[WARN] insert_heading OutlineLevel (level={level}): {e}", file=sys.stderr)
         return {
@@ -1308,6 +1362,7 @@ def dispatch(hwp, method, params):
             "level": level,
             "text": text,
             "outline_level": applied_outline_level,
+            "applied_via": applied_via,
         }
 
     if method == "export_format":

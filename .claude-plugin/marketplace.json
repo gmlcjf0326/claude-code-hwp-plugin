@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "hwp-marketplace",
-  "version": "0.6.9.2",
+  "version": "0.6.9.3",
   "description": "HWP Studio - 한글(HWP/HWPX) 문서 자동화 플러그인 마켓플레이스",
   "owner": {
     "name": "김희철",
@@ -11,7 +11,7 @@
     {
       "name": "claude-code-hwp-plugin",
       "description": "한글(HWP/HWPX) 문서 자동화. 100개 MCP 도구 + 8개 워크플로우 커맨드 + HWPX 규칙 hooks. v0.6.9: 계층 번호 OutlineLevel 연동. v0.6.9.1 patch: continue in finally 제거. v0.6.9.2 patch: v0.6.9.1 commit에서 v0.6.9 OutlineLevel 변경이 우연히 롤백된 사고 forward fix 복구.",
-      "version": "0.6.9.2",
+      "version": "0.6.9.3",
       "author": {
         "name": "김희철",
         "email": "gmlcjf0326@hanmail.net"
