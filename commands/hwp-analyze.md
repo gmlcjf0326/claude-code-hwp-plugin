@@ -5,6 +5,8 @@ allowed-tools:
   - "mcp__plugin_hwp-studio_hwp-studio__hwp_open_document"
   - "mcp__hwp-studio__hwp_smart_analyze"
   - "mcp__plugin_hwp-studio_hwp-studio__hwp_smart_analyze"
+  - "mcp__hwp-studio__hwp_list_controls"
+  - "mcp__plugin_hwp-studio_hwp-studio__hwp_list_controls"
   - "mcp__hwp-studio__hwp_get_document_text"
   - "mcp__plugin_hwp-studio_hwp-studio__hwp_get_document_text"
   - "mcp__hwp-studio__hwp_get_tables"
@@ -25,10 +27,11 @@ allowed-tools:
 
 ## 워크플로우
 1. hwp_open_document → 파일 열기
-2. hwp_smart_analyze → 심층 분석 (문서 유형 추론, 서식 프로파일)
-3. hwp_get_tables → 표 구조/데이터 파악
-4. hwp_form_detect → 양식 빈칸/체크박스 감지
-5. hwp_word_count → 글자수/단어수/페이지수
+2. hwp_list_controls → 표/그림/머리말/꼬리말/각주/누름틀 컨트롤 카탈로그 (v0.6.6+)
+3. hwp_smart_analyze → 심층 분석 (문서 유형 추론, 서식 프로파일)
+4. hwp_get_tables → 표 구조/데이터 파악
+5. hwp_form_detect → 양식 빈칸/체크박스 감지
+6. hwp_word_count → 글자수/단어수/페이지수
 
 ## 보고 항목
 - 문서 종류 및 목적

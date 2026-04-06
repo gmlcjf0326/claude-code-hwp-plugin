@@ -222,29 +222,34 @@ def insert_text_with_style(hwp, text, style=None):
 
     act.Execute("CharShape", pset.HSet)
 
-    hwp.insert_text(text)
-
-    # 원래 서식 복원
-    act.GetDefault("CharShape", pset.HSet)
-    pset.TextColor = saved['TextColor']
-    pset.Bold = saved['Bold']
-    pset.Italic = saved['Italic']
-    pset.UnderlineType = saved['UnderlineType']
-    pset.Height = saved['Height']
-    pset.StrikeOutType = saved['StrikeOutType']
-    for attr in ['SpacingHangul', 'RatioHangul', 'SuperScript', 'SubScript',
-                 'OutLineType', 'ShadowType', 'Emboss', 'Engrave', 'SmallCaps',
-                 'UnderlineColor', 'StrikeOutColor']:
-        if saved.get(attr) is not None:
-            try:
-                setattr(pset, attr, saved[attr])
-                if attr == 'SpacingHangul':
-                    pset.SpacingLatin = saved[attr]
-                if attr == 'RatioHangul':
-                    pset.RatioLatin = saved[attr]
-            except Exception as e:
-                print(f"[WARN] Restore {attr}: {e}", file=sys.stderr)
-    act.Execute("CharShape", pset.HSet)
+    # B1 (v0.6.6): 외곽 try/finally — insert_text 예외 시에도 CharShape 복원 보장
+    try:
+        hwp.insert_text(text)
+    finally:
+        # 원래 서식 복원 (예외 시에도 반드시 실행)
+        try:
+            act.GetDefault("CharShape", pset.HSet)
+            pset.TextColor = saved['TextColor']
+            pset.Bold = saved['Bold']
+            pset.Italic = saved['Italic']
+            pset.UnderlineType = saved['UnderlineType']
+            pset.Height = saved['Height']
+            pset.StrikeOutType = saved['StrikeOutType']
+            for attr in ['SpacingHangul', 'RatioHangul', 'SuperScript', 'SubScript',
+                         'OutLineType', 'ShadowType', 'Emboss', 'Engrave', 'SmallCaps',
+                         'UnderlineColor', 'StrikeOutColor']:
+                if saved.get(attr) is not None:
+                    try:
+                        setattr(pset, attr, saved[attr])
+                        if attr == 'SpacingHangul':
+                            pset.SpacingLatin = saved[attr]
+                        if attr == 'RatioHangul':
+                            pset.RatioLatin = saved[attr]
+                    except Exception as e:
+                        print(f"[WARN] Restore {attr}: {e}", file=sys.stderr)
+            act.Execute("CharShape", pset.HSet)
+        except Exception as e:
+            print(f"[WARN] CharShape restore failed: {e}", file=sys.stderr)
 
 
 def set_paragraph_style(hwp, style=None):
@@ -1244,3 +1249,61 @@ def set_table_border_style(hwp, table_idx, cells=None, style=None):
                 hwp.MovePos(3)
         except Exception as e:
             print(f"[WARN] Table exit (set_border): {e}", file=sys.stderr)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# v0.6.6 B3: InitScan/GetText/ReleaseScan 통합 헬퍼
+# 출처: guide-05 §검색 시스템
+# generate_toc, compare_documents, word_count, form_detect 공통 사용
+# ─────────────────────────────────────────────────────────────────────────
+def extract_all_text(hwp, max_chars=200000, max_iters=50000, strip_each=False, separator="\n"):
+    """InitScan/GetText/ReleaseScan 자동 안전 텍스트 추출.
+
+    hwp_constants.scan_context로 ReleaseScan() finally 보장 (예외 시에도).
+
+    Args:
+        hwp: pyhwpx Hwp 인스턴스
+        max_chars: 누적 문자 상한 (메모리 보호, 기본 20만자)
+        max_iters: GetText 루프 상한 (무한 방지, 기본 5만회)
+        strip_each: True면 각 GetText 결과 strip 후 빈 문자열 제외
+        separator: 조각 결합 구분자 (기본 "\\n", 빈 문자열도 가능)
+
+    Returns:
+        조합된 문자열 (실패 시 빈 문자열)
+    """
+    from hwp_constants import scan_context
+
+    parts = []
+    total_chars = 0
+
+    try:
+        with scan_context(hwp):
+            for _ in range(max_iters):
+                try:
+                    state, t = hwp.GetText()
+                except Exception as e:
+                    print(f"[WARN] extract_all_text GetText failed: {e}", file=sys.stderr)
+                    break
+
+                if state <= 0:
+                    break
+
+                if not t:
+                    continue
+
+                if strip_each:
+                    t = t.strip()
+                    if not t:
+                        continue
+
+                parts.append(t)
+                total_chars += len(t)
+
+                if total_chars >= max_chars:
+                    print(f"[INFO] extract_all_text: max_chars {max_chars} reached",
+                          file=sys.stderr)
+                    break
+    except Exception as e:
+        print(f"[WARN] extract_all_text scan failed: {e}", file=sys.stderr)
+
+    return separator.join(parts)

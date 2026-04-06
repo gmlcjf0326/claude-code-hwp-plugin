@@ -45,12 +45,30 @@ async function ensureAnalysis(bridge, filePath) {
     return response.data;
 }
 export function registerAnalysisTools(server, bridge, toolset = 'standard') {
-    server.tool('hwp_analyze_document', 'HWP/HWPX 문서의 전체 구조를 분석합니다. 페이지 수, 표(데이터 포함), 필드(양식), 본문 텍스트를 반환합니다. 문서를 처음 다룰 때 반드시 이 도구를 먼저 호출하세요.', {
+    server.tool('hwp_analyze_document', 'HWP/HWPX 문서의 전체 구조를 분석합니다. 페이지 수, 표(데이터 포함), 필드(양식), 본문 텍스트, 컨트롤 카탈로그(controls)를 반환합니다. 문서를 처음 다룰 때 반드시 이 도구를 먼저 호출하세요. v0.6.6+: HeadCtrl 순회로 표/그림/머리말/꼬리말/각주/누름틀 위치 자동 카탈로그.', {
         file_path: z.string().describe('HWP/HWPX 파일 경로'),
     }, async ({ file_path }) => {
         try {
             const result = await ensureAnalysis(bridge, file_path);
             return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+        }
+        catch (err) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+        }
+    });
+    // B2 (v0.6.6): HeadCtrl 순회 — 표/그림/머리말/꼬리말/각주/누름틀/하이퍼링크/책갈피/수식 등 모든 컨트롤 나열
+    server.tool('hwp_list_controls', '현재 열린 HWP/HWPX 문서의 모든 컨트롤(표/그림/머리말/꼬리말/각주/미주/누름틀/하이퍼링크/책갈피/수식)을 HeadCtrl 순회로 나열합니다. 페이지 위치, 사용자 설명, 표 행/열 정보 포함. analyze_document보다 가벼움. CtrlID: tbl(표), gso(그림), head(머리말), foot(꼬리말), fn(각주), en(미주), %clk(누름틀), %hlk(하이퍼링크), bokm(책갈피), eqed(수식).', {
+        filter: z.array(z.string()).optional().describe('필터링할 ctrl_id 목록 (생략 시 기본: tbl/gso/head/foot/fn/en, "all" 문자열은 미지원 — 빈 배열 또는 ["all"] 전달 시 전체)'),
+        max_visits: z.number().optional().describe('순회 상한 (기본: 5000)'),
+    }, async ({ filter, max_visits }) => {
+        try {
+            await bridge.ensureRunning();
+            // ["all"] → 문자열 "all"로 변환 (Python traverse_all_ctrls 약속)
+            const filterParam = filter && filter.length === 1 && filter[0] === 'all' ? 'all' : filter;
+            const response = await bridge.send('list_controls', { filter: filterParam, max_visits }, ANALYSIS_TIMEOUT);
+            if (!response.success)
+                throw new Error(response.error ?? 'list_controls 실패');
+            return { content: [{ type: 'text', text: JSON.stringify(response.data) }] };
         }
         catch (err) {
             return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };

@@ -134,6 +134,19 @@ def dispatch(hwp, method, params):
     if method == "ping":
         return {"status": "ok", "message": "HWP Service is running"}
 
+    # B1 (v0.6.6): dispatch 진입부 SetMessageBoxMode 멱등 적용
+    # 모든 RPC가 자동 안전 모드로 실행됨 (대화상자 미출력 → 무인 자동화 안정성)
+    # 기존 open_document line 182의 XHwpMessageBoxMode = 1 은 폴백으로 유지
+    try:
+        from hwp_constants import apply_safe_mode
+        apply_safe_mode(hwp)
+    except Exception:
+        # hwp_constants import 실패 시에도 dispatch는 계속 (호환성)
+        try:
+            hwp.SetMessageBoxMode(0x00010000)
+        except Exception:
+            pass
+
     if method == "inspect_com_object":
         obj_name = params.get("object", "HCharShape")
         if obj_name == "HCharShape":
@@ -1470,18 +1483,11 @@ def dispatch(hwp, method, params):
 
     if method == "generate_toc":
         # 문서 텍스트에서 제목 패턴을 추출하여 목차 텍스트 생성
+        # v0.6.6 B3: scan_context 기반 extract_all_text 사용 (ReleaseScan finally 보장)
         import re
-        hwp.InitScan(0x0077)
-        texts = []
-        count = 0
-        while count < 1000:
-            state, t = hwp.GetText()
-            if state <= 0:
-                break
-            if t and t.strip():
-                texts.append(t.strip())
-            count += 1
-        hwp.ReleaseScan()
+        from hwp_editor import extract_all_text
+        text_blob = extract_all_text(hwp, max_iters=1000, strip_each=True, separator="\n")
+        texts = text_blob.split("\n") if text_blob else []
         # 제목 패턴 감지
         toc_items = []
         heading_patterns = [
@@ -1703,41 +1709,20 @@ def dispatch(hwp, method, params):
         validate_params(params, ["file_path_1", "file_path_2"], method)
         path1 = validate_file_path(params["file_path_1"], must_exist=True)
         path2 = validate_file_path(params["file_path_2"], must_exist=True)
-        # 문서 1 텍스트 추출
+        # 문서 1 텍스트 추출 (v0.6.6 B3: extract_all_text 사용)
+        from hwp_editor import extract_all_text
         hwp.open(path1)
         text1 = ""
         try:
-            hwp.InitScan(0x0077)
-            parts = []
-            count = 0
-            while count < 5000:
-                state, t = hwp.GetText()
-                if state <= 0:
-                    break
-                if t and t.strip():
-                    parts.append(t.strip())
-                count += 1
-            hwp.ReleaseScan()
-            text1 = "\n".join(parts)
+            text1 = extract_all_text(hwp, max_iters=5000, strip_each=True, separator="\n")
         except Exception as e:
             print(f"[WARN] {e}", file=sys.stderr)
         hwp.close()
-        # 문서 2 텍스트 추출
+        # 문서 2 텍스트 추출 (v0.6.6 B3: extract_all_text 사용)
         hwp.open(path2)
         text2 = ""
         try:
-            hwp.InitScan(0x0077)
-            parts = []
-            count = 0
-            while count < 5000:
-                state, t = hwp.GetText()
-                if state <= 0:
-                    break
-                if t and t.strip():
-                    parts.append(t.strip())
-                count += 1
-            hwp.ReleaseScan()
-            text2 = "\n".join(parts)
+            text2 = extract_all_text(hwp, max_iters=5000, strip_each=True, separator="\n")
         except Exception as e:
             print(f"[WARN] {e}", file=sys.stderr)
         hwp.close()
@@ -1752,20 +1737,11 @@ def dispatch(hwp, method, params):
                 "added_lines": added[:20], "removed_lines": removed[:20]}
 
     if method == "word_count":
+        # v0.6.6 B3: extract_all_text 사용 (separator="" → concat)
+        from hwp_editor import extract_all_text
         text = ""
         try:
-            hwp.InitScan(0x0077)
-            parts = []
-            count = 0
-            while count < 10000:
-                state, t = hwp.GetText()
-                if state <= 0:
-                    break
-                if t:
-                    parts.append(t)
-                count += 1
-            hwp.ReleaseScan()
-            text = "".join(parts)
+            text = extract_all_text(hwp, max_iters=10000, strip_each=False, separator="")
         except Exception as e:
             print(f"[WARN] {e}", file=sys.stderr)
         chars_total = len(text)
@@ -1852,21 +1828,12 @@ def dispatch(hwp, method, params):
 
     if method == "form_detect":
         # 문서 텍스트에서 빈칸/괄호/밑줄 패턴으로 양식 필드 자동 감지
+        # v0.6.6 B3: extract_all_text 사용 (ReleaseScan finally 보장)
         import re
+        from hwp_editor import extract_all_text
         text = ""
         try:
-            hwp.InitScan(0x0077)
-            parts = []
-            count = 0
-            while count < 10000:
-                state, t = hwp.GetText()
-                if state <= 0:
-                    break
-                if t:
-                    parts.append(t)
-                count += 1
-            hwp.ReleaseScan()
-            text = "\n".join(parts)
+            text = extract_all_text(hwp, max_iters=10000, strip_each=False, separator="\n")
         except Exception as e:
             print(f"[WARN] {e}", file=sys.stderr)
         # 패턴 감지: ( ), [ ], ___, ☐, □, ○, ◯, 빈칸+콜론
@@ -1935,6 +1902,13 @@ def dispatch(hwp, method, params):
             params["data_list"],
             params.get("output_dir"),
         )
+
+    # B2 (v0.6.6): HeadCtrl 순회 — 표/그림/머리말/꼬리말/각주/누름틀 등 모든 컨트롤 나열
+    if method == "list_controls":
+        from hwp_traversal import traverse_all_ctrls
+        filter_ids = params.get("filter")  # None | list | "all"
+        max_visits = params.get("max_visits", 5000)
+        return traverse_all_ctrls(hwp, include_ids=filter_ids, max_visits=max_visits)
 
     raise ValueError(f"Unknown method: {method}")
 

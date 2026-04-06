@@ -103,9 +103,22 @@ def analyze_document(hwp, file_path, already_open=False):
         "fields": [],
         "text_preview": "",
         "full_text": "",
+        # B2 (v0.6.6): HeadCtrl 순회 결과 — 표/그림/머리말/꼬리말/각주/누름틀 위치
+        "controls": [],
+        "controls_by_type": {},
     }
 
     scan_started = False
+
+    # B2 (v0.6.6): HeadCtrl 순회 — 표 추출 전에 전체 컨트롤 카탈로그 수집
+    # 기존 표 추출 (get_into_nth_table) 로직은 그대로 유지 (호환성)
+    try:
+        from hwp_traversal import traverse_all_ctrls
+        ctrl_result = traverse_all_ctrls(hwp, include_ids=None)
+        result["controls"] = ctrl_result.get("controls", [])
+        result["controls_by_type"] = ctrl_result.get("by_type", {})
+    except Exception as e:
+        print(f"[WARN] HeadCtrl traversal failed: {e}", file=sys.stderr)
 
     try:
         # Page count

@@ -36164,12 +36164,27 @@ async function ensureAnalysis(bridge2, filePath) {
   return response.data;
 }
 function registerAnalysisTools(server2, bridge2, toolset2 = "standard") {
-  server2.tool("hwp_analyze_document", "HWP/HWPX \uBB38\uC11C\uC758 \uC804\uCCB4 \uAD6C\uC870\uB97C \uBD84\uC11D\uD569\uB2C8\uB2E4. \uD398\uC774\uC9C0 \uC218, \uD45C(\uB370\uC774\uD130 \uD3EC\uD568), \uD544\uB4DC(\uC591\uC2DD), \uBCF8\uBB38 \uD14D\uC2A4\uD2B8\uB97C \uBC18\uD658\uD569\uB2C8\uB2E4. \uBB38\uC11C\uB97C \uCC98\uC74C \uB2E4\uB8F0 \uB54C \uBC18\uB4DC\uC2DC \uC774 \uB3C4\uAD6C\uB97C \uBA3C\uC800 \uD638\uCD9C\uD558\uC138\uC694.", {
+  server2.tool("hwp_analyze_document", "HWP/HWPX \uBB38\uC11C\uC758 \uC804\uCCB4 \uAD6C\uC870\uB97C \uBD84\uC11D\uD569\uB2C8\uB2E4. \uD398\uC774\uC9C0 \uC218, \uD45C(\uB370\uC774\uD130 \uD3EC\uD568), \uD544\uB4DC(\uC591\uC2DD), \uBCF8\uBB38 \uD14D\uC2A4\uD2B8, \uCEE8\uD2B8\uB864 \uCE74\uD0C8\uB85C\uADF8(controls)\uB97C \uBC18\uD658\uD569\uB2C8\uB2E4. \uBB38\uC11C\uB97C \uCC98\uC74C \uB2E4\uB8F0 \uB54C \uBC18\uB4DC\uC2DC \uC774 \uB3C4\uAD6C\uB97C \uBA3C\uC800 \uD638\uCD9C\uD558\uC138\uC694. v0.6.6+: HeadCtrl \uC21C\uD68C\uB85C \uD45C/\uADF8\uB9BC/\uBA38\uB9AC\uB9D0/\uAF2C\uB9AC\uB9D0/\uAC01\uC8FC/\uB204\uB984\uD2C0 \uC704\uCE58 \uC790\uB3D9 \uCE74\uD0C8\uB85C\uADF8.", {
     file_path: external_exports.string().describe("HWP/HWPX \uD30C\uC77C \uACBD\uB85C")
   }, async ({ file_path }) => {
     try {
       const result = await ensureAnalysis(bridge2, file_path);
       return { content: [{ type: "text", text: JSON.stringify(result) }] };
+    } catch (err) {
+      return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }], isError: true };
+    }
+  });
+  server2.tool("hwp_list_controls", "\uD604\uC7AC \uC5F4\uB9B0 HWP/HWPX \uBB38\uC11C\uC758 \uBAA8\uB4E0 \uCEE8\uD2B8\uB864(\uD45C/\uADF8\uB9BC/\uBA38\uB9AC\uB9D0/\uAF2C\uB9AC\uB9D0/\uAC01\uC8FC/\uBBF8\uC8FC/\uB204\uB984\uD2C0/\uD558\uC774\uD37C\uB9C1\uD06C/\uCC45\uAC08\uD53C/\uC218\uC2DD)\uC744 HeadCtrl \uC21C\uD68C\uB85C \uB098\uC5F4\uD569\uB2C8\uB2E4. \uD398\uC774\uC9C0 \uC704\uCE58, \uC0AC\uC6A9\uC790 \uC124\uBA85, \uD45C \uD589/\uC5F4 \uC815\uBCF4 \uD3EC\uD568. analyze_document\uBCF4\uB2E4 \uAC00\uBCBC\uC6C0. CtrlID: tbl(\uD45C), gso(\uADF8\uB9BC), head(\uBA38\uB9AC\uB9D0), foot(\uAF2C\uB9AC\uB9D0), fn(\uAC01\uC8FC), en(\uBBF8\uC8FC), %clk(\uB204\uB984\uD2C0), %hlk(\uD558\uC774\uD37C\uB9C1\uD06C), bokm(\uCC45\uAC08\uD53C), eqed(\uC218\uC2DD).", {
+    filter: external_exports.array(external_exports.string()).optional().describe('\uD544\uD130\uB9C1\uD560 ctrl_id \uBAA9\uB85D (\uC0DD\uB7B5 \uC2DC \uAE30\uBCF8: tbl/gso/head/foot/fn/en, "all" \uBB38\uC790\uC5F4\uC740 \uBBF8\uC9C0\uC6D0 \u2014 \uBE48 \uBC30\uC5F4 \uB610\uB294 ["all"] \uC804\uB2EC \uC2DC \uC804\uCCB4)'),
+    max_visits: external_exports.number().optional().describe("\uC21C\uD68C \uC0C1\uD55C (\uAE30\uBCF8: 5000)")
+  }, async ({ filter, max_visits }) => {
+    try {
+      await bridge2.ensureRunning();
+      const filterParam = filter && filter.length === 1 && filter[0] === "all" ? "all" : filter;
+      const response = await bridge2.send("list_controls", { filter: filterParam, max_visits }, ANALYSIS_TIMEOUT);
+      if (!response.success)
+        throw new Error(response.error ?? "list_controls \uC2E4\uD328");
+      return { content: [{ type: "text", text: JSON.stringify(response.data) }] };
     } catch (err) {
       return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }], isError: true };
     }
@@ -37089,7 +37104,7 @@ function registerEditingTools(server2, bridge2, toolset2 = "standard") {
           style.keep_lines_together = keep_lines_together;
         if (condense !== void 0)
           style.condense = condense;
-        const response = await bridge2.send("set_paragraph_style", { style });
+        const response = await bridge2.send("set_paragraph_style", { style }, FILL_TIMEOUT);
         if (!response.success) {
           return { content: [{ type: "text", text: JSON.stringify({ error: response.error }) }], isError: true };
         }
@@ -37111,7 +37126,7 @@ function registerEditingTools(server2, bridge2, toolset2 = "standard") {
       }
       try {
         await bridge2.ensureRunning();
-        const response = await bridge2.send("find_replace_nth", { find, replace, nth });
+        const response = await bridge2.send("find_replace_nth", { find, replace, nth }, FILL_TIMEOUT);
         if (!response.success) {
           return { content: [{ type: "text", text: JSON.stringify({ error: response.error }) }], isError: true };
         }
