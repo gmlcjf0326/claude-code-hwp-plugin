@@ -1076,6 +1076,59 @@ def dispatch(hwp, method, params):
         finally:
             _exit_table_safely(hwp)
 
+    # v0.6.8.1 신규: 표 진입 (셀에 머무름 — finally _exit_table_safely 호출 안 함)
+    # WOW #4 시나리오 자동화의 진입점. v0.6.8 navigate_cell/insert_row_at_cursor의
+    # mcp 자동화 한계 해소.
+    if method == "enter_table":
+        validate_params(params, ["table_index"], method)
+        table_index = int(params["table_index"])  # 음수 가능 (-1 = 마지막 표)
+        select_cell = bool(params.get("select_cell", False))
+
+        # 안전망: 이미 다른 표 셀 안에 있으면 먼저 탈출
+        # (사용자가 enter_table을 두 번 연속 호출하는 경우)
+        try:
+            if hwp.is_cell():
+                _exit_table_safely(hwp)
+        except Exception as e:
+            print(f"[WARN] enter_table pre-exit failed: {e}", file=sys.stderr)
+
+        try:
+            # pyhwpx get_into_nth_table은 ctrl 객체 또는 None 반환 (core.py:4390)
+            result = hwp.get_into_nth_table(table_index, select_cell=select_cell)
+            if not result:
+                return {
+                    "status": "error",
+                    "error": f"표 진입 실패: 인덱스 {table_index}에 해당하는 표를 찾을 수 없습니다.",
+                    "table_index": table_index,
+                }
+            # 이중 검증: is_cell()이 true여야 진정한 진입 성공
+            if not hwp.is_cell():
+                return {
+                    "status": "error",
+                    "error": f"표 진입 실패: get_into_nth_table 반환됐으나 is_cell()=false (인덱스 {table_index})",
+                    "table_index": table_index,
+                }
+            return {
+                "status": "ok",
+                "table_index": table_index,
+                "in_cell": True,
+                "select_cell": select_cell,
+            }
+        except Exception as e:
+            raise RuntimeError(f"표 진입 실패 (index={table_index}): {e}")
+        # ★ finally _exit_table_safely 호출 안 함 (의도적으로 셀에 머무름)
+
+    # v0.6.8.1 신규: 표 명시적 탈출
+    # _exit_table_safely (MovePos(3) + BreakPara) 호출 wrap. 표 안에 없을 때도 안전 (no-op).
+    if method == "exit_table":
+        was_in_cell = False
+        try:
+            was_in_cell = bool(hwp.is_cell())
+        except Exception:
+            pass
+        _exit_table_safely(hwp)
+        return {"status": "ok", "was_in_cell": was_in_cell}
+
     if method == "table_create_from_data":
         validate_params(params, ["data"], method)
         data = params["data"]  # 2D 배열 [[row1], [row2], ...]

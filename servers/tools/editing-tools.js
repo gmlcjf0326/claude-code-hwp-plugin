@@ -745,6 +745,44 @@ export function registerEditingTools(server, bridge, toolset = 'standard') {
                 return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
             }
         });
+        // v0.6.8.1 신규: 표 진입 (셀에 머무름 — 후속 셀 작업의 진입점)
+        // v0.6.8 navigate_cell/insert_row_at_cursor의 mcp 자동화 한계 해소.
+        server.tool('hwp_enter_table', '지정된 표(0-based 인덱스, 음수 가능)에 진입하여 첫 셀에 커서를 위치시킵니다. (v0.6.8.1 신규) 진입 후 hwp_navigate_cell, hwp_insert_row_at_cursor, hwp_insert_text, hwp_merge_current_selection 등으로 셀 단위 작업 가능. 작업 완료 후 hwp_exit_table로 명시적 탈출. WOW #4 시나리오 ("두 번째 표 마지막 행에 합계 추가")의 mcp 자동화 진입점. 안전망: 이미 다른 표 셀 안에 있으면 자동으로 먼저 탈출.', {
+            table_index: z.number().int().describe('0-based 표 인덱스. 음수 가능 (-1=마지막 표, -2=뒤에서 두 번째)'),
+            select_cell: z.boolean().optional().describe('진입 후 첫 셀을 블록으로 선택할지 여부 (기본 false=일반 커서)'),
+        }, async ({ table_index, select_cell }) => {
+            if (!bridge.getCurrentDocument())
+                return { content: [{ type: 'text', text: JSON.stringify({ error: '열린 문서가 없습니다.' }) }], isError: true };
+            try {
+                await bridge.ensureRunning();
+                const params = { table_index };
+                if (select_cell !== undefined)
+                    params.select_cell = select_cell;
+                const r = await bridge.send('enter_table', params, FILL_TIMEOUT);
+                if (!r.success)
+                    return { content: [{ type: 'text', text: JSON.stringify({ error: r.error }) }], isError: true };
+                return { content: [{ type: 'text', text: JSON.stringify(r.data) }] };
+            }
+            catch (err) {
+                return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+            }
+        });
+        // v0.6.8.1 신규: 표 명시적 탈출
+        server.tool('hwp_exit_table', '현재 표에서 명시적으로 탈출합니다. (v0.6.8.1 신규) hwp_enter_table 후 셀 작업 완료 시 호출. 내부적으로 _exit_table_safely(MovePos(3) + BreakPara) 사용. 표 안에 없을 때 호출해도 안전 (no-op, was_in_cell=false 반환).', {}, async () => {
+            if (!bridge.getCurrentDocument())
+                return { content: [{ type: 'text', text: JSON.stringify({ error: '열린 문서가 없습니다.' }) }], isError: true };
+            try {
+                await bridge.ensureRunning();
+                const r = await bridge.send('exit_table', {}, FILL_TIMEOUT);
+                if (!r.success)
+                    return { content: [{ type: 'text', text: JSON.stringify({ error: r.error }) }], isError: true };
+                bridge.setCachedAnalysis(null);
+                return { content: [{ type: 'text', text: JSON.stringify(r.data) }] };
+            }
+            catch (err) {
+                return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+            }
+        });
         server.tool('hwp_insert_hyperlink', '현재 커서 위치에 하이퍼링크를 삽입합니다.', {
             url: z.string().describe('URL (예: https://example.com)'),
             text: z.string().optional().describe('표시 텍스트 (생략 시 URL)'),

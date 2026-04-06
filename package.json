@@ -1,6 +1,6 @@
 {
   "name": "claude-code-hwp-plugin",
-  "version": "0.6.8",
+  "version": "0.6.8.1",
   "description": "Claude Code plugin for HWP document automation. 94 MCP tools + 8 workflow commands + HWPX rule hooks.",
   "type": "module",
   "private": true,
