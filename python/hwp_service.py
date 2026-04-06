@@ -633,7 +633,10 @@ def dispatch(hwp, method, params):
     if method == "set_paragraph_style":
         validate_params(params, ["style"], method)
         s = params["style"]
-        # Execute로 정상 작동하는 속성 (align, spacing)
+        # v0.6.7: first_line_indent는 indent의 alias (사용자 친화적 이름)
+        if "first_line_indent" in s and "indent" not in s:
+            s["indent"] = s["first_line_indent"]
+        # Execute로 정상 작동하는 속성 (align, spacing, border 등)
         act = hwp.HAction
         pset = hwp.HParameterSet.HParaShape
         act.GetDefault("ParaShape", pset.HSet)
@@ -661,6 +664,100 @@ def dispatch(hwp, method, params):
         if "widow_orphan" in s:
             pset.WidowOrphan = 1 if s["widow_orphan"] else 0
             _need_execute = True
+        # v0.6.7: hwp_editor.py:set_paragraph_style와 인라인 풀 동기화 (8개 추가)
+        if "line_wrap" in s:
+            try:
+                pset.LineWrap = int(s["line_wrap"])
+                _need_execute = True
+            except Exception as e:
+                print(f"[WARN] LineWrap: {e}", file=sys.stderr)
+        if "snap_to_grid" in s:
+            try:
+                pset.SnapToGrid = 1 if s["snap_to_grid"] else 0
+                _need_execute = True
+            except Exception as e:
+                print(f"[WARN] SnapToGrid: {e}", file=sys.stderr)
+        if "auto_space_eAsian_eng" in s:
+            try:
+                pset.AutoSpaceEAsianEng = 1 if s["auto_space_eAsian_eng"] else 0
+                _need_execute = True
+            except Exception as e:
+                print(f"[WARN] AutoSpaceEAsianEng: {e}", file=sys.stderr)
+        if "auto_space_eAsian_num" in s:
+            try:
+                pset.AutoSpaceEAsianNum = 1 if s["auto_space_eAsian_num"] else 0
+                _need_execute = True
+            except Exception as e:
+                print(f"[WARN] AutoSpaceEAsianNum: {e}", file=sys.stderr)
+        if "break_latin_word" in s:
+            try:
+                pset.BreakLatinWord = int(s["break_latin_word"])
+                _need_execute = True
+            except Exception as e:
+                print(f"[WARN] BreakLatinWord: {e}", file=sys.stderr)
+        if "heading_type" in s:
+            try:
+                pset.HeadingType = int(s["heading_type"])
+                _need_execute = True
+            except Exception as e:
+                print(f"[WARN] HeadingType: {e}", file=sys.stderr)
+        if "keep_lines_together" in s:
+            try:
+                pset.KeepLinesTogether = 1 if s["keep_lines_together"] else 0
+                _need_execute = True
+            except Exception as e:
+                print(f"[WARN] KeepLinesTogether: {e}", file=sys.stderr)
+        if "condense" in s:
+            try:
+                pset.Condense = int(s["condense"])
+                _need_execute = True
+            except Exception as e:
+                print(f"[WARN] Condense: {e}", file=sys.stderr)
+        # v0.6.7 신규: 문단 테두리 4면 (Border)
+        # 입력: border_left/right/top/bottom = {"type": int, "width": float, "color": "#RRGGBB"}
+        # 또는 border_color = "#RRGGBB" (4면 일괄), border_shadowing = bool
+        _border_edges = {"left": "Left", "right": "Right", "top": "Top", "bottom": "Bottom"}
+        for edge_key, edge_attr in _border_edges.items():
+            border_key = f"border_{edge_key}"
+            if border_key in s and isinstance(s[border_key], dict):
+                bspec = s[border_key]
+                try:
+                    if "type" in bspec:
+                        setattr(pset, f"BorderType{edge_attr}", int(bspec["type"]))
+                    if "width" in bspec:
+                        setattr(pset, f"BorderWidth{edge_attr}", float(bspec["width"]))
+                    if "color" in bspec:
+                        # "#RRGGBB" → RGB
+                        c = bspec["color"].lstrip("#")
+                        if len(c) == 6:
+                            r = int(c[0:2], 16)
+                            g = int(c[2:4], 16)
+                            b = int(c[4:6], 16)
+                            setattr(pset, f"BorderColor{edge_attr}", hwp.RGBColor(r, g, b))
+                    _need_execute = True
+                except Exception as e:
+                    print(f"[WARN] Border{edge_attr}: {e}", file=sys.stderr)
+        # 4면 색 일괄
+        if "border_color" in s:
+            try:
+                c = s["border_color"].lstrip("#")
+                if len(c) == 6:
+                    r = int(c[0:2], 16)
+                    g = int(c[2:4], 16)
+                    b = int(c[4:6], 16)
+                    rgb = hwp.RGBColor(r, g, b)
+                    for edge_attr in _border_edges.values():
+                        setattr(pset, f"BorderColor{edge_attr}", rgb)
+                    _need_execute = True
+            except Exception as e:
+                print(f"[WARN] BorderColor (all): {e}", file=sys.stderr)
+        # 그림자
+        if "border_shadowing" in s:
+            try:
+                pset.BorderShadowing = 1 if s["border_shadowing"] else 0
+                _need_execute = True
+            except Exception as e:
+                print(f"[WARN] BorderShadowing: {e}", file=sys.stderr)
         if _need_execute:
             act.Execute("ParaShape", pset.HSet)
         # Execute로 미반영되는 속성 (LeftMargin, Indentation) → set_para 사용
@@ -670,7 +767,13 @@ def dispatch(hwp, method, params):
         if "right_margin" in s:
             _para_kwargs["RightMargin"] = float(s["right_margin"])
         if "indent" in s:
-            _para_kwargs["Indentation"] = float(s["indent"])
+            indent_val = float(s["indent"])
+            _para_kwargs["Indentation"] = indent_val
+            # v0.6.7: indent<0 (내어쓰기) + left_margin 미지정 시 자동 보정
+            # HWP Shift+Tab과 동일 효과. v0.6.5에서 사라졌던 로직 복원
+            # (메모리 feedback_indent_auto_correction 참조)
+            if indent_val < 0 and "left_margin" not in s:
+                _para_kwargs["LeftMargin"] = abs(indent_val)
         if _para_kwargs:
             try:
                 hwp.set_para(**_para_kwargs)

@@ -37039,13 +37039,14 @@ function registerEditingTools(server2, bridge2, toolset2 = "standard") {
     }
   });
   if (toolset2 !== "minimal") {
-    server2.tool("hwp_set_paragraph_style", "\uD604\uC7AC \uCEE4\uC11C \uC704\uCE58\uC758 \uB2E8\uB77D \uC11C\uC2DD\uC744 \uBCC0\uACBD\uD569\uB2C8\uB2E4. left_margin=\uB098\uBA38\uC9C0\uC904 \uC2DC\uC791\uC704\uCE58, indent=\uCCAB\uC904 \uB4E4\uC5EC\uC4F0\uAE30. \uCCAB\uC904 \uC2DC\uC791\uC704\uCE58 = left_margin + indent.", {
+    server2.tool("hwp_set_paragraph_style", "\uD604\uC7AC \uCEE4\uC11C \uC704\uCE58\uC758 \uB2E8\uB77D \uC11C\uC2DD\uC744 \uBCC0\uACBD\uD569\uB2C8\uB2E4. left_margin=\uB098\uBA38\uC9C0\uC904 \uC2DC\uC791\uC704\uCE58, indent=\uCCAB\uC904 \uB4E4\uC5EC\uC4F0\uAE30. \uCCAB\uC904 \uC2DC\uC791\uC704\uCE58 = left_margin + indent. v0.6.7+: \uBB38\uB2E8 \uD14C\uB450\uB9AC(border_*) 4\uBA74 + first_line_indent alias + indent<0 \uC790\uB3D9 left_margin \uBCF4\uC815.", {
       align: external_exports.enum(["left", "center", "right", "justify"]).optional().describe("\uC815\uB82C"),
       line_spacing: external_exports.number().optional().describe("\uC904\uAC04\uACA9 (%, \uC608: 160)"),
       line_spacing_type: external_exports.number().int().min(0).max(2).optional().describe("\uC904\uAC04\uACA9 \uD0C0\uC785 (0=\uD37C\uC13C\uD2B8)"),
       space_before: external_exports.number().optional().describe("\uBB38\uB2E8 \uC55E \uAC04\uACA9 (pt)"),
       space_after: external_exports.number().optional().describe("\uBB38\uB2E8 \uB4A4 \uAC04\uACA9 (pt)"),
-      indent: external_exports.number().optional().describe("\uCCAB \uC904 \uB4E4\uC5EC\uC4F0\uAE30 (pt, \uC591\uC218=\uB4E4\uC5EC\uC4F0\uAE30, \uC74C\uC218=\uB0B4\uC5B4\uC4F0\uAE30)"),
+      indent: external_exports.number().optional().describe("\uCCAB \uC904 \uB4E4\uC5EC\uC4F0\uAE30 (pt, \uC591\uC218=\uB4E4\uC5EC\uC4F0\uAE30, \uC74C\uC218=\uB0B4\uC5B4\uC4F0\uAE30). \uC74C\uC218 + left_margin \uBBF8\uC9C0\uC815 \uC2DC \uC790\uB3D9 \uBCF4\uC815 (v0.6.7)."),
+      first_line_indent: external_exports.number().optional().describe("indent\uC758 alias (v0.6.7, \uC0AC\uC6A9\uC790 \uCE5C\uD654\uC801 \uC774\uB984)"),
       left_margin: external_exports.number().optional().describe("\uC67C\uCABD \uC5EC\uBC31/\uB098\uBA38\uC9C0 \uC904 \uC2DC\uC791\uC704\uCE58 (pt)"),
       right_margin: external_exports.number().optional().describe("\uC624\uB978\uCABD \uC5EC\uBC31 (pt)"),
       page_break_before: external_exports.boolean().optional().describe("\uBB38\uB2E8 \uC55E \uD398\uC774\uC9C0 \uB098\uB204\uAE30"),
@@ -37058,8 +37059,30 @@ function registerEditingTools(server2, bridge2, toolset2 = "standard") {
       break_latin_word: external_exports.number().int().optional().describe("\uC601\uBB38 \uC904\uBC14\uAFC8 (0=\uB2E8\uC5B4, 1=\uAE00\uC790)"),
       heading_type: external_exports.number().int().optional().describe("\uC81C\uBAA9 \uC218\uC900 (\uAC1C\uC694)"),
       keep_lines_together: external_exports.boolean().optional().describe("\uC904 \uD568\uAED8 \uC720\uC9C0 (\uBB38\uB2E8 \uBD84\uB9AC \uBC29\uC9C0)"),
-      condense: external_exports.number().int().optional().describe("\uBB38\uB2E8 \uC555\uCD95")
-    }, async ({ align, line_spacing, line_spacing_type, space_before, space_after, indent, left_margin, right_margin, page_break_before, keep_with_next, widow_orphan, line_wrap, snap_to_grid, auto_space_eAsian_eng, auto_space_eAsian_num, break_latin_word, heading_type, keep_lines_together, condense }) => {
+      condense: external_exports.number().int().optional().describe("\uBB38\uB2E8 \uC555\uCD95"),
+      border_left: external_exports.object({
+        type: external_exports.number().int().optional().describe("\uC120 \uC885\uB958 (0=\uC5C6\uC74C, 1=\uC2E4\uC120, ...)"),
+        width: external_exports.number().optional().describe("\uC120 \uAD75\uAE30 (mm)"),
+        color: external_exports.string().optional().describe("\uC120 \uC0C9\uC0C1 (#RRGGBB)")
+      }).optional().describe("\uC67C\uCABD \uBB38\uB2E8 \uD14C\uB450\uB9AC (v0.6.7 \uC2E0\uADDC)"),
+      border_right: external_exports.object({
+        type: external_exports.number().int().optional(),
+        width: external_exports.number().optional(),
+        color: external_exports.string().optional()
+      }).optional().describe("\uC624\uB978\uCABD \uBB38\uB2E8 \uD14C\uB450\uB9AC (v0.6.7 \uC2E0\uADDC)"),
+      border_top: external_exports.object({
+        type: external_exports.number().int().optional(),
+        width: external_exports.number().optional(),
+        color: external_exports.string().optional()
+      }).optional().describe("\uC704\uCABD \uBB38\uB2E8 \uD14C\uB450\uB9AC (v0.6.7 \uC2E0\uADDC)"),
+      border_bottom: external_exports.object({
+        type: external_exports.number().int().optional(),
+        width: external_exports.number().optional(),
+        color: external_exports.string().optional()
+      }).optional().describe("\uC544\uB798\uCABD \uBB38\uB2E8 \uD14C\uB450\uB9AC (v0.6.7 \uC2E0\uADDC)"),
+      border_color: external_exports.string().optional().describe("4\uBA74 \uD14C\uB450\uB9AC \uC0C9 \uC77C\uAD04 (#RRGGBB, v0.6.7 \uC2E0\uADDC)"),
+      border_shadowing: external_exports.boolean().optional().describe("\uD14C\uB450\uB9AC \uADF8\uB9BC\uC790 (v0.6.7 \uC2E0\uADDC)")
+    }, async ({ align, line_spacing, line_spacing_type, space_before, space_after, indent, first_line_indent, left_margin, right_margin, page_break_before, keep_with_next, widow_orphan, line_wrap, snap_to_grid, auto_space_eAsian_eng, auto_space_eAsian_num, break_latin_word, heading_type, keep_lines_together, condense, border_left, border_right, border_top, border_bottom, border_color, border_shadowing }) => {
       if (!bridge2.getCurrentDocument()) {
         return { content: [{ type: "text", text: JSON.stringify({ error: "\uC5F4\uB9B0 \uBB38\uC11C\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4." }) }], isError: true };
       }
@@ -37078,6 +37101,8 @@ function registerEditingTools(server2, bridge2, toolset2 = "standard") {
           style.space_after = space_after;
         if (indent !== void 0)
           style.indent = indent;
+        if (first_line_indent !== void 0)
+          style.first_line_indent = first_line_indent;
         if (left_margin !== void 0)
           style.left_margin = left_margin;
         if (right_margin !== void 0)
@@ -37104,6 +37129,18 @@ function registerEditingTools(server2, bridge2, toolset2 = "standard") {
           style.keep_lines_together = keep_lines_together;
         if (condense !== void 0)
           style.condense = condense;
+        if (border_left !== void 0)
+          style.border_left = border_left;
+        if (border_right !== void 0)
+          style.border_right = border_right;
+        if (border_top !== void 0)
+          style.border_top = border_top;
+        if (border_bottom !== void 0)
+          style.border_bottom = border_bottom;
+        if (border_color !== void 0)
+          style.border_color = border_color;
+        if (border_shadowing !== void 0)
+          style.border_shadowing = border_shadowing;
         const response = await bridge2.send("set_paragraph_style", { style }, FILL_TIMEOUT);
         if (!response.success) {
           return { content: [{ type: "text", text: JSON.stringify({ error: response.error }) }], isError: true };

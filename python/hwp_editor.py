@@ -52,6 +52,7 @@ def insert_text_with_style(hwp, text, style=None):
         "width_ratio": 90,          # 장평 (%, 기본 100)
         "font_name_hanja": "바탕",  # 한자 글꼴
         "font_name_japanese": "",   # 일본어 글꼴
+        "font_name_other": "",      # 기타(라틴 외) 글꼴 (v0.6.7)
         "superscript": True/False,  # 위 첨자
         "subscript": True/False,    # 아래 첨자
         "outline": True/False,      # 외곽선
@@ -148,6 +149,12 @@ def insert_text_with_style(hwp, text, style=None):
             pset.FaceNameJapanese = style["font_name_japanese"]
         except Exception as e:
             print(f"[WARN] {e}", file=sys.stderr)
+    if "font_name_other" in style:
+        # v0.6.7: 기타(라틴 외) 글꼴 — FaceNameOther 1건 추가
+        try:
+            pset.FaceNameOther = style["font_name_other"]
+        except Exception as e:
+            print(f"[WARN] FaceNameOther: {e}", file=sys.stderr)
     # 위/아래 첨자
     if "superscript" in style:
         try:

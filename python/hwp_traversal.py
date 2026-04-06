@@ -36,37 +36,77 @@ def _safe_get(ctrl, attr, default=None):
         return default
 
 
+def _param_get(params, name, default=None):
+    """ParameterSet에서 값 읽기 (Item 방식 우선, attribute fallback).
+
+    pyhwpx docstring: `prop.SetItem("Rows", 3)` (core.py line 1293).
+    읽기는 `Item("Rows")`가 표준. 일부 ParameterSet은 direct attribute도 지원.
+    """
+    if params is None:
+        return default
+    # 1. ParameterSet.Item(name) 방식 (표준)
+    try:
+        v = params.Item(name)
+        if v is not None:
+            return v
+    except Exception:
+        pass
+    # 2. Direct attribute 방식 (pyhwpx wrapper 지원 시)
+    try:
+        v = getattr(params, name, None)
+        if v is not None:
+            return v
+    except Exception:
+        pass
+    return default
+
+
 def _ctrl_to_dict(ctrl, idx, hwp=None, include_pos=False):
     """단일 ctrl 객체를 직렬화 가능한 dict로 변환.
 
     수집 정보:
         - ctrl_id: CtrlID 문자열 ("tbl", "gso", "head" 등)
         - user_desc: 사용자 설명 (있으면)
-        - has_list: 리스트 보유 여부
+        - has_list: 리스트 보유 여부 (ctrl.HasList property)
         - index: 트래버스 순서 (0-based)
-        - pos: (선택) 페이지/문단/위치 정보
+        - table: (표 전용) 행/열 정보 — ParameterSet.Item("Rows"/"Cols") 방식
     """
     cid = _safe_get(ctrl, "CtrlID", "")
     if cid is None:
         cid = ""
     cid = str(cid).strip()
 
+    # HasList: pyhwpx CtrlCode property (core.py line 591-592: return self._com_obj.HasList)
+    has_list = False
+    try:
+        has_list = bool(ctrl.HasList)
+    except Exception:
+        pass
+
     info = {
         "index": idx,
         "ctrl_id": cid,
         "user_desc": str(_safe_get(ctrl, "UserDesc", "") or ""),
-        "has_list": bool(_safe_get(ctrl, "HasList", False)),
+        "has_list": has_list,
     }
 
-    # 추가: ctrl이 표(tbl)인 경우 행/열 정보
+    # 표(tbl) 메타: ctrl.Properties는 ParameterSet (pyhwpx docstring core.py line 1291-1295)
+    # 읽기는 Item("Rows"/"Cols") 방식. v0.6.7: _param_get로 defensive 접근.
     if cid == "tbl":
         try:
             props = ctrl.Properties
             if props is not None:
-                info["table"] = {
-                    "rows": int(_safe_get(props, "Rows", 0) or 0),
-                    "cols": int(_safe_get(props, "Cols", 0) or 0),
-                }
+                rows_raw = _param_get(props, "Rows", 0)
+                cols_raw = _param_get(props, "Cols", 0)
+                try:
+                    rows = int(rows_raw or 0)
+                except (ValueError, TypeError):
+                    rows = 0
+                try:
+                    cols = int(cols_raw or 0)
+                except (ValueError, TypeError):
+                    cols = 0
+                info["table"] = {"rows": rows, "cols": cols}
         except Exception:
             pass
 

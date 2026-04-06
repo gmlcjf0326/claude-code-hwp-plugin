@@ -276,13 +276,14 @@ export function registerEditingTools(server, bridge, toolset = 'standard') {
     });
     // --- standard 이상에서만: set_paragraph_style, find_replace_nth, insert_picture ---
     if (toolset !== 'minimal') {
-        server.tool('hwp_set_paragraph_style', '현재 커서 위치의 단락 서식을 변경합니다. left_margin=나머지줄 시작위치, indent=첫줄 들여쓰기. 첫줄 시작위치 = left_margin + indent.', {
+        server.tool('hwp_set_paragraph_style', '현재 커서 위치의 단락 서식을 변경합니다. left_margin=나머지줄 시작위치, indent=첫줄 들여쓰기. 첫줄 시작위치 = left_margin + indent. v0.6.7+: 문단 테두리(border_*) 4면 + first_line_indent alias + indent<0 자동 left_margin 보정.', {
             align: z.enum(['left', 'center', 'right', 'justify']).optional().describe('정렬'),
             line_spacing: z.number().optional().describe('줄간격 (%, 예: 160)'),
             line_spacing_type: z.number().int().min(0).max(2).optional().describe('줄간격 타입 (0=퍼센트)'),
             space_before: z.number().optional().describe('문단 앞 간격 (pt)'),
             space_after: z.number().optional().describe('문단 뒤 간격 (pt)'),
-            indent: z.number().optional().describe('첫 줄 들여쓰기 (pt, 양수=들여쓰기, 음수=내어쓰기)'),
+            indent: z.number().optional().describe('첫 줄 들여쓰기 (pt, 양수=들여쓰기, 음수=내어쓰기). 음수 + left_margin 미지정 시 자동 보정 (v0.6.7).'),
+            first_line_indent: z.number().optional().describe('indent의 alias (v0.6.7, 사용자 친화적 이름)'),
             left_margin: z.number().optional().describe('왼쪽 여백/나머지 줄 시작위치 (pt)'),
             right_margin: z.number().optional().describe('오른쪽 여백 (pt)'),
             page_break_before: z.boolean().optional().describe('문단 앞 페이지 나누기'),
@@ -296,7 +297,29 @@ export function registerEditingTools(server, bridge, toolset = 'standard') {
             heading_type: z.number().int().optional().describe('제목 수준 (개요)'),
             keep_lines_together: z.boolean().optional().describe('줄 함께 유지 (문단 분리 방지)'),
             condense: z.number().int().optional().describe('문단 압축'),
-        }, async ({ align, line_spacing, line_spacing_type, space_before, space_after, indent, left_margin, right_margin, page_break_before, keep_with_next, widow_orphan, line_wrap, snap_to_grid, auto_space_eAsian_eng, auto_space_eAsian_num, break_latin_word, heading_type, keep_lines_together, condense }) => {
+            border_left: z.object({
+                type: z.number().int().optional().describe('선 종류 (0=없음, 1=실선, ...)'),
+                width: z.number().optional().describe('선 굵기 (mm)'),
+                color: z.string().optional().describe('선 색상 (#RRGGBB)'),
+            }).optional().describe('왼쪽 문단 테두리 (v0.6.7 신규)'),
+            border_right: z.object({
+                type: z.number().int().optional(),
+                width: z.number().optional(),
+                color: z.string().optional(),
+            }).optional().describe('오른쪽 문단 테두리 (v0.6.7 신규)'),
+            border_top: z.object({
+                type: z.number().int().optional(),
+                width: z.number().optional(),
+                color: z.string().optional(),
+            }).optional().describe('위쪽 문단 테두리 (v0.6.7 신규)'),
+            border_bottom: z.object({
+                type: z.number().int().optional(),
+                width: z.number().optional(),
+                color: z.string().optional(),
+            }).optional().describe('아래쪽 문단 테두리 (v0.6.7 신규)'),
+            border_color: z.string().optional().describe('4면 테두리 색 일괄 (#RRGGBB, v0.6.7 신규)'),
+            border_shadowing: z.boolean().optional().describe('테두리 그림자 (v0.6.7 신규)'),
+        }, async ({ align, line_spacing, line_spacing_type, space_before, space_after, indent, first_line_indent, left_margin, right_margin, page_break_before, keep_with_next, widow_orphan, line_wrap, snap_to_grid, auto_space_eAsian_eng, auto_space_eAsian_num, break_latin_word, heading_type, keep_lines_together, condense, border_left, border_right, border_top, border_bottom, border_color, border_shadowing }) => {
             if (!bridge.getCurrentDocument()) {
                 return { content: [{ type: 'text', text: JSON.stringify({ error: '열린 문서가 없습니다.' }) }], isError: true };
             }
@@ -315,6 +338,8 @@ export function registerEditingTools(server, bridge, toolset = 'standard') {
                     style.space_after = space_after;
                 if (indent !== undefined)
                     style.indent = indent;
+                if (first_line_indent !== undefined)
+                    style.first_line_indent = first_line_indent;
                 if (left_margin !== undefined)
                     style.left_margin = left_margin;
                 if (right_margin !== undefined)
@@ -341,6 +366,18 @@ export function registerEditingTools(server, bridge, toolset = 'standard') {
                     style.keep_lines_together = keep_lines_together;
                 if (condense !== undefined)
                     style.condense = condense;
+                if (border_left !== undefined)
+                    style.border_left = border_left;
+                if (border_right !== undefined)
+                    style.border_right = border_right;
+                if (border_top !== undefined)
+                    style.border_top = border_top;
+                if (border_bottom !== undefined)
+                    style.border_bottom = border_bottom;
+                if (border_color !== undefined)
+                    style.border_color = border_color;
+                if (border_shadowing !== undefined)
+                    style.border_shadowing = border_shadowing;
                 const response = await bridge.send('set_paragraph_style', { style }, FILL_TIMEOUT);
                 if (!response.success) {
                     return { content: [{ type: 'text', text: JSON.stringify({ error: response.error }) }], isError: true };
