@@ -249,7 +249,8 @@ export function registerEditingTools(server, bridge, toolset = 'standard') {
             strikeout_shape: z.number().int().optional().describe('취소선 모양'),
             use_kerning: z.boolean().optional().describe('커닝 (자동 자간 조정)'),
         }).optional().describe('텍스트 서식 옵션'),
-    }, async ({ text, color, style }) => {
+        outline_level: z.number().int().min(0).max(8).optional().describe('ParaShape.OutlineLevel 직접 설정 (0~8, v0.6.9 신규). 지정 시 IndentAtCaret 자동 내어쓰기 스킵 + 단락이 "개요 수준 N+1"로 설정됨. 한글 "개요 보기" + hwp_generate_toc 계층 인식 활성화.'),
+    }, async ({ text, color, style, outline_level }) => {
         if (!bridge.getCurrentDocument()) {
             return { content: [{ type: 'text', text: JSON.stringify({
                             error: '열린 문서가 없습니다. hwp_open_document로 문서를 열어주세요.',
@@ -263,6 +264,8 @@ export function registerEditingTools(server, bridge, toolset = 'standard') {
                 params.style = style;
             else if (color)
                 params.color = color;
+            if (outline_level !== undefined)
+                params.outline_level = outline_level;
             const response = await bridge.send('insert_text', params);
             if (!response.success) {
                 return { content: [{ type: 'text', text: JSON.stringify({ error: response.error }) }], isError: true };
@@ -600,12 +603,14 @@ export function registerEditingTools(server, bridge, toolset = 'standard') {
                 return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
             }
         });
-        server.tool('hwp_insert_heading', '제목 텍스트를 삽입합니다 (H1~H6). 공문서 순번 체계의 대제목 등에 사용. numbering으로 자동 순번을 붙일 수 있습니다 (예: Ⅰ. 제목, 1. 제목, 가. 제목).', {
+        server.tool('hwp_insert_heading', '제목 텍스트를 삽입합니다 (H1~H9). 공문서 순번 체계의 대제목 등에 사용. numbering으로 자동 순번(텍스트 prefix)을 붙일 수 있습니다 (예: Ⅰ. 제목, 1. 제목, 가. 제목). v0.6.9+: auto_outline_level 옵션으로 ParaShape.OutlineLevel 자동 설정 → 한글 "개요 보기" + hwp_generate_toc 계층 인식 활성화. level 범위 1~6 → 1~9 확장.', {
             text: z.string().describe('제목 텍스트'),
-            level: z.number().int().min(1).max(6).describe('제목 레벨 (1=가장 큰 22pt, 6=가장 작은 10pt)'),
-            numbering: z.enum(['roman', 'decimal', 'korean', 'circle', 'paren_decimal', 'paren_korean']).optional().describe('순번 형식: roman(Ⅰ,Ⅱ), decimal(1,2), korean(가,나), circle(①,②), paren_decimal(1),2)), paren_korean(가),나))'),
+            level: z.number().int().min(1).max(9).describe('제목 레벨 (1=가장 큰 22pt, 6~9=10pt). v0.6.9: 1~6 → 1~9 확장'),
+            numbering: z.enum(['roman', 'decimal', 'korean', 'circle', 'paren_decimal', 'paren_korean']).optional().describe('순번 형식(텍스트 prefix): roman(Ⅰ,Ⅱ), decimal(1,2), korean(가,나), circle(①,②), paren_decimal(1),2)), paren_korean(가),나))'),
             number: z.number().int().min(1).max(10).optional().describe('순번 번호 (1~10, 기본 1)'),
-        }, async ({ text, level, numbering, number }) => {
+            auto_outline_level: z.boolean().optional().describe('ParaShape.OutlineLevel = level-1 자동 설정 (v0.6.9 신규). true면 한글이 계층 자동 인식 → hwp_generate_toc 목차 깊이 정확. numbering과 병행 가능 (prefix + OutlineLevel 동시).'),
+            outline_level_only: z.boolean().optional().describe('numbering prefix 없이 OutlineLevel만 설정 (v0.6.9 신규). true면 numbering 무시. 한글 "개요 번호 매기기" 스타일에 번호 관리 위임.'),
+        }, async ({ text, level, numbering, number, auto_outline_level, outline_level_only }) => {
             if (!bridge.getCurrentDocument())
                 return { content: [{ type: 'text', text: JSON.stringify({ error: '열린 문서가 없습니다.' }) }], isError: true };
             try {
@@ -615,6 +620,10 @@ export function registerEditingTools(server, bridge, toolset = 'standard') {
                     params.numbering = numbering;
                 if (number)
                     params.number = number;
+                if (auto_outline_level !== undefined)
+                    params.auto_outline_level = auto_outline_level;
+                if (outline_level_only !== undefined)
+                    params.outline_level_only = outline_level_only;
                 const r = await bridge.send('insert_heading', params, FILL_TIMEOUT);
                 if (!r.success)
                     return { content: [{ type: 'text', text: JSON.stringify({ error: r.error }) }], isError: true };

@@ -37013,8 +37013,9 @@ function registerEditingTools(server2, bridge2, toolset2 = "standard") {
       underline_shape: external_exports.number().int().optional().describe("\uBC11\uC904 \uBAA8\uC591"),
       strikeout_shape: external_exports.number().int().optional().describe("\uCDE8\uC18C\uC120 \uBAA8\uC591"),
       use_kerning: external_exports.boolean().optional().describe("\uCEE4\uB2DD (\uC790\uB3D9 \uC790\uAC04 \uC870\uC815)")
-    }).optional().describe("\uD14D\uC2A4\uD2B8 \uC11C\uC2DD \uC635\uC158")
-  }, async ({ text, color, style }) => {
+    }).optional().describe("\uD14D\uC2A4\uD2B8 \uC11C\uC2DD \uC635\uC158"),
+    outline_level: external_exports.number().int().min(0).max(8).optional().describe('ParaShape.OutlineLevel \uC9C1\uC811 \uC124\uC815 (0~8, v0.6.9 \uC2E0\uADDC). \uC9C0\uC815 \uC2DC IndentAtCaret \uC790\uB3D9 \uB0B4\uC5B4\uC4F0\uAE30 \uC2A4\uD0B5 + \uB2E8\uB77D\uC774 "\uAC1C\uC694 \uC218\uC900 N+1"\uB85C \uC124\uC815\uB428. \uD55C\uAE00 "\uAC1C\uC694 \uBCF4\uAE30" + hwp_generate_toc \uACC4\uCE35 \uC778\uC2DD \uD65C\uC131\uD654.')
+  }, async ({ text, color, style, outline_level }) => {
     if (!bridge2.getCurrentDocument()) {
       return { content: [{ type: "text", text: JSON.stringify({
         error: "\uC5F4\uB9B0 \uBB38\uC11C\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4. hwp_open_document\uB85C \uBB38\uC11C\uB97C \uC5F4\uC5B4\uC8FC\uC138\uC694.",
@@ -37028,6 +37029,8 @@ function registerEditingTools(server2, bridge2, toolset2 = "standard") {
         params.style = style;
       else if (color)
         params.color = color;
+      if (outline_level !== void 0)
+        params.outline_level = outline_level;
       const response = await bridge2.send("insert_text", params);
       if (!response.success) {
         return { content: [{ type: "text", text: JSON.stringify({ error: response.error }) }], isError: true };
@@ -37351,12 +37354,14 @@ function registerEditingTools(server2, bridge2, toolset2 = "standard") {
         return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }], isError: true };
       }
     });
-    server2.tool("hwp_insert_heading", "\uC81C\uBAA9 \uD14D\uC2A4\uD2B8\uB97C \uC0BD\uC785\uD569\uB2C8\uB2E4 (H1~H6). \uACF5\uBB38\uC11C \uC21C\uBC88 \uCCB4\uACC4\uC758 \uB300\uC81C\uBAA9 \uB4F1\uC5D0 \uC0AC\uC6A9. numbering\uC73C\uB85C \uC790\uB3D9 \uC21C\uBC88\uC744 \uBD99\uC77C \uC218 \uC788\uC2B5\uB2C8\uB2E4 (\uC608: \u2160. \uC81C\uBAA9, 1. \uC81C\uBAA9, \uAC00. \uC81C\uBAA9).", {
+    server2.tool("hwp_insert_heading", '\uC81C\uBAA9 \uD14D\uC2A4\uD2B8\uB97C \uC0BD\uC785\uD569\uB2C8\uB2E4 (H1~H9). \uACF5\uBB38\uC11C \uC21C\uBC88 \uCCB4\uACC4\uC758 \uB300\uC81C\uBAA9 \uB4F1\uC5D0 \uC0AC\uC6A9. numbering\uC73C\uB85C \uC790\uB3D9 \uC21C\uBC88(\uD14D\uC2A4\uD2B8 prefix)\uC744 \uBD99\uC77C \uC218 \uC788\uC2B5\uB2C8\uB2E4 (\uC608: \u2160. \uC81C\uBAA9, 1. \uC81C\uBAA9, \uAC00. \uC81C\uBAA9). v0.6.9+: auto_outline_level \uC635\uC158\uC73C\uB85C ParaShape.OutlineLevel \uC790\uB3D9 \uC124\uC815 \u2192 \uD55C\uAE00 "\uAC1C\uC694 \uBCF4\uAE30" + hwp_generate_toc \uACC4\uCE35 \uC778\uC2DD \uD65C\uC131\uD654. level \uBC94\uC704 1~6 \u2192 1~9 \uD655\uC7A5.', {
       text: external_exports.string().describe("\uC81C\uBAA9 \uD14D\uC2A4\uD2B8"),
-      level: external_exports.number().int().min(1).max(6).describe("\uC81C\uBAA9 \uB808\uBCA8 (1=\uAC00\uC7A5 \uD070 22pt, 6=\uAC00\uC7A5 \uC791\uC740 10pt)"),
-      numbering: external_exports.enum(["roman", "decimal", "korean", "circle", "paren_decimal", "paren_korean"]).optional().describe("\uC21C\uBC88 \uD615\uC2DD: roman(\u2160,\u2161), decimal(1,2), korean(\uAC00,\uB098), circle(\u2460,\u2461), paren_decimal(1),2)), paren_korean(\uAC00),\uB098))"),
-      number: external_exports.number().int().min(1).max(10).optional().describe("\uC21C\uBC88 \uBC88\uD638 (1~10, \uAE30\uBCF8 1)")
-    }, async ({ text, level, numbering, number: number3 }) => {
+      level: external_exports.number().int().min(1).max(9).describe("\uC81C\uBAA9 \uB808\uBCA8 (1=\uAC00\uC7A5 \uD070 22pt, 6~9=10pt). v0.6.9: 1~6 \u2192 1~9 \uD655\uC7A5"),
+      numbering: external_exports.enum(["roman", "decimal", "korean", "circle", "paren_decimal", "paren_korean"]).optional().describe("\uC21C\uBC88 \uD615\uC2DD(\uD14D\uC2A4\uD2B8 prefix): roman(\u2160,\u2161), decimal(1,2), korean(\uAC00,\uB098), circle(\u2460,\u2461), paren_decimal(1),2)), paren_korean(\uAC00),\uB098))"),
+      number: external_exports.number().int().min(1).max(10).optional().describe("\uC21C\uBC88 \uBC88\uD638 (1~10, \uAE30\uBCF8 1)"),
+      auto_outline_level: external_exports.boolean().optional().describe("ParaShape.OutlineLevel = level-1 \uC790\uB3D9 \uC124\uC815 (v0.6.9 \uC2E0\uADDC). true\uBA74 \uD55C\uAE00\uC774 \uACC4\uCE35 \uC790\uB3D9 \uC778\uC2DD \u2192 hwp_generate_toc \uBAA9\uCC28 \uAE4A\uC774 \uC815\uD655. numbering\uACFC \uBCD1\uD589 \uAC00\uB2A5 (prefix + OutlineLevel \uB3D9\uC2DC)."),
+      outline_level_only: external_exports.boolean().optional().describe('numbering prefix \uC5C6\uC774 OutlineLevel\uB9CC \uC124\uC815 (v0.6.9 \uC2E0\uADDC). true\uBA74 numbering \uBB34\uC2DC. \uD55C\uAE00 "\uAC1C\uC694 \uBC88\uD638 \uB9E4\uAE30\uAE30" \uC2A4\uD0C0\uC77C\uC5D0 \uBC88\uD638 \uAD00\uB9AC \uC704\uC784.')
+    }, async ({ text, level, numbering, number: number3, auto_outline_level, outline_level_only }) => {
       if (!bridge2.getCurrentDocument())
         return { content: [{ type: "text", text: JSON.stringify({ error: "\uC5F4\uB9B0 \uBB38\uC11C\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4." }) }], isError: true };
       try {
@@ -37366,6 +37371,10 @@ function registerEditingTools(server2, bridge2, toolset2 = "standard") {
           params.numbering = numbering;
         if (number3)
           params.number = number3;
+        if (auto_outline_level !== void 0)
+          params.auto_outline_level = auto_outline_level;
+        if (outline_level_only !== void 0)
+          params.outline_level_only = outline_level_only;
         const r = await bridge2.send("insert_heading", params, FILL_TIMEOUT);
         if (!r.success)
           return { content: [{ type: "text", text: JSON.stringify({ error: r.error }) }], isError: true };

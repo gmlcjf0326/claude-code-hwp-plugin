@@ -605,8 +605,10 @@ def dispatch(hwp, method, params):
         # 원문이 마커(○□-※* 등)로 시작하면, 마커 뒤 위치에서 Shift+Tab 효과 적용
         _INDENT_MARKERS = set('○□■◆●•◦※➤▶▷►-*')
         auto_indent = params.get("auto_indent", True)
+        # v0.6.9: outline_level 지정 시 IndentAtCaret 스킵 (중복 처리 방지)
+        outline_level = params.get("outline_level")
         raw = original_text.lstrip()
-        if auto_indent and raw and raw[0] in _INDENT_MARKERS:
+        if outline_level is None and auto_indent and raw and raw[0] in _INDENT_MARKERS:
             try:
                 hwp.HAction.Run("MovePrevParaBegin")
                 # 마커 뒤 위치 계산 (선행공백 + 마커 + 마커뒤공백)
@@ -628,6 +630,19 @@ def dispatch(hwp, method, params):
                     hwp.MovePos(3)
                 except Exception:
                     pass
+        # v0.6.9 신규: outline_level 지정 시 직전 단락의 ParaShape.OutlineLevel 설정
+        # (한글 "개요 보기" + hwp_generate_toc 계층 인식 활성화)
+        if outline_level is not None:
+            try:
+                hwp.HAction.Run("MovePrevPara")
+                act = hwp.HAction
+                pset = hwp.HParameterSet.HParaShape
+                act.GetDefault("ParaShape", pset.HSet)
+                pset.OutlineLevel = int(outline_level)
+                act.Execute("ParaShape", pset.HSet)
+                hwp.MovePos(3)
+            except Exception as e:
+                print(f"[WARN] insert_text OutlineLevel (level={outline_level}): {e}", file=sys.stderr)
         return {"status": "ok"}
 
     if method == "set_paragraph_style":
@@ -1299,13 +1314,18 @@ def dispatch(hwp, method, params):
     if method == "insert_heading":
         validate_params(params, ["text", "level"], method)
         from hwp_editor import insert_text_with_style
-        level = min(max(params["level"], 1), 6)
-        sizes = {1: 22, 2: 18, 3: 15, 4: 13, 5: 11, 6: 10}
+        # v0.6.9: level 범위 1~6 → 1~9 확장 (OutlineLevel 0~8 지원)
+        level = min(max(params["level"], 1), 9)
+        sizes = {1: 22, 2: 18, 3: 15, 4: 13, 5: 11, 6: 10, 7: 10, 8: 10, 9: 10}
         text = params["text"]
-        # 순번 자동 생성
+        # 순번 자동 생성 (기존 API 후방 호환)
         numbering = params.get("numbering")
         number = params.get("number", 1)
-        if numbering:
+        # v0.6.9 신규 옵션
+        auto_outline_level = bool(params.get("auto_outline_level", False))
+        outline_level_only = bool(params.get("outline_level_only", False))
+        # outline_level_only=true면 텍스트 prefix 생략
+        if numbering and not outline_level_only:
             roman = ["Ⅰ","Ⅱ","Ⅲ","Ⅳ","Ⅴ","Ⅵ","Ⅶ","Ⅷ","Ⅸ","Ⅹ"]
             korean = ["가","나","다","라","마","바","사","아","자","차"]
             circle = ["①","②","③","④","⑤","⑥","⑦","⑧","⑨","⑩"]
@@ -1320,7 +1340,28 @@ def dispatch(hwp, method, params):
             "bold": True,
             "font_size": sizes.get(level, 11),
         })
-        return {"status": "ok", "level": level, "text": text}
+        # v0.6.9 신규: auto_outline_level 또는 outline_level_only 지정 시
+        # 직전 단락(방금 삽입한 제목)의 ParaShape.OutlineLevel 설정
+        # → 한글 "개요 보기" + hwp_generate_toc 계층 인식 활성화
+        applied_outline_level = None
+        if auto_outline_level or outline_level_only:
+            try:
+                hwp.HAction.Run("MovePrevPara")
+                act = hwp.HAction
+                pset = hwp.HParameterSet.HParaShape
+                act.GetDefault("ParaShape", pset.HSet)
+                pset.OutlineLevel = level - 1  # 0-based (level 1 → OutlineLevel 0)
+                act.Execute("ParaShape", pset.HSet)
+                hwp.MovePos(3)
+                applied_outline_level = level - 1
+            except Exception as e:
+                print(f"[WARN] insert_heading OutlineLevel (level={level}): {e}", file=sys.stderr)
+        return {
+            "status": "ok",
+            "level": level,
+            "text": text,
+            "outline_level": applied_outline_level,
+        }
 
     if method == "export_format":
         validate_params(params, ["path", "format"], method)
