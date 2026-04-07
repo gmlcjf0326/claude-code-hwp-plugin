@@ -1747,53 +1747,85 @@ def dispatch(hwp, method, params):
             return {"status": "error", "error": f"레이아웃 검증 실패: {e}"}
 
     if method == "set_page_setup":
-        # v0.7.3.1: 가이드 정확한 패턴
-        # docs/원본가이드소스/05-hwp-supplement-deep-dive.md L785-799 인용:
-        #   hwp.HAction.GetDefault("SectionDef", hwp.HParameterSet.HSecDef.HSet)
-        #   pd = hwp.HParameterSet.HSecDef.HPageDef
-        #   pd.TopMargin = ...
-        #   hwp.HAction.Execute("SectionDef", hwp.HParameterSet.HSecDef.HSet)
-        #
-        # 이전 v0.7.3.0 의 잘못:
-        #   GetDefault("PageSetup")  ← 액션 이름 잘못 ("SectionDef" 정답)
-        #   pset.PageDef             ← 소문자 d 잘못 ("HPageDef" 정답)
+        # v0.7.3.1.1: 가이드 hwp.HParameterSet.HSecDef.HPageDef 가 pyhwpx 버전에 따라 다름
+        # multi-path: HPageDef → PageDef → hsec 직접 → SetItem 폴백
+        # 액션 이름은 SectionDef 로 정정 (가이드 05-hwp-supplement-deep-dive.md:785-799)
         try:
             act = hwp.HAction
             hsec = hwp.HParameterSet.HSecDef
             act.GetDefault("SectionDef", hsec.HSet)
-            pd = hwp.HParameterSet.HSecDef.HPageDef  # 대문자 H 접두
+
+            # PageDef 객체 확보 (multi-path)
+            pd = None
+            for attr_name in ("HPageDef", "PageDef"):
+                try:
+                    pd = getattr(hsec, attr_name)
+                    if pd is not None:
+                        break
+                except Exception:
+                    continue
+            if pd is None:
+                # 폴백: hsec 자체에 page 속성 직접 (HSecDef 가 page 정보 보유)
+                pd = hsec
 
             applied = []
+            errors = []
+
+            def _set_attr(attr, value):
+                """직접 attribute → SetItem fallback"""
+                # 시도 1: pd 객체 직접
+                try:
+                    setattr(pd, attr, value)
+                    return True
+                except Exception:
+                    pass
+                # 시도 2: pd.HSet.SetItem (있으면)
+                try:
+                    pd.HSet.SetItem(attr, value)
+                    return True
+                except Exception:
+                    pass
+                # 시도 3: hsec.HSet.SetItem 직접
+                try:
+                    hsec.HSet.SetItem(attr, value)
+                    return True
+                except Exception as e:
+                    errors.append(f"{attr}={value}: {e}")
+                    return False
+
             if "top_margin" in params:
-                pd.TopMargin = hwp.MiliToHwpUnit(params["top_margin"])
-                applied.append("top_margin")
+                if _set_attr("TopMargin", hwp.MiliToHwpUnit(params["top_margin"])):
+                    applied.append("top_margin")
             if "bottom_margin" in params:
-                pd.BottomMargin = hwp.MiliToHwpUnit(params["bottom_margin"])
-                applied.append("bottom_margin")
+                if _set_attr("BottomMargin", hwp.MiliToHwpUnit(params["bottom_margin"])):
+                    applied.append("bottom_margin")
             if "left_margin" in params:
-                pd.LeftMargin = hwp.MiliToHwpUnit(params["left_margin"])
-                applied.append("left_margin")
+                if _set_attr("LeftMargin", hwp.MiliToHwpUnit(params["left_margin"])):
+                    applied.append("left_margin")
             if "right_margin" in params:
-                pd.RightMargin = hwp.MiliToHwpUnit(params["right_margin"])
-                applied.append("right_margin")
+                if _set_attr("RightMargin", hwp.MiliToHwpUnit(params["right_margin"])):
+                    applied.append("right_margin")
             if "header_margin" in params:
-                pd.HeaderLen = hwp.MiliToHwpUnit(params["header_margin"])
-                applied.append("header_margin")
+                if _set_attr("HeaderLen", hwp.MiliToHwpUnit(params["header_margin"])):
+                    applied.append("header_margin")
             if "footer_margin" in params:
-                pd.FooterLen = hwp.MiliToHwpUnit(params["footer_margin"])
-                applied.append("footer_margin")
+                if _set_attr("FooterLen", hwp.MiliToHwpUnit(params["footer_margin"])):
+                    applied.append("footer_margin")
             if "orientation" in params:
-                pd.Landscape = 1 if params["orientation"] == "landscape" else 0
-                applied.append("orientation")
+                if _set_attr("Landscape", 1 if params["orientation"] == "landscape" else 0):
+                    applied.append("orientation")
             if "paper_width" in params:
-                pd.PaperWidth = hwp.MiliToHwpUnit(params["paper_width"])
-                applied.append("paper_width")
+                if _set_attr("PaperWidth", hwp.MiliToHwpUnit(params["paper_width"])):
+                    applied.append("paper_width")
             if "paper_height" in params:
-                pd.PaperHeight = hwp.MiliToHwpUnit(params["paper_height"])
-                applied.append("paper_height")
+                if _set_attr("PaperHeight", hwp.MiliToHwpUnit(params["paper_height"])):
+                    applied.append("paper_height")
 
             act.Execute("SectionDef", hsec.HSet)
-            return {"status": "ok", "applied": applied}
+            result = {"status": "ok", "applied": applied}
+            if errors:
+                result["warnings"] = errors[:3]
+            return result
         except Exception as e:
             return {"status": "error", "error": f"페이지 설정 실패: {e}"}
 
