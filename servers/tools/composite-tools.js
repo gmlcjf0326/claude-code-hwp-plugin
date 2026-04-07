@@ -1604,7 +1604,7 @@ export function registerCompositeTools(server, bridge) {
             let pdf_path = null;
             if (exportPdf) {
                 const pdfTarget = args.output_path.replace(/\.(hwp|hwpx)$/i, '.pdf');
-                const r = await bridge.send('export_format', { file_path: pdfTarget, format: 'PDF' }, ANALYSIS_TIMEOUT);
+                const r = await bridge.send('export_format', { path: pdfTarget, format: 'PDF' }, ANALYSIS_TIMEOUT);
                 recordStep('export_format', r.success, r.error);
                 if (r.success)
                     pdf_path = pdfTarget;

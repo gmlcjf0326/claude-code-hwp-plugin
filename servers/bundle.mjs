@@ -39796,7 +39796,7 @@ function registerCompositeTools(server2, bridge2) {
       let pdf_path = null;
       if (exportPdf) {
         const pdfTarget = args.output_path.replace(/\.(hwp|hwpx)$/i, ".pdf");
-        const r = await bridge2.send("export_format", { file_path: pdfTarget, format: "PDF" }, ANALYSIS_TIMEOUT2);
+        const r = await bridge2.send("export_format", { path: pdfTarget, format: "PDF" }, ANALYSIS_TIMEOUT2);
         recordStep("export_format", r.success, r.error);
         if (r.success)
           pdf_path = pdfTarget;
