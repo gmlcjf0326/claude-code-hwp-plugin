@@ -163,6 +163,14 @@ def dispatch(hwp, method, params):
         attrs = [a for a in dir(pset) if not a.startswith('_')]
         return {"object": obj_name, "attributes": attrs, "count": len(attrs)}
 
+    # v0.7.2.5: 빈 문서 생성 (autopilot blank 분기에서 호출)
+    if method == "document_new":
+        try:
+            hwp.HAction.Run("FileNew")
+        except Exception as e:
+            return {"status": "error", "error": f"FileNew failed: {e}"}
+        return {"status": "ok"}
+
     if method == "open_document":
         validate_params(params, ["file_path"], method)
         file_path = validate_file_path(params["file_path"], must_exist=True)

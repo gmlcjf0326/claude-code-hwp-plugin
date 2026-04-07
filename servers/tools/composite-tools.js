@@ -973,6 +973,13 @@ export function registerCompositeTools(server, bridge) {
     });
     // ===== v0.7.2.2: Reference Policy + Session State + Template Library =====
     // 모두 순수 JSON I/O — Python 경유 불필요. 사용자 home 디렉토리 기반 영속화.
+    // v0.7.2.5: path traversal 가드 — id는 영문/숫자/언더스코어/하이픈만 허용
+    const safeId = (id) => {
+        if (typeof id !== 'string' || !/^[a-zA-Z0-9_\-]+$/.test(id)) {
+            throw new Error(`invalid id (allowed: [a-zA-Z0-9_-]): ${id}`);
+        }
+        return id;
+    };
     const CONFIG_PATH = path.join(os.homedir(), '.hwp_studio_config.json');
     const STATE_DIR = path.join(os.homedir(), '.hwp_studio_state');
     const TEMPLATE_DIR = path.join(os.homedir(), '.hwp_studio_templates');
@@ -1064,7 +1071,7 @@ export function registerCompositeTools(server, bridge) {
                 return { content: [{ type: 'text', text: JSON.stringify({ ok: true, count: sessions.length, sessions }) }] };
             }
             if (mode === 'save') {
-                const sid = session_id || `sess_${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}`;
+                const sid = safeId(session_id || `sess_${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}`);
                 const filePath = path.join(STATE_DIR, `${sid}.json`);
                 let existing = {};
                 if (fs.existsSync(filePath)) {
@@ -1085,7 +1092,8 @@ export function registerCompositeTools(server, bridge) {
             if (!session_id) {
                 return { content: [{ type: 'text', text: JSON.stringify({ error: `session_id required for mode=${mode}` }) }], isError: true };
             }
-            const filePath = path.join(STATE_DIR, `${session_id}.json`);
+            const safeSid = safeId(session_id);
+            const filePath = path.join(STATE_DIR, `${safeSid}.json`);
             if (mode === 'load') {
                 if (!fs.existsSync(filePath)) {
                     return { content: [{ type: 'text', text: JSON.stringify({ error: `session not found: ${session_id}` }) }], isError: true };
@@ -1176,12 +1184,13 @@ export function registerCompositeTools(server, bridge) {
             if (mode === 'get') {
                 if (!template_id)
                     return { content: [{ type: 'text', text: JSON.stringify({ error: 'template_id required' }) }], isError: true };
-                const metaPath = path.join(TEMPLATE_DIR, `${template_id}.json`);
+                const tid = safeId(template_id);
+                const metaPath = path.join(TEMPLATE_DIR, `${tid}.json`);
                 if (!fs.existsSync(metaPath)) {
-                    return { content: [{ type: 'text', text: JSON.stringify({ error: `template not found: ${template_id}` }) }], isError: true };
+                    return { content: [{ type: 'text', text: JSON.stringify({ error: `template not found: ${tid}` }) }], isError: true };
                 }
                 const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
-                const filePath = path.join(filesDir, `${template_id}.hwpx`);
+                const filePath = path.join(filesDir, `${tid}.hwpx`);
                 meta.file_path = fs.existsSync(filePath) ? filePath : null;
                 return { content: [{ type: 'text', text: JSON.stringify({ ok: true, template: meta }) }] };
             }
@@ -1189,9 +1198,10 @@ export function registerCompositeTools(server, bridge) {
                 if (!template_id || !template) {
                     return { content: [{ type: 'text', text: JSON.stringify({ error: 'template_id + template required' }) }], isError: true };
                 }
-                const metaPath = path.join(TEMPLATE_DIR, `${template_id}.json`);
+                const tid = safeId(template_id);
+                const metaPath = path.join(TEMPLATE_DIR, `${tid}.json`);
                 const meta = {
-                    template_id,
+                    template_id: tid,
                     name: template.name,
                     description: template.description || '',
                     tags: template.tags || [],
@@ -1203,7 +1213,7 @@ export function registerCompositeTools(server, bridge) {
                     if (!fs.existsSync(src)) {
                         return { content: [{ type: 'text', text: JSON.stringify({ error: `source_path not found: ${src}` }) }], isError: true };
                     }
-                    const dest = path.join(filesDir, `${template_id}.hwpx`);
+                    const dest = path.join(filesDir, `${tid}.hwpx`);
                     fs.copyFileSync(src, dest);
                     meta.file_path = dest;
                 }
@@ -1213,13 +1223,14 @@ export function registerCompositeTools(server, bridge) {
             if (mode === 'delete') {
                 if (!template_id)
                     return { content: [{ type: 'text', text: JSON.stringify({ error: 'template_id required' }) }], isError: true };
-                const metaPath = path.join(TEMPLATE_DIR, `${template_id}.json`);
-                const filePath = path.join(filesDir, `${template_id}.hwpx`);
+                const tid = safeId(template_id);
+                const metaPath = path.join(TEMPLATE_DIR, `${tid}.json`);
+                const filePath = path.join(filesDir, `${tid}.hwpx`);
                 if (fs.existsSync(metaPath))
                     fs.unlinkSync(metaPath);
                 if (fs.existsSync(filePath))
                     fs.unlinkSync(filePath);
-                return { content: [{ type: 'text', text: JSON.stringify({ ok: true, mode, template_id, deleted: true }) }] };
+                return { content: [{ type: 'text', text: JSON.stringify({ ok: true, mode, template_id: tid, deleted: true }) }] };
             }
             return { content: [{ type: 'text', text: JSON.stringify({ error: `unknown mode: ${mode}` }) }], isError: true };
         }
@@ -1255,7 +1266,7 @@ export function registerCompositeTools(server, bridge) {
                 const r = await bridge.send('validate_consistency', params, ANALYSIS_TIMEOUT);
                 if (r.success && r.data) {
                     const data = r.data;
-                    const cscore = typeof data.score === 'number' ? data.score : 100;
+                    const cscore = typeof data.consistency_score === 'number' ? data.consistency_score : 100;
                     score_before = Math.min(score_before, cscore);
                     const deviations = data.deviations || [];
                     for (const d of deviations)
@@ -1330,20 +1341,25 @@ export function registerCompositeTools(server, bridge) {
             const extra_sections = [...rNames].filter(n => !tNames.has(n));
             const matched = [...tNames].filter(n => rNames.has(n)).length;
             const structure_score = tNames.size === 0 ? 100 : Math.round((matched / tNames.size) * 100);
-            // format: writing patterns 비교
+            // format: writing patterns 비교 (v0.7.2.5: Python 실제 shape body_style:{char,para}에 맞춤)
             const tPat = (tPattern.data || {});
             const rPat = (rPattern.data || {});
             const format_deviations = [];
             let format_match = 0;
             let format_total = 0;
-            const compareKeys = ['body_style', 'heading_style', 'tone', 'formality'];
-            for (const k of compareKeys) {
-                if (k in tPat) {
+            const tBody = (tPat.body_style || {});
+            const rBody = (rPat.body_style || {});
+            for (const sub of ['char', 'para']) {
+                const tSub = tBody[sub] || {};
+                const rSub = rBody[sub] || {};
+                for (const key of Object.keys(tSub)) {
                     format_total++;
-                    if (JSON.stringify(tPat[k]) === JSON.stringify(rPat[k]))
+                    if (JSON.stringify(tSub[key]) === JSON.stringify(rSub[key])) {
                         format_match++;
-                    else
-                        format_deviations.push({ field: k, expected: tPat[k], actual: rPat[k] });
+                    }
+                    else {
+                        format_deviations.push({ field: `body_style.${sub}.${key}`, expected: tSub[key], actual: rSub[key] });
+                    }
                 }
             }
             const format_score = format_total === 0 ? 100 : Math.round((format_match / format_total) * 100);
@@ -1367,7 +1383,8 @@ export function registerCompositeTools(server, bridge) {
         session_id: z.string().describe('조회할 session_id'),
     }, async ({ session_id }) => {
         try {
-            const filePath = path.join(STATE_DIR, `${session_id}.json`);
+            const sid = safeId(session_id);
+            const filePath = path.join(STATE_DIR, `${sid}.json`);
             if (!fs.existsSync(filePath)) {
                 return { content: [{ type: 'text', text: JSON.stringify({ error: `session not found: ${session_id}` }) }], isError: true };
             }
@@ -1416,7 +1433,7 @@ export function registerCompositeTools(server, bridge) {
         const mode = args.mode || 'execute';
         const threshold = args.approve_threshold_seconds ?? 600;
         const exportPdf = args.export_pdf ?? true;
-        const sid = args.session_id || `auto_${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}`;
+        const sid = safeId(args.session_id || `auto_${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}`);
         const sessionPath = path.join(STATE_DIR, `${sid}.json`);
         if (!fs.existsSync(STATE_DIR))
             fs.mkdirSync(STATE_DIR, { recursive: true });
@@ -1461,19 +1478,21 @@ export function registerCompositeTools(server, bridge) {
         };
         try {
             await bridge.ensureRunning();
-            // STEP 1: estimate (plan/execute 공통)
+            // STEP 1: estimate (plan/execute 공통) — v0.7.2.5: Python contract에 맞춘 user_request 전달
             let estimate = {};
             try {
-                const r = await bridge.send('estimate_workload', {
-                    sections_count: args.sections.length,
-                    target_chars: args.sections.reduce((a, s) => a + (s.content?.length || 0), 0),
-                    tables_count: args.tables?.length || 0,
-                }, ANALYSIS_TIMEOUT);
+                const userRequest = args.prompt || `${args.sections.length}개 섹션 자동 생성`;
+                const estParams = { user_request: userRequest };
+                if (args.template_path)
+                    estParams.file_path = args.template_path;
+                const r = await bridge.send('estimate_workload', estParams, ANALYSIS_TIMEOUT);
                 if (r.success)
                     estimate = r.data;
             }
             catch { }
-            const estSeconds = typeof estimate.estimated_seconds === 'number' ? estimate.estimated_seconds : 0;
+            const estSeconds = typeof estimate.duration_seconds_estimate === 'number'
+                ? estimate.duration_seconds_estimate
+                : 0;
             if (mode === 'plan') {
                 return { content: [{ type: 'text', text: JSON.stringify({
                                 ok: true, mode: 'plan', session_id: sid, estimate,
@@ -1497,20 +1516,21 @@ export function registerCompositeTools(server, bridge) {
                     throw new Error(`open_template failed: ${r.error}`);
             }
             else if (args.template_id) {
-                const tplMeta = path.join(TEMPLATE_DIR, `${args.template_id}.json`);
-                const tplFile = path.join(TEMPLATE_DIR, 'files', `${args.template_id}.hwpx`);
+                const safeTid = safeId(args.template_id);
+                const tplFile = path.join(TEMPLATE_DIR, 'files', `${safeTid}.hwpx`);
                 if (!fs.existsSync(tplFile))
-                    throw new Error(`template file not found: ${args.template_id}`);
+                    throw new Error(`template file not found: ${safeTid}`);
                 const r = await bridge.send('open_document', { file_path: tplFile }, ANALYSIS_TIMEOUT);
-                recordStep('open_template_library', r.success, { template_id: args.template_id });
+                recordStep('open_template_library', r.success, { template_id: safeTid });
                 if (!r.success)
                     throw new Error(`open template_id failed: ${r.error}`);
             }
             else {
-                const r = await bridge.send('document_create', {}, ANALYSIS_TIMEOUT);
-                recordStep('document_create', r.success, r.error);
+                // v0.7.2.5: document_create → document_new (Python에 신규 추가)
+                const r = await bridge.send('document_new', {}, ANALYSIS_TIMEOUT);
+                recordStep('document_new', r.success, r.error);
                 if (!r.success)
-                    throw new Error(`document_create failed: ${r.error}`);
+                    throw new Error(`document_new failed: ${r.error}`);
             }
             if (isCancelled())
                 throw new Error('cancelled');
@@ -1572,19 +1592,20 @@ export function registerCompositeTools(server, bridge) {
                 const r = await bridge.send('validate_consistency', { file_path: args.output_path }, ANALYSIS_TIMEOUT);
                 if (r.success && r.data) {
                     const d = r.data;
-                    score = typeof d.score === 'number' ? d.score : 100;
+                    // v0.7.2.5: Python 실제 키는 consistency_score
+                    score = typeof d.consistency_score === 'number' ? d.consistency_score : 100;
                 }
                 recordStep('validate_consistency', r.success, { score });
             }
             catch (e) {
                 recordStep('validate_consistency', false, e.message);
             }
-            // STEP: PDF
+            // STEP: PDF — v0.7.2.5: export_pdf → export_format(format:PDF)
             let pdf_path = null;
             if (exportPdf) {
                 const pdfTarget = args.output_path.replace(/\.(hwp|hwpx)$/i, '.pdf');
-                const r = await bridge.send('export_pdf', { file_path: pdfTarget }, ANALYSIS_TIMEOUT);
-                recordStep('export_pdf', r.success, r.error);
+                const r = await bridge.send('export_format', { file_path: pdfTarget, format: 'PDF' }, ANALYSIS_TIMEOUT);
+                recordStep('export_format', r.success, r.error);
                 if (r.success)
                     pdf_path = pdfTarget;
             }
