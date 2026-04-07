@@ -154,7 +154,7 @@ def dispatch(hwp, method, params):
             hwp.HAction.GetDefault("CharShape", pset.HSet)
         elif obj_name == "HParaShape":
             pset = hwp.HParameterSet.HParaShape
-            hwp.HAction.GetDefault("ParaShape", pset.HSet)
+            hwp.HAction.GetDefault("ParagraphShape", pset.HSet)
         elif obj_name == "HFindReplace":
             pset = hwp.HParameterSet.HFindReplace
             hwp.HAction.GetDefault("AllReplace", pset.HSet)
@@ -669,9 +669,9 @@ def dispatch(hwp, method, params):
                 try:
                     act = hwp.HAction
                     pset = hwp.HParameterSet.HParaShape
-                    act.GetDefault("ParaShape", pset.HSet)
+                    act.GetDefault("ParagraphShape", pset.HSet)
                     pset.HSet.SetItem("OutlineLevel", ol_int)
-                    act.Execute("ParaShape", pset.HSet)
+                    act.Execute("ParagraphShape", pset.HSet)
                     success = True
                 except Exception as e1:
                     print(f"[INFO] insert_text OutlineLevel SetItem failed: {e1}", file=sys.stderr)
@@ -687,9 +687,9 @@ def dispatch(hwp, method, params):
                     try:
                         act = hwp.HAction
                         pset = hwp.HParameterSet.HParaShape
-                        act.GetDefault("ParaShape", pset.HSet)
+                        act.GetDefault("ParagraphShape", pset.HSet)
                         pset.OutlineLevel = ol_int
-                        act.Execute("ParaShape", pset.HSet)
+                        act.Execute("ParagraphShape", pset.HSet)
                         success = True
                     except Exception as e3:
                         print(f"[WARN] insert_text OutlineLevel all alternatives failed: {e3}", file=sys.stderr)
@@ -707,7 +707,7 @@ def dispatch(hwp, method, params):
         # Execute로 정상 작동하는 속성 (align, spacing, border 등)
         act = hwp.HAction
         pset = hwp.HParameterSet.HParaShape
-        act.GetDefault("ParaShape", pset.HSet)
+        act.GetDefault("ParagraphShape", pset.HSet)
         align_map = {"left": 0, "center": 1, "right": 2, "justify": 3}
         _need_execute = False
         if "align" in s:
@@ -929,7 +929,7 @@ def dispatch(hwp, method, params):
 
         # ParameterSet Execute (반드시 set_para fallback 보다 먼저, 또는 단독)
         if _need_execute or _need_para_execute:
-            act.Execute("ParaShape", pset.HSet)
+            act.Execute("ParagraphShape", pset.HSet)
 
         # 폴백: hwp.set_para — ParameterSet Execute 가 성공한 경우 skip 가능 하지만
         # 일관성을 위해 그대로 호출. set_para 가 ParameterSet 변경을 무효화하지 않도록 주의.
@@ -1460,9 +1460,9 @@ def dispatch(hwp, method, params):
                     try:
                         act_p = hwp.HAction
                         ps = hwp.HParameterSet.HParaShape
-                        act_p.GetDefault("ParaShape", ps.HSet)
+                        act_p.GetDefault("ParagraphShape", ps.HSet)
                         ps.AlignType = align_map[alignment]
-                        act_p.Execute("ParaShape", ps.HSet)
+                        act_p.Execute("ParagraphShape", ps.HSet)
                     except Exception as e:
                         print(f"[WARN] Cell align: {e}", file=sys.stderr)
                 if val:
@@ -1480,8 +1480,16 @@ def dispatch(hwp, method, params):
                     filled += 1
                 if c < len(row) - 1 or r < rows - 1:
                     hwp.TableRightCell()
-        # 표 밖으로 안전하게 탈출 (is_cell 확인 후 Cancel 반복)
-        _exit_table_safely(hwp)
+        # v0.7.3.3 #FB-1: cell-aware 자동 탈출
+        # top-level 호출 → _exit_table_safely (표 밖 본문으로 탈출)
+        # cell 안 호출 (nested 표 생성) → cursor 유지
+        #   - _exit_table_safely 가 호출되면 hwp.MovePos(3) 로 문서 끝까지 빠져 cell context 손실
+        #   - nested 호출 시에는 새로 만든 표의 첫 셀로 cursor 가 자동 위치 (한컴 표준 동작)
+        #   - 이후 호출 (navigate_cell, table_create_from_data 추가) 가 cell context 에서 정상 작동
+        #   - 3단/4단 nested 에 필수
+        if not in_cell_for_table:
+            _exit_table_safely(hwp)
+        # cell 안 호출 시 cursor 를 새 nested 표 안에 유지 (명시 no-op)
 
         # v0.7.3.1 #F7: treat_as_char 옵션 적용 (표 생성 직후, 탈출 후)
         # cell 안 nested 표는 한컴 기본 동작이 글자처럼 취급. top-level 표는 별도 액션.
@@ -1621,9 +1629,9 @@ def dispatch(hwp, method, params):
                 try:
                     act = hwp.HAction
                     pset = hwp.HParameterSet.HParaShape
-                    act.GetDefault("ParaShape", pset.HSet)
+                    act.GetDefault("ParagraphShape", pset.HSet)
                     pset.HSet.SetItem("OutlineLevel", ol_int)
-                    act.Execute("ParaShape", pset.HSet)
+                    act.Execute("ParagraphShape", pset.HSet)
                     applied_outline_level = ol_int
                     applied_via = "SetItem"
                 except Exception as e1:
@@ -1641,9 +1649,9 @@ def dispatch(hwp, method, params):
                     try:
                         act = hwp.HAction
                         pset = hwp.HParameterSet.HParaShape
-                        act.GetDefault("ParaShape", pset.HSet)
+                        act.GetDefault("ParagraphShape", pset.HSet)
                         pset.OutlineLevel = ol_int
-                        act.Execute("ParaShape", pset.HSet)
+                        act.Execute("ParagraphShape", pset.HSet)
                         applied_outline_level = ol_int
                         applied_via = "direct_attribute"
                     except Exception as e3:
@@ -1747,13 +1755,14 @@ def dispatch(hwp, method, params):
             return {"status": "error", "error": f"레이아웃 검증 실패: {e}"}
 
     if method == "set_page_setup":
-        # v0.7.3.1.1: 가이드 hwp.HParameterSet.HSecDef.HPageDef 가 pyhwpx 버전에 따라 다름
-        # multi-path: HPageDef → PageDef → hsec 직접 → SetItem 폴백
-        # 액션 이름은 SectionDef 로 정정 (가이드 05-hwp-supplement-deep-dive.md:785-799)
+        # v0.7.3.3: 액션 이름은 "PageSetup" (pyhwpx core.py L3763, L4901, L4943, L5016)
+        # "SectionDef" 는 v0.7.3.1 잘못된 변경, v0.7.3.2 에서 PageSetup 복원됨
+        # PageDef 객체 multi-path: HPageDef → PageDef → hsec 자체 → SetItem fallback
+        # + v0.7.3.3 #FA-3: pyhwpx set_pagedef 헬퍼 fallback 추가 (core.py L4965-5025)
         try:
             act = hwp.HAction
             hsec = hwp.HParameterSet.HSecDef
-            act.GetDefault("SectionDef", hsec.HSet)
+            act.GetDefault("PageSetup", hsec.HSet)
 
             # PageDef 객체 확보 (multi-path)
             pd = None
@@ -1821,7 +1830,27 @@ def dispatch(hwp, method, params):
                 if _set_attr("PaperHeight", hwp.MiliToHwpUnit(params["paper_height"])):
                     applied.append("paper_height")
 
-            act.Execute("SectionDef", hsec.HSet)
+            act.Execute("PageSetup", hsec.HSet)
+
+            # v0.7.3.3 #FA-3: pyhwpx set_pagedef 헬퍼 fallback (multi-fallback 안전망)
+            # pyhwpx core.py L4965-5025 의 정식 헬퍼 — ParameterSet setattr 가 silently 무시되는
+            # 경우를 위한 이중 안전망. 호출 실패해도 응답 영향 없음.
+            try:
+                if hasattr(hwp, "set_pagedef"):
+                    kw = {}
+                    if "top_margin" in params: kw["top"] = params["top_margin"]
+                    if "bottom_margin" in params: kw["bottom"] = params["bottom_margin"]
+                    if "left_margin" in params: kw["left"] = params["left_margin"]
+                    if "right_margin" in params: kw["right"] = params["right_margin"]
+                    if "header_margin" in params: kw["header"] = params["header_margin"]
+                    if "footer_margin" in params: kw["footer"] = params["footer_margin"]
+                    if "orientation" in params:
+                        kw["landscape"] = (params["orientation"] == "landscape")
+                    if kw:
+                        hwp.set_pagedef(**kw)
+            except Exception as e:
+                print(f"[INFO] set_pagedef fallback: {e}", file=sys.stderr)
+
             result = {"status": "ok", "applied": applied}
             if errors:
                 result["warnings"] = errors[:3]
@@ -2431,7 +2460,7 @@ def dispatch(hwp, method, params):
         try:
             act = hwp.HAction
             pset = hwp.HParameterSet.HParaShape
-            act.GetDefault("ParaShape", pset.HSet)
+            act.GetDefault("ParagraphShape", pset.HSet)
             current_left = 0
             try:
                 current_left = pset.LeftMargin or 0
@@ -2439,7 +2468,7 @@ def dispatch(hwp, method, params):
                 pass
             new_left = current_left + int(depth * 100)
             pset.LeftMargin = new_left
-            act.Execute("ParaShape", pset.HSet)
+            act.Execute("ParagraphShape", pset.HSet)
             return {"status": "ok", "left_margin_pt": new_left / 100}
         except Exception as e:
             raise RuntimeError(f"들여쓰기 실패: {e}")
@@ -2450,7 +2479,7 @@ def dispatch(hwp, method, params):
         try:
             act = hwp.HAction
             pset = hwp.HParameterSet.HParaShape
-            act.GetDefault("ParaShape", pset.HSet)
+            act.GetDefault("ParagraphShape", pset.HSet)
             current_left = 0
             try:
                 current_left = pset.LeftMargin or 0
@@ -2458,7 +2487,7 @@ def dispatch(hwp, method, params):
                 pass
             new_left = max(0, current_left - int(depth * 100))
             pset.LeftMargin = new_left
-            act.Execute("ParaShape", pset.HSet)
+            act.Execute("ParagraphShape", pset.HSet)
             return {"status": "ok", "left_margin_pt": new_left / 100}
         except Exception as e:
             raise RuntimeError(f"내어쓰기 실패: {e}")
@@ -2930,7 +2959,7 @@ def dispatch(hwp, method, params):
             try:
                 act = hwp.HAction
                 pset = hwp.HParameterSet.HParaShape
-                act.GetDefault("ParaShape", pset.HSet)
+                act.GetDefault("ParagraphShape", pset.HSet)
                 align_map = {"left": 0, "center": 1, "right": 2, "justify": 3}
 
                 # snake_case 입력 처리 (v0.7.3 신규)
@@ -2975,7 +3004,7 @@ def dispatch(hwp, method, params):
                     try: pset.LineSpacing = int(para["LineSpacing"])
                     except Exception: pass
 
-                act.Execute("ParaShape", pset.HSet)
+                act.Execute("ParagraphShape", pset.HSet)
                 applied_para += 1
             except Exception as e:
                 print(f"[WARN] apply_style_profile para: {e}", file=sys.stderr)

@@ -275,7 +275,7 @@ def set_paragraph_style(hwp, style=None):
     act = hwp.HAction
     pset = hwp.HParameterSet.HParaShape
 
-    act.GetDefault("ParaShape", pset.HSet)
+    act.GetDefault("ParagraphShape", pset.HSet)
 
     align_map = {"left": 0, "center": 1, "right": 2, "justify": 3}
     if "align" in style:
@@ -383,7 +383,7 @@ def set_paragraph_style(hwp, style=None):
         except Exception as e:
             print(f"[WARN] Condense: {e}", file=sys.stderr)
 
-    act.Execute("ParaShape", pset.HSet)
+    act.Execute("ParagraphShape", pset.HSet)
 
 
 def get_char_shape(hwp):
@@ -437,7 +437,7 @@ def get_para_shape(hwp):
     """
     act = hwp.HAction
     pset = hwp.HParameterSet.HParaShape
-    act.GetDefault("ParaShape", pset.HSet)
+    act.GetDefault("ParagraphShape", pset.HSet)
 
     align_names = {0: "left", 1: "center", 2: "right", 3: "justify"}
     spacing_type_names = {0: "percent", 1: "fixed", 2: "multiple"}
