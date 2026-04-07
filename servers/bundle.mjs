@@ -38285,6 +38285,7 @@ function registerEditingTools(server2, bridge2, toolset2 = "standard") {
 // servers/tools/composite-tools.js
 import path6 from "node:path";
 import fs5 from "node:fs";
+import os from "node:os";
 var HWP_EXTENSIONS3 = /* @__PURE__ */ new Set([".hwp", ".hwpx"]);
 var ANALYSIS_TIMEOUT2 = 6e4;
 function registerCompositeTools(server2, bridge2) {
@@ -39189,6 +39190,251 @@ function registerCompositeTools(server2, bridge2) {
       if (!r.success)
         return { content: [{ type: "text", text: JSON.stringify({ error: r.error }) }], isError: true };
       return { content: [{ type: "text", text: JSON.stringify(r.data) }] };
+    } catch (err) {
+      return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }], isError: true };
+    }
+  });
+  const CONFIG_PATH = path6.join(os.homedir(), ".hwp_studio_config.json");
+  const STATE_DIR = path6.join(os.homedir(), ".hwp_studio_state");
+  const TEMPLATE_DIR = path6.join(os.homedir(), ".hwp_studio_templates");
+  const DEFAULT_POLICY = {
+    max_reference_files: 5,
+    max_total_size_mb: 10,
+    max_tokens_input_percent: 80,
+    allowed_formats: ["xlsx", "csv", "json", "pdf", "docx", "txt", "html", "xml", "pptx"],
+    prefer_summary: true,
+    summary_threshold_mb: 3
+  };
+  function readConfig() {
+    try {
+      if (fs5.existsSync(CONFIG_PATH)) {
+        const raw = JSON.parse(fs5.readFileSync(CONFIG_PATH, "utf8"));
+        return { reference_policy: { ...DEFAULT_POLICY, ...raw.reference_policy || {} } };
+      }
+    } catch {
+    }
+    return { reference_policy: { ...DEFAULT_POLICY } };
+  }
+  function writeConfig(cfg) {
+    fs5.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2), "utf8");
+  }
+  server2.tool("hwp_reference_policy", "\uCC38\uACE0\uC790\uB8CC \uC815\uCC45 \uBA54\uD0C0 \uB3C4\uAD6C. (v0.7.2.2 \uC2E0\uADDC) ~/.hwp_studio_config.json\uC5D0 max_reference_files/max_total_size_mb/max_tokens_input_percent/allowed_formats/prefer_summary \uC800\uC7A5. mode: get|set|reset", {
+    mode: external_exports.enum(["get", "set", "reset"]).describe("\uB3D9\uC791 \uBAA8\uB4DC"),
+    policy: external_exports.object({
+      max_reference_files: external_exports.number().int().positive().optional(),
+      max_total_size_mb: external_exports.number().positive().optional(),
+      max_tokens_input_percent: external_exports.number().min(1).max(100).optional(),
+      allowed_formats: external_exports.array(external_exports.string()).optional(),
+      prefer_summary: external_exports.boolean().optional(),
+      summary_threshold_mb: external_exports.number().positive().optional()
+    }).optional().describe("set \uBAA8\uB4DC \uC2DC \uBD80\uBD84 \uC5C5\uB370\uC774\uD2B8\uD560 \uC815\uCC45 \uD544\uB4DC")
+  }, async ({ mode, policy }) => {
+    try {
+      if (mode === "reset") {
+        writeConfig({ reference_policy: { ...DEFAULT_POLICY } });
+        return { content: [{ type: "text", text: JSON.stringify({ ok: true, mode, reference_policy: DEFAULT_POLICY }) }] };
+      }
+      if (mode === "set") {
+        const current = readConfig();
+        const merged = { reference_policy: { ...current.reference_policy, ...policy || {} } };
+        writeConfig(merged);
+        return { content: [{ type: "text", text: JSON.stringify({ ok: true, mode, ...merged }) }] };
+      }
+      const cfg = readConfig();
+      return { content: [{ type: "text", text: JSON.stringify({ ok: true, mode, ...cfg, config_path: CONFIG_PATH }) }] };
+    } catch (err) {
+      return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }], isError: true };
+    }
+  });
+  server2.tool("hwp_session_state", "\uAE34 \uC791\uC131 \uC791\uC5C5\uC758 \uC9C4\uD589 \uC0C1\uD0DC\uB97C \uC800\uC7A5/\uC7AC\uAC1C\uD569\uB2C8\uB2E4. (v0.7.2.2 \uC2E0\uADDC \u2605) ~/.hwp_studio_state/{session_id}.json\uC5D0 sections_total/done, current_section, progress_percent, checkpoints \uC601\uC18D\uD654. mode: save|load|list|delete|cancel", {
+    mode: external_exports.enum(["save", "load", "list", "delete", "cancel"]).describe("\uB3D9\uC791 \uBAA8\uB4DC"),
+    session_id: external_exports.string().optional().describe("\uC138\uC158 ID (save \uC2DC \uBBF8\uC9C0\uC815\uC774\uBA74 \uC790\uB3D9 \uC0DD\uC131)"),
+    state: external_exports.object({
+      current_doc: external_exports.string().optional(),
+      sections_total: external_exports.array(external_exports.string()).optional(),
+      sections_done: external_exports.array(external_exports.string()).optional(),
+      current_section: external_exports.string().optional(),
+      progress_percent: external_exports.number().optional(),
+      checkpoints: external_exports.array(external_exports.any()).optional()
+    }).passthrough().optional().describe("save \uBAA8\uB4DC \uC2DC \uC800\uC7A5\uD560 \uC0C1\uD0DC \uAC1D\uCCB4")
+  }, async ({ mode, session_id, state }) => {
+    try {
+      if (!fs5.existsSync(STATE_DIR))
+        fs5.mkdirSync(STATE_DIR, { recursive: true });
+      if (mode === "list") {
+        const files = fs5.readdirSync(STATE_DIR).filter((f) => f.endsWith(".json"));
+        const sessions = files.map((f) => {
+          try {
+            const raw = JSON.parse(fs5.readFileSync(path6.join(STATE_DIR, f), "utf8"));
+            return {
+              session_id: raw.session_id || f.replace(".json", ""),
+              current_doc: raw.current_doc,
+              progress_percent: raw.progress_percent,
+              last_saved: raw.last_saved,
+              cancelled: raw.cancelled || false
+            };
+          } catch {
+            return { session_id: f.replace(".json", ""), error: "parse_failed" };
+          }
+        });
+        return { content: [{ type: "text", text: JSON.stringify({ ok: true, count: sessions.length, sessions }) }] };
+      }
+      if (mode === "save") {
+        const sid = session_id || `sess_${(/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-").slice(0, 19)}`;
+        const filePath2 = path6.join(STATE_DIR, `${sid}.json`);
+        let existing = {};
+        if (fs5.existsSync(filePath2)) {
+          try {
+            existing = JSON.parse(fs5.readFileSync(filePath2, "utf8"));
+          } catch {
+          }
+        }
+        const merged = {
+          ...existing,
+          ...state || {},
+          session_id: sid,
+          last_saved: (/* @__PURE__ */ new Date()).toISOString()
+        };
+        fs5.writeFileSync(filePath2, JSON.stringify(merged, null, 2), "utf8");
+        return { content: [{ type: "text", text: JSON.stringify({ ok: true, mode, session_id: sid, state: merged }) }] };
+      }
+      if (!session_id) {
+        return { content: [{ type: "text", text: JSON.stringify({ error: `session_id required for mode=${mode}` }) }], isError: true };
+      }
+      const filePath = path6.join(STATE_DIR, `${session_id}.json`);
+      if (mode === "load") {
+        if (!fs5.existsSync(filePath)) {
+          return { content: [{ type: "text", text: JSON.stringify({ error: `session not found: ${session_id}` }) }], isError: true };
+        }
+        const raw = JSON.parse(fs5.readFileSync(filePath, "utf8"));
+        return { content: [{ type: "text", text: JSON.stringify({ ok: true, mode, state: raw }) }] };
+      }
+      if (mode === "delete") {
+        if (fs5.existsSync(filePath))
+          fs5.unlinkSync(filePath);
+        return { content: [{ type: "text", text: JSON.stringify({ ok: true, mode, session_id, deleted: true }) }] };
+      }
+      if (mode === "cancel") {
+        if (!fs5.existsSync(filePath)) {
+          return { content: [{ type: "text", text: JSON.stringify({ error: `session not found: ${session_id}` }) }], isError: true };
+        }
+        const raw = JSON.parse(fs5.readFileSync(filePath, "utf8"));
+        raw.cancelled = true;
+        raw.last_saved = (/* @__PURE__ */ new Date()).toISOString();
+        fs5.writeFileSync(filePath, JSON.stringify(raw, null, 2), "utf8");
+        return { content: [{ type: "text", text: JSON.stringify({ ok: true, mode, session_id, cancelled: true }) }] };
+      }
+      return { content: [{ type: "text", text: JSON.stringify({ error: `unknown mode: ${mode}` }) }], isError: true };
+    } catch (err) {
+      return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }], isError: true };
+    }
+  });
+  server2.tool("hwp_template_library", "\uBB38\uC11C \uD15C\uD50C\uB9BF \uB77C\uC774\uBE0C\uB7EC\uB9AC. (v0.7.2.2 \uC2E0\uADDC) \uC0AC\uC6A9\uC790 \uB4F1\uB85D \uD15C\uD50C\uB9BF\uC744 ~/.hwp_studio_templates/{id}.json + files/{id}.hwpx\uC5D0 \uC800\uC7A5. mode: list|get|register|delete|search. \uBE4C\uD2B8\uC778 35\uAC1C \uD15C\uD50C\uB9BF\uC740 \uAE30\uC874 hwp_template_list \uB3C4\uAD6C \uC0AC\uC6A9.", {
+    mode: external_exports.enum(["list", "get", "register", "delete", "search"]).describe("\uB3D9\uC791 \uBAA8\uB4DC"),
+    template_id: external_exports.string().optional().describe("\uD15C\uD50C\uB9BF ID (get/delete/register \uD544\uC218)"),
+    template: external_exports.object({
+      name: external_exports.string(),
+      description: external_exports.string().optional(),
+      tags: external_exports.array(external_exports.string()).optional(),
+      category: external_exports.string().optional(),
+      source_path: external_exports.string().optional().describe("register \uC2DC \uBCF5\uC0AC\uD560 .hwpx \uC6D0\uBCF8 \uACBD\uB85C")
+    }).passthrough().optional().describe("register \uBAA8\uB4DC \uBA54\uD0C0\uB370\uC774\uD130"),
+    query: external_exports.string().optional().describe("search \uBAA8\uB4DC \uAC80\uC0C9\uC5B4")
+  }, async ({ mode, template_id, template, query }) => {
+    try {
+      if (!fs5.existsSync(TEMPLATE_DIR))
+        fs5.mkdirSync(TEMPLATE_DIR, { recursive: true });
+      const filesDir = path6.join(TEMPLATE_DIR, "files");
+      if (!fs5.existsSync(filesDir))
+        fs5.mkdirSync(filesDir, { recursive: true });
+      const loadAll = () => {
+        const metas = fs5.readdirSync(TEMPLATE_DIR).filter((f) => f.endsWith(".json"));
+        return metas.map((f) => {
+          try {
+            const raw = JSON.parse(fs5.readFileSync(path6.join(TEMPLATE_DIR, f), "utf8"));
+            return raw;
+          } catch {
+            return null;
+          }
+        }).filter(Boolean);
+      };
+      if (mode === "list") {
+        const items = loadAll();
+        return { content: [{ type: "text", text: JSON.stringify({ ok: true, count: items.length, templates: items }) }] };
+      }
+      if (mode === "search") {
+        const q = (query || "").toLowerCase().trim();
+        if (!q) {
+          return { content: [{ type: "text", text: JSON.stringify({ error: "query required for search" }) }], isError: true };
+        }
+        const items = loadAll();
+        const scored = items.map((item) => {
+          const name = String(item.name || "").toLowerCase();
+          const desc = String(item.description || "").toLowerCase();
+          const tags = (item.tags || []).map((t) => t.toLowerCase());
+          let score = 0;
+          if (name.includes(q))
+            score += 3;
+          for (const t of tags)
+            if (t.includes(q))
+              score += 2;
+          if (desc.includes(q))
+            score += 1;
+          if (item.last_used)
+            score += 0.5;
+          return { ...item, _score: score };
+        }).filter((x) => x._score > 0).sort((a, b) => b._score - a._score);
+        return { content: [{ type: "text", text: JSON.stringify({ ok: true, count: scored.length, results: scored }) }] };
+      }
+      if (mode === "get") {
+        if (!template_id)
+          return { content: [{ type: "text", text: JSON.stringify({ error: "template_id required" }) }], isError: true };
+        const metaPath = path6.join(TEMPLATE_DIR, `${template_id}.json`);
+        if (!fs5.existsSync(metaPath)) {
+          return { content: [{ type: "text", text: JSON.stringify({ error: `template not found: ${template_id}` }) }], isError: true };
+        }
+        const meta = JSON.parse(fs5.readFileSync(metaPath, "utf8"));
+        const filePath = path6.join(filesDir, `${template_id}.hwpx`);
+        meta.file_path = fs5.existsSync(filePath) ? filePath : null;
+        return { content: [{ type: "text", text: JSON.stringify({ ok: true, template: meta }) }] };
+      }
+      if (mode === "register") {
+        if (!template_id || !template) {
+          return { content: [{ type: "text", text: JSON.stringify({ error: "template_id + template required" }) }], isError: true };
+        }
+        const metaPath = path6.join(TEMPLATE_DIR, `${template_id}.json`);
+        const meta = {
+          template_id,
+          name: template.name,
+          description: template.description || "",
+          tags: template.tags || [],
+          category: template.category || "user",
+          registered_at: (/* @__PURE__ */ new Date()).toISOString()
+        };
+        if (template.source_path) {
+          const src = String(template.source_path);
+          if (!fs5.existsSync(src)) {
+            return { content: [{ type: "text", text: JSON.stringify({ error: `source_path not found: ${src}` }) }], isError: true };
+          }
+          const dest = path6.join(filesDir, `${template_id}.hwpx`);
+          fs5.copyFileSync(src, dest);
+          meta.file_path = dest;
+        }
+        fs5.writeFileSync(metaPath, JSON.stringify(meta, null, 2), "utf8");
+        return { content: [{ type: "text", text: JSON.stringify({ ok: true, mode, template: meta }) }] };
+      }
+      if (mode === "delete") {
+        if (!template_id)
+          return { content: [{ type: "text", text: JSON.stringify({ error: "template_id required" }) }], isError: true };
+        const metaPath = path6.join(TEMPLATE_DIR, `${template_id}.json`);
+        const filePath = path6.join(filesDir, `${template_id}.hwpx`);
+        if (fs5.existsSync(metaPath))
+          fs5.unlinkSync(metaPath);
+        if (fs5.existsSync(filePath))
+          fs5.unlinkSync(filePath);
+        return { content: [{ type: "text", text: JSON.stringify({ ok: true, mode, template_id, deleted: true }) }] };
+      }
+      return { content: [{ type: "text", text: JSON.stringify({ error: `unknown mode: ${mode}` }) }], isError: true };
     } catch (err) {
       return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }], isError: true };
     }

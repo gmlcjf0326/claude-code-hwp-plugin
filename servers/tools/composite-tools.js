@@ -4,6 +4,7 @@
 import { z } from 'zod';
 import path from 'node:path';
 import fs from 'node:fs';
+import os from 'node:os';
 const HWP_EXTENSIONS = new Set(['.hwp', '.hwpx']);
 const ANALYSIS_TIMEOUT = 60000;
 export function registerCompositeTools(server, bridge) {
@@ -965,6 +966,262 @@ export function registerCompositeTools(server, bridge) {
             if (!r.success)
                 return { content: [{ type: 'text', text: JSON.stringify({ error: r.error }) }], isError: true };
             return { content: [{ type: 'text', text: JSON.stringify(r.data) }] };
+        }
+        catch (err) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+        }
+    });
+    // ===== v0.7.2.2: Reference Policy + Session State + Template Library =====
+    // 모두 순수 JSON I/O — Python 경유 불필요. 사용자 home 디렉토리 기반 영속화.
+    const CONFIG_PATH = path.join(os.homedir(), '.hwp_studio_config.json');
+    const STATE_DIR = path.join(os.homedir(), '.hwp_studio_state');
+    const TEMPLATE_DIR = path.join(os.homedir(), '.hwp_studio_templates');
+    const DEFAULT_POLICY = {
+        max_reference_files: 5,
+        max_total_size_mb: 10,
+        max_tokens_input_percent: 80,
+        allowed_formats: ['xlsx', 'csv', 'json', 'pdf', 'docx', 'txt', 'html', 'xml', 'pptx'],
+        prefer_summary: true,
+        summary_threshold_mb: 3,
+    };
+    function readConfig() {
+        try {
+            if (fs.existsSync(CONFIG_PATH)) {
+                const raw = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+                return { reference_policy: { ...DEFAULT_POLICY, ...(raw.reference_policy || {}) } };
+            }
+        }
+        catch { }
+        return { reference_policy: { ...DEFAULT_POLICY } };
+    }
+    function writeConfig(cfg) {
+        fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2), 'utf8');
+    }
+    // v0.7.2.2 — 1c) hwp_reference_policy
+    server.tool('hwp_reference_policy', '참고자료 정책 메타 도구. (v0.7.2.2 신규) ~/.hwp_studio_config.json에 max_reference_files/max_total_size_mb/max_tokens_input_percent/allowed_formats/prefer_summary 저장. mode: get|set|reset', {
+        mode: z.enum(['get', 'set', 'reset']).describe('동작 모드'),
+        policy: z.object({
+            max_reference_files: z.number().int().positive().optional(),
+            max_total_size_mb: z.number().positive().optional(),
+            max_tokens_input_percent: z.number().min(1).max(100).optional(),
+            allowed_formats: z.array(z.string()).optional(),
+            prefer_summary: z.boolean().optional(),
+            summary_threshold_mb: z.number().positive().optional(),
+        }).optional().describe('set 모드 시 부분 업데이트할 정책 필드'),
+    }, async ({ mode, policy }) => {
+        try {
+            if (mode === 'reset') {
+                writeConfig({ reference_policy: { ...DEFAULT_POLICY } });
+                return { content: [{ type: 'text', text: JSON.stringify({ ok: true, mode, reference_policy: DEFAULT_POLICY }) }] };
+            }
+            if (mode === 'set') {
+                const current = readConfig();
+                const merged = { reference_policy: { ...current.reference_policy, ...(policy || {}) } };
+                writeConfig(merged);
+                return { content: [{ type: 'text', text: JSON.stringify({ ok: true, mode, ...merged }) }] };
+            }
+            // get
+            const cfg = readConfig();
+            return { content: [{ type: 'text', text: JSON.stringify({ ok: true, mode, ...cfg, config_path: CONFIG_PATH }) }] };
+        }
+        catch (err) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+        }
+    });
+    // v0.7.2.2 — 2a) hwp_session_state ★
+    server.tool('hwp_session_state', '긴 작성 작업의 진행 상태를 저장/재개합니다. (v0.7.2.2 신규 ★) ~/.hwp_studio_state/{session_id}.json에 sections_total/done, current_section, progress_percent, checkpoints 영속화. mode: save|load|list|delete|cancel', {
+        mode: z.enum(['save', 'load', 'list', 'delete', 'cancel']).describe('동작 모드'),
+        session_id: z.string().optional().describe('세션 ID (save 시 미지정이면 자동 생성)'),
+        state: z.object({
+            current_doc: z.string().optional(),
+            sections_total: z.array(z.string()).optional(),
+            sections_done: z.array(z.string()).optional(),
+            current_section: z.string().optional(),
+            progress_percent: z.number().optional(),
+            checkpoints: z.array(z.any()).optional(),
+        }).passthrough().optional().describe('save 모드 시 저장할 상태 객체'),
+    }, async ({ mode, session_id, state }) => {
+        try {
+            if (!fs.existsSync(STATE_DIR))
+                fs.mkdirSync(STATE_DIR, { recursive: true });
+            if (mode === 'list') {
+                const files = fs.readdirSync(STATE_DIR).filter(f => f.endsWith('.json'));
+                const sessions = files.map(f => {
+                    try {
+                        const raw = JSON.parse(fs.readFileSync(path.join(STATE_DIR, f), 'utf8'));
+                        return {
+                            session_id: raw.session_id || f.replace('.json', ''),
+                            current_doc: raw.current_doc,
+                            progress_percent: raw.progress_percent,
+                            last_saved: raw.last_saved,
+                            cancelled: raw.cancelled || false,
+                        };
+                    }
+                    catch {
+                        return { session_id: f.replace('.json', ''), error: 'parse_failed' };
+                    }
+                });
+                return { content: [{ type: 'text', text: JSON.stringify({ ok: true, count: sessions.length, sessions }) }] };
+            }
+            if (mode === 'save') {
+                const sid = session_id || `sess_${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}`;
+                const filePath = path.join(STATE_DIR, `${sid}.json`);
+                let existing = {};
+                if (fs.existsSync(filePath)) {
+                    try {
+                        existing = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+                    }
+                    catch { }
+                }
+                const merged = {
+                    ...existing,
+                    ...(state || {}),
+                    session_id: sid,
+                    last_saved: new Date().toISOString(),
+                };
+                fs.writeFileSync(filePath, JSON.stringify(merged, null, 2), 'utf8');
+                return { content: [{ type: 'text', text: JSON.stringify({ ok: true, mode, session_id: sid, state: merged }) }] };
+            }
+            if (!session_id) {
+                return { content: [{ type: 'text', text: JSON.stringify({ error: `session_id required for mode=${mode}` }) }], isError: true };
+            }
+            const filePath = path.join(STATE_DIR, `${session_id}.json`);
+            if (mode === 'load') {
+                if (!fs.existsSync(filePath)) {
+                    return { content: [{ type: 'text', text: JSON.stringify({ error: `session not found: ${session_id}` }) }], isError: true };
+                }
+                const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+                return { content: [{ type: 'text', text: JSON.stringify({ ok: true, mode, state: raw }) }] };
+            }
+            if (mode === 'delete') {
+                if (fs.existsSync(filePath))
+                    fs.unlinkSync(filePath);
+                return { content: [{ type: 'text', text: JSON.stringify({ ok: true, mode, session_id, deleted: true }) }] };
+            }
+            if (mode === 'cancel') {
+                if (!fs.existsSync(filePath)) {
+                    return { content: [{ type: 'text', text: JSON.stringify({ error: `session not found: ${session_id}` }) }], isError: true };
+                }
+                const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+                raw.cancelled = true;
+                raw.last_saved = new Date().toISOString();
+                fs.writeFileSync(filePath, JSON.stringify(raw, null, 2), 'utf8');
+                return { content: [{ type: 'text', text: JSON.stringify({ ok: true, mode, session_id, cancelled: true }) }] };
+            }
+            return { content: [{ type: 'text', text: JSON.stringify({ error: `unknown mode: ${mode}` }) }], isError: true };
+        }
+        catch (err) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+        }
+    });
+    // v0.7.2.2 — 2c) hwp_template_library
+    server.tool('hwp_template_library', '문서 템플릿 라이브러리. (v0.7.2.2 신규) 사용자 등록 템플릿을 ~/.hwp_studio_templates/{id}.json + files/{id}.hwpx에 저장. mode: list|get|register|delete|search. 빌트인 35개 템플릿은 기존 hwp_template_list 도구 사용.', {
+        mode: z.enum(['list', 'get', 'register', 'delete', 'search']).describe('동작 모드'),
+        template_id: z.string().optional().describe('템플릿 ID (get/delete/register 필수)'),
+        template: z.object({
+            name: z.string(),
+            description: z.string().optional(),
+            tags: z.array(z.string()).optional(),
+            category: z.string().optional(),
+            source_path: z.string().optional().describe('register 시 복사할 .hwpx 원본 경로'),
+        }).passthrough().optional().describe('register 모드 메타데이터'),
+        query: z.string().optional().describe('search 모드 검색어'),
+    }, async ({ mode, template_id, template, query }) => {
+        try {
+            if (!fs.existsSync(TEMPLATE_DIR))
+                fs.mkdirSync(TEMPLATE_DIR, { recursive: true });
+            const filesDir = path.join(TEMPLATE_DIR, 'files');
+            if (!fs.existsSync(filesDir))
+                fs.mkdirSync(filesDir, { recursive: true });
+            const loadAll = () => {
+                const metas = fs.readdirSync(TEMPLATE_DIR).filter(f => f.endsWith('.json'));
+                return metas.map(f => {
+                    try {
+                        const raw = JSON.parse(fs.readFileSync(path.join(TEMPLATE_DIR, f), 'utf8'));
+                        return raw;
+                    }
+                    catch {
+                        return null;
+                    }
+                }).filter(Boolean);
+            };
+            if (mode === 'list') {
+                const items = loadAll();
+                return { content: [{ type: 'text', text: JSON.stringify({ ok: true, count: items.length, templates: items }) }] };
+            }
+            if (mode === 'search') {
+                const q = (query || '').toLowerCase().trim();
+                if (!q) {
+                    return { content: [{ type: 'text', text: JSON.stringify({ error: 'query required for search' }) }], isError: true };
+                }
+                const items = loadAll();
+                const scored = items.map(item => {
+                    const name = String(item.name || '').toLowerCase();
+                    const desc = String(item.description || '').toLowerCase();
+                    const tags = (item.tags || []).map(t => t.toLowerCase());
+                    let score = 0;
+                    if (name.includes(q))
+                        score += 3;
+                    for (const t of tags)
+                        if (t.includes(q))
+                            score += 2;
+                    if (desc.includes(q))
+                        score += 1;
+                    if (item.last_used)
+                        score += 0.5;
+                    return { ...item, _score: score };
+                }).filter(x => x._score > 0).sort((a, b) => b._score - a._score);
+                return { content: [{ type: 'text', text: JSON.stringify({ ok: true, count: scored.length, results: scored }) }] };
+            }
+            if (mode === 'get') {
+                if (!template_id)
+                    return { content: [{ type: 'text', text: JSON.stringify({ error: 'template_id required' }) }], isError: true };
+                const metaPath = path.join(TEMPLATE_DIR, `${template_id}.json`);
+                if (!fs.existsSync(metaPath)) {
+                    return { content: [{ type: 'text', text: JSON.stringify({ error: `template not found: ${template_id}` }) }], isError: true };
+                }
+                const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+                const filePath = path.join(filesDir, `${template_id}.hwpx`);
+                meta.file_path = fs.existsSync(filePath) ? filePath : null;
+                return { content: [{ type: 'text', text: JSON.stringify({ ok: true, template: meta }) }] };
+            }
+            if (mode === 'register') {
+                if (!template_id || !template) {
+                    return { content: [{ type: 'text', text: JSON.stringify({ error: 'template_id + template required' }) }], isError: true };
+                }
+                const metaPath = path.join(TEMPLATE_DIR, `${template_id}.json`);
+                const meta = {
+                    template_id,
+                    name: template.name,
+                    description: template.description || '',
+                    tags: template.tags || [],
+                    category: template.category || 'user',
+                    registered_at: new Date().toISOString(),
+                };
+                if (template.source_path) {
+                    const src = String(template.source_path);
+                    if (!fs.existsSync(src)) {
+                        return { content: [{ type: 'text', text: JSON.stringify({ error: `source_path not found: ${src}` }) }], isError: true };
+                    }
+                    const dest = path.join(filesDir, `${template_id}.hwpx`);
+                    fs.copyFileSync(src, dest);
+                    meta.file_path = dest;
+                }
+                fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2), 'utf8');
+                return { content: [{ type: 'text', text: JSON.stringify({ ok: true, mode, template: meta }) }] };
+            }
+            if (mode === 'delete') {
+                if (!template_id)
+                    return { content: [{ type: 'text', text: JSON.stringify({ error: 'template_id required' }) }], isError: true };
+                const metaPath = path.join(TEMPLATE_DIR, `${template_id}.json`);
+                const filePath = path.join(filesDir, `${template_id}.hwpx`);
+                if (fs.existsSync(metaPath))
+                    fs.unlinkSync(metaPath);
+                if (fs.existsSync(filePath))
+                    fs.unlinkSync(filePath);
+                return { content: [{ type: 'text', text: JSON.stringify({ ok: true, mode, template_id, deleted: true }) }] };
+            }
+            return { content: [{ type: 'text', text: JSON.stringify({ error: `unknown mode: ${mode}` }) }], isError: true };
         }
         catch (err) {
             return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
