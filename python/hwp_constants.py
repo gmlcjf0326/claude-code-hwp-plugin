@@ -103,8 +103,13 @@ def hwp_safe_context(hwp):
 
 
 @contextmanager
-def scan_context(hwp, flags=SCAN_FLAG_DEFAULT, scan_range=0):
+def scan_context(hwp, flags=SCAN_FLAG_DEFAULT, scan_range=None):
     """InitScan / GetText / ReleaseScan 자동 보장.
+
+    v0.7.2.10: scan_range default 를 None 으로 변경.
+    이전 default=0 (현재 선택 영역) 이 word_count 등에서 본문을 못 읽는 hidden bug 였음.
+    이제 None 이면 positional 호출 (hwp_analyzer 와 동일 패턴) → pyhwpx default Range
+    사용 (전체 문서). scan_range 명시 시에만 named 호출.
 
     사용 예:
         with scan_context(hwp) as scan:
@@ -119,12 +124,16 @@ def scan_context(hwp, flags=SCAN_FLAG_DEFAULT, scan_range=0):
     initialized = False
     try:
         try:
-            hwp.InitScan(Range=scan_range, SpecialChar=flags)
+            if scan_range is None:
+                # v0.7.2.10: hwp_analyzer 와 동일한 positional 호출 (전체 문서 default)
+                hwp.InitScan(flags)
+            else:
+                hwp.InitScan(Range=scan_range, SpecialChar=flags)
             initialized = True
         except Exception:
-            # 일부 인자 시그니처가 다른 한글 버전 — positional 폴백
+            # 일부 인자 시그니처가 다른 한글 버전 — positional 2-arg 폴백
             try:
-                hwp.InitScan(flags, scan_range)
+                hwp.InitScan(flags, scan_range if scan_range is not None else 0xff)
                 initialized = True
             except Exception as e:
                 print(f"[WARN] InitScan failed: {e}", file=sys.stderr)
