@@ -627,6 +627,138 @@
 
 ---
 
+## Phase 19: v0.7.x Composite Tools 검증 (신규, v0.7.2.9 기준)
+
+> **육안 검증 의무화**: 본 Phase의 모든 항목은 step_log/score 만 보고 통과 처리 금지. 반드시 hwp_get_document_text 또는 hwp_word_count 로 본문 글자수 확인 + 파일 사이즈 22KB 하한선 통과 + (가능하면) 한글 프로그램에서 직접 열어 본문 시각 확인.
+
+### 19-1. v0.7.x 신규 도구 schema 등록 확인 (재시작 직후)
+- [ ] ToolSearch에서 다음 14개 신규 도구 schema 노출 확인:
+  - [ ] hwp_extract_template_structure (v0.7.1)
+  - [ ] hwp_analyze_writing_patterns (v0.7.1)
+  - [ ] hwp_estimate_workload (v0.7.1, ★)
+  - [ ] hwp_extend_section (v0.7.1)
+  - [ ] hwp_apply_style_profile (v0.7.1)
+  - [ ] hwp_validate_consistency (v0.7.1)
+  - [ ] hwp_xml_edit_table_cell (v0.7.0)
+  - [ ] hwp_refresh_fields (v0.7.0)
+  - [ ] hwp_xml_edit_nested_cell (v0.7.2.1)
+  - [ ] hwp_enumerate_nested_tables (v0.7.2.1)
+  - [ ] hwp_reference_policy (v0.7.2.2)
+  - [ ] hwp_session_state (v0.7.2.2, ★)
+  - [ ] hwp_template_library (v0.7.2.2)
+  - [ ] hwp_review_and_edit (v0.7.2.3)
+  - [ ] hwp_compare_with_template (v0.7.2.3)
+  - [ ] hwp_get_progress (v0.7.2.3)
+  - [ ] hwp_autopilot_create (v0.7.2.4, ★)
+
+### 19-2. autopilot 빈 문서 + 본문 작성 + 본문 검증 (v0.7.2.9 hardening 검증)
+- [ ] hwp_autopilot_create (mode=execute, sections 1개 200자, output_path=.hwpx, export_pdf=false)
+- [ ] **step_log 검증 필수 항목**:
+  - [ ] step_log에 `body_verified: true` 가 모든 section에 표시
+  - [ ] step_log에 `body_chars_after` 가 누적 증가
+  - [ ] step_log에 `body_delta` ≥ section.content.length × 0.5
+  - [ ] step_log에 `file_size_check.size >= 22000`
+  - [ ] step_log에 `generate_toc.skipped: true` (outline_level 없을 때)
+- [ ] **파일 검증 (육안 + 자동)**:
+  - [ ] fs.statSync(.hwpx).size ≥ 22KB
+  - [ ] hwp_get_document_text 결과 chars 수 ≥ section content 글자수의 90%
+  - [ ] (육안) 한글 프로그램에서 .hwpx 직접 열기 → 본문 텍스트 보임
+  - [ ] (육안) Preview/PrvImage.png 확인 → 본문 정상 그려짐
+
+### 19-3. autopilot 다중 섹션 + outline_level + TOC 생성
+- [ ] hwp_autopilot_create (sections 5개, 각 outline_level=1, 각 200자)
+- [ ] step_log에 `generate_toc.skipped` 가 **없음** (조건 충족)
+- [ ] step_log에 `generate_toc.ok: true`
+- [ ] body_chars_after 누적 ≥ 5 × 200 × 0.5 = 500
+- [ ] (육안) 한글에서 열기 → 5개 섹션 제목 모두 보임 + 본문 보임 + 목차 자동 생성
+
+### 19-4. compare_with_template (서로 다른 두 파일, F6 진짜 검증)
+- [ ] 사전: 서로 다른 본문 + 서로 다른 char_shape (예: font_size 11pt vs 14pt) 두 .hwpx 준비
+- [ ] hwp_compare_with_template 호출
+- [ ] **PASS 기준**:
+  - [ ] `format_score < 100` 또는 `structure_score < 100`
+  - [ ] `format_deviations.length >= 1`
+  - [ ] deviations 중 1개 이상이 `body_style.char.*` 또는 `body_style.para.*` 패턴 포함
+  - [ ] `expected` 와 `actual` 둘 다 non-null
+- [ ] self vs self → `overall_score: 100` (regression)
+
+### 19-5. autopilot 본문 누락 회귀 방지 (v0.7.2.9 핵심)
+- [ ] 의도적으로 빈 sections=[{title:"x", content:""}] 호출 → throw 또는 file_size_check fail
+- [ ] body_verified: false 로 인한 throw 메시지에 "cursor 위치 확인 필요" 안내 포함
+
+### 19-6. session_state + get_progress + cancel
+- [ ] hwp_session_state save → load → cancel → load(cancelled:true) round-trip
+- [ ] hwp_get_progress 가 cancelled 즉시 노출
+- [ ] safeId 가드 (`../etc` → reject)
+
+### 19-7. autopilot template_id 경로
+- [ ] hwp_template_library register (source_path=.hwpx)
+- [ ] hwp_autopilot_create (template_id=등록ID) → step_log에 `open_template_library.ok`
+- [ ] 결과 .hwpx 가 템플릿 본문 + 새 sections 모두 포함
+
+### 19-8. autopilot approval gate
+- [ ] approve_threshold_seconds=10, sections 20개 × 1000자 → status:"awaiting_approval"
+- [ ] 같은 session_id 로 approve_threshold_seconds=9999 재호출 → 완주
+
+---
+
+## Phase 20: Hotfix Regression (v0.7.2.5~v0.7.2.9)
+
+각 hotfix 가 계속 살아있는지 확인:
+
+### 20-1. v0.7.2.5 wiring fix 회귀
+- [ ] estimate_workload 호출 시 `user_request` 파라미터 받음 (`sections_count` 아님)
+- [ ] estimate 결과의 `duration_seconds_estimate` 가 number > 0
+- [ ] export_format 호출 시 `path` + `format` 파라미터 (file_path 아님)
+- [ ] document_new RPC 존재 (FileNew 호출)
+- [ ] validate_consistency 결과의 `consistency_score` 키
+- [ ] safeId 가드 (한글 ID 등 reject)
+
+### 20-2. v0.7.2.6 export_format 파라미터
+- [ ] hwp_autopilot_create export_pdf:true → step_log의 `export_format.ok:true`
+
+### 20-3. v0.7.2.7 save_as
+- [ ] document_new로 만든 새 문서가 save_as 후 디스크에 .hwpx 파일로 존재 (≥22KB)
+
+### 20-4. v0.7.2.8 analyze_writing_patterns 파일 인식
+- [ ] 두 다른 .hwpx 파일에 analyze_writing_patterns 호출 → 각 파일의 body_style 다르게 반환
+- [ ] compare_with_template 이 format_deviations non-empty 반환 (Phase 19-4와 중복 검증)
+
+### 20-5. v0.7.2.9 본문 검증 강제화 (가장 중요)
+- [ ] autopilot 호출 시 step_log의 모든 section에 `body_verified: true`
+- [ ] file_size_check 가 step_log에 별도 step으로 등장
+- [ ] 빈 sections 시도 시 throw
+
+---
+
+## ⚠️ 검증 방법론 변경 사항 (v0.7.2.9 이후 필수)
+
+### 통과 판정 기준 강화
+**이전 (잘못된 방법)**:
+- step_log 의 ok:true → 통과
+- validate_consistency score:100 → 통과
+- 파일 사이즈 0 이상 → 통과
+
+**이후 (v0.7.2.9 부터 필수)**:
+1. **step_log 모든 step ok:true** (기존 유지)
+2. **본문 cross-check**: autopilot section loop에서 word_count 의 chars_total 증가량이 sections content 길이의 50% 이상
+3. **파일 사이즈 하한선**: .hwpx ≥ 22KB, .hwp ≥ 28KB (빈 구조체 사이즈 차단)
+4. **본문 추출 재검증**: 저장 후 hwp_get_document_text 호출, 본문이 sections content 의 90% 이상 포함
+5. **(권장) 육안 검증**: 한글 프로그램에서 직접 열어 본문 시각 확인 또는 Preview/PrvImage.png 검토
+
+이 5단계 모두 통과해야 "PASS" 로 기록. 어느 하나라도 누락되면 "pseudo-passed" 로 표시.
+
+### 기존 v0.7.2.x 메모리 재분류
+다음 메모리들은 step_log + score 만 보고 통과 처리된 **pseudo-passed** 상태:
+- project_v072_1_done.md (nested table 검증 부재)
+- project_v072_2_done.md (session_state round-trip만 통과, 본문 미검증)
+- project_v072_3_done.md (compare_with_template self만, 다른 파일 미검증)
+- project_v072_5_done.md, _6, _7 (autopilot end-to-end 본문 미검증)
+
+v0.7.2.9 검증 통과 후 별도 `project_v072_9_real_verification.md` 작성.
+
+---
+
 ## 발견된 이슈 기록
 
 | #   | Phase | 이슈 | 심각도 | 상태 | 비고 |
