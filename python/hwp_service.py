@@ -2324,9 +2324,14 @@ def dispatch(hwp, method, params):
     # v0.7.1 신규: 양식의 서식 패턴 학습
     if method == "analyze_writing_patterns":
         validate_params(params, ["file_path"], method)
-        # 기존 extract_full_profile 재활용 (내부 호출)
-        # 현재 이미 열린 문서 상태에서 동작
+        # v0.7.2.8: file_path 를 실제로 열고 커서를 문서 처음으로 이동 (compare_with_template 정확도 핵심)
+        # 기존 버그: hwp.open 호출이 없어 "현재 열린 문서" 만 읽음 → 두 파일 비교가 동일 값 반환
         from hwp_editor import get_para_shape, get_char_shape
+        try:
+            hwp.open(os.path.abspath(params["file_path"]))
+            hwp.MovePos(2)  # movePOS_START: 본문 첫 단락으로
+        except Exception as e:
+            print(f"[WARN] analyze_writing_patterns open failed: {e}", file=sys.stderr)
         try:
             page_d = hwp.get_pagedef_as_dict()
         except Exception:
