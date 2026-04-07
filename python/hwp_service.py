@@ -883,27 +883,73 @@ def dispatch(hwp, method, params):
                 _need_execute = True
             except Exception as e:
                 print(f"[WARN] line_weight: {e}", file=sys.stderr)
-        if _need_execute:
-            act.Execute("ParaShape", pset.HSet)
-        # Execute로 미반영되는 속성 (LeftMargin, Indentation) → set_para 사용
-        _para_kwargs = {}
-        if "left_margin" in s:
-            _para_kwargs["LeftMargin"] = float(s["left_margin"])
-        if "right_margin" in s:
-            _para_kwargs["RightMargin"] = float(s["right_margin"])
+        # v0.7.3 #6: indent 양수도 동작하도록 ParaShape Execute 직접 적용
+        # 이전: hwp.set_para(Indentation=20) 양수 → XML intent=0 으로 손실되는 버그
+        # 정정: pset.HSet.SetItem("Indent"/"LeftMargin", HWPUNIT 값) 으로 ParameterSet 직접
+        indent_val = None
+        left_margin_val = None
+        right_margin_val = None
         if "indent" in s:
             indent_val = float(s["indent"])
+        if "left_margin" in s:
+            left_margin_val = float(s["left_margin"])
+        if "right_margin" in s:
+            right_margin_val = float(s["right_margin"])
+
+        # indent 음수 + left_margin 미지정 = 자동 보정 (v0.6.7 규칙)
+        if indent_val is not None and indent_val < 0 and left_margin_val is None:
+            left_margin_val = abs(indent_val)
+
+        # ParaShape SetItem 으로 직접 적용 (양수/음수 모두 정확)
+        _need_para_execute = False
+        if indent_val is not None:
+            try:
+                # pt → HWPUNIT (1pt ≈ 200 HWPUNIT, set_paragraph_style 다른 곳과 동일 단위)
+                indent_hwpunit = int(indent_val * 200)
+                try:
+                    pset.HSet.SetItem("Indent", indent_hwpunit)
+                except Exception:
+                    pset.Indent = indent_hwpunit
+                _need_para_execute = True
+            except Exception as e:
+                print(f"[WARN] indent={indent_val}: {e}", file=sys.stderr)
+        if left_margin_val is not None:
+            try:
+                lm_hwpunit = int(left_margin_val * 200)
+                try:
+                    pset.HSet.SetItem("LeftMargin", lm_hwpunit)
+                except Exception:
+                    pset.LeftMargin = lm_hwpunit
+                _need_para_execute = True
+            except Exception as e:
+                print(f"[WARN] left_margin={left_margin_val}: {e}", file=sys.stderr)
+        if right_margin_val is not None:
+            try:
+                rm_hwpunit = int(right_margin_val * 200)
+                try:
+                    pset.HSet.SetItem("RightMargin", rm_hwpunit)
+                except Exception:
+                    pset.RightMargin = rm_hwpunit
+                _need_para_execute = True
+            except Exception as e:
+                print(f"[WARN] right_margin={right_margin_val}: {e}", file=sys.stderr)
+
+        if _need_execute or _need_para_execute:
+            act.Execute("ParaShape", pset.HSet)
+
+        # 폴백: hwp.set_para 도 함께 호출 (양쪽 경로로 안전성 확보)
+        _para_kwargs = {}
+        if left_margin_val is not None:
+            _para_kwargs["LeftMargin"] = left_margin_val
+        if right_margin_val is not None:
+            _para_kwargs["RightMargin"] = right_margin_val
+        if indent_val is not None:
             _para_kwargs["Indentation"] = indent_val
-            # v0.6.7: indent<0 (내어쓰기) + left_margin 미지정 시 자동 보정
-            # HWP Shift+Tab과 동일 효과. v0.6.5에서 사라졌던 로직 복원
-            # (메모리 feedback_indent_auto_correction 참조)
-            if indent_val < 0 and "left_margin" not in s:
-                _para_kwargs["LeftMargin"] = abs(indent_val)
         if _para_kwargs:
             try:
                 hwp.set_para(**_para_kwargs)
             except Exception as e:
-                print(f"[WARN] set_para failed: {e}", file=sys.stderr)
+                print(f"[INFO] set_para fallback: {e}", file=sys.stderr)
         return {"status": "ok"}
 
     if method == "get_char_shape":
@@ -1062,6 +1108,47 @@ def dispatch(hwp, method, params):
         finally:
             _exit_table_safely(hwp)
 
+    # v0.7.3 #2: enter_table / exit_table RPC 신규 (이전 editing-tools.ts schema 만 있고 Python 미구현)
+    if method == "enter_table":
+        validate_params(params, ["table_index"], method)
+        table_index = params["table_index"]
+        select_cell = params.get("select_cell", False)
+        # 다른 표 셀에 있으면 먼저 탈출
+        try:
+            if hwp.is_cell():
+                _exit_table_safely(hwp)
+        except Exception:
+            pass
+        try:
+            hwp.get_into_nth_table(table_index)
+            in_cell = False
+            try:
+                in_cell = hwp.is_cell()
+            except Exception:
+                pass
+            if not in_cell:
+                return {"status": "error", "error": f"표 {table_index} 진입 실패"}
+            if select_cell:
+                try:
+                    hwp.HAction.Run("TableCellBlock")
+                except Exception:
+                    pass
+            return {"status": "ok", "table_index": table_index, "in_cell": in_cell}
+        except Exception as e:
+            return {"status": "error", "error": f"enter_table 실패: {e}"}
+
+    if method == "exit_table":
+        was_in_cell = False
+        try:
+            was_in_cell = hwp.is_cell()
+        except Exception:
+            pass
+        try:
+            _exit_table_safely(hwp)
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+        return {"status": "ok", "was_in_cell": was_in_cell}
+
     if method == "table_merge_cells":
         validate_params(params, ["table_index"], method)
         table_index = params["table_index"]
@@ -1072,22 +1159,38 @@ def dispatch(hwp, method, params):
         try:
             hwp.get_into_nth_table(table_index)
             if start_row is not None and end_row is not None and start_col is not None and end_col is not None:
-                # 범위 지정 병합 — 시작 셀로 이동 → 블록 선택 확장 → 병합
-                hwp.HAction.Run("TableColBegin")
-                hwp.HAction.Run("TableRowBegin")
+                # v0.7.3 #1: TableCellBlockExtend 는 toggle 모드 — 한 번만 호출
+                # 이전 코드는 매 반복 Extend+RightCell 짝지어서 블록 깨짐 → 표 전체 병합 결함
+
+                # 1) 첫 셀 (0,0) 으로 명시 이동 (cursor 위치 보장)
+                for _ in range(50):
+                    try:
+                        hwp.HAction.Run("TableLeftCell")
+                    except Exception:
+                        break
+                for _ in range(50):
+                    try:
+                        hwp.HAction.Run("TableUpperCell")
+                    except Exception:
+                        break
+
+                # 2) start 좌표로 이동
                 for _ in range(start_row):
                     hwp.HAction.Run("TableLowerCell")
                 for _ in range(start_col):
                     hwp.HAction.Run("TableRightCell")
-                # 블록 선택 시작
+
+                # 3) 블록 시작 + Extend toggle 한 번만
                 hwp.HAction.Run("TableCellBlock")
-                # TableCellBlockExtend + 방향키로 블록 확장
+                hwp.HAction.Run("TableCellBlockExtend")
+
+                # 4) 방향키만으로 블록 확장 (extend 모드 ON)
                 for _ in range(end_col - start_col):
-                    hwp.HAction.Run("TableCellBlockExtend")
                     hwp.HAction.Run("TableRightCell")
                 for _ in range(end_row - start_row):
-                    hwp.HAction.Run("TableCellBlockExtend")
                     hwp.HAction.Run("TableLowerCell")
+
+                # 5) 병합
                 hwp.HAction.Run("TableMergeCell")
             else:
                 # 기존 방식 (현재 선택된 셀 병합)
@@ -1537,32 +1640,79 @@ def dispatch(hwp, method, params):
             return {"status": "error", "error": f"레이아웃 검증 실패: {e}"}
 
     if method == "set_page_setup":
-        # 페이지 설정 (여백, 용지 크기, 방향)
+        # v0.7.3 #5: pdef.attr 직접 변경이 ParameterSet 에 반영 안 됨 → SetItem 우선 시도
+        # 이전: pdef = pset.PageDef; pdef.TopMargin = X 가 무시되고 한컴 기본값 복귀
+        # multi-fallback (v0.6.9 OutlineLevel 패턴): SetItem → pdef.attr → set_page_def
         try:
             act = hwp.HAction
             pset = hwp.HParameterSet.HSecDef
             act.GetDefault("PageSetup", pset.HSet)
             pdef = pset.PageDef
+
+            def _set_pdef(attr_name, value):
+                """multi-fallback: SetItem → pdef.attr"""
+                # 시도 1: ParameterSet HSet.SetItem (가장 안정)
+                try:
+                    pdef.HSet.SetItem(attr_name, value)
+                    return True
+                except Exception:
+                    pass
+                # 시도 2: pdef 객체 attr 직접
+                try:
+                    setattr(pdef, attr_name, value)
+                    return True
+                except Exception as e:
+                    print(f"[WARN] PageSetup {attr_name}={value}: {e}", file=sys.stderr)
+                    return False
+
+            applied = []
             if "top_margin" in params:
-                pdef.TopMargin = hwp.MiliToHwpUnit(params["top_margin"])
+                if _set_pdef("TopMargin", hwp.MiliToHwpUnit(params["top_margin"])):
+                    applied.append("top_margin")
             if "bottom_margin" in params:
-                pdef.BottomMargin = hwp.MiliToHwpUnit(params["bottom_margin"])
+                if _set_pdef("BottomMargin", hwp.MiliToHwpUnit(params["bottom_margin"])):
+                    applied.append("bottom_margin")
             if "left_margin" in params:
-                pdef.LeftMargin = hwp.MiliToHwpUnit(params["left_margin"])
+                if _set_pdef("LeftMargin", hwp.MiliToHwpUnit(params["left_margin"])):
+                    applied.append("left_margin")
             if "right_margin" in params:
-                pdef.RightMargin = hwp.MiliToHwpUnit(params["right_margin"])
+                if _set_pdef("RightMargin", hwp.MiliToHwpUnit(params["right_margin"])):
+                    applied.append("right_margin")
             if "header_margin" in params:
-                pdef.HeaderLen = hwp.MiliToHwpUnit(params["header_margin"])
+                if _set_pdef("HeaderLen", hwp.MiliToHwpUnit(params["header_margin"])):
+                    applied.append("header_margin")
             if "footer_margin" in params:
-                pdef.FooterLen = hwp.MiliToHwpUnit(params["footer_margin"])
+                if _set_pdef("FooterLen", hwp.MiliToHwpUnit(params["footer_margin"])):
+                    applied.append("footer_margin")
             if "orientation" in params:
-                pdef.Landscape = 1 if params["orientation"] == "landscape" else 0
+                if _set_pdef("Landscape", 1 if params["orientation"] == "landscape" else 0):
+                    applied.append("orientation")
             if "paper_width" in params:
-                pdef.PaperWidth = hwp.MiliToHwpUnit(params["paper_width"])
+                if _set_pdef("PaperWidth", hwp.MiliToHwpUnit(params["paper_width"])):
+                    applied.append("paper_width")
             if "paper_height" in params:
-                pdef.PaperHeight = hwp.MiliToHwpUnit(params["paper_height"])
+                if _set_pdef("PaperHeight", hwp.MiliToHwpUnit(params["paper_height"])):
+                    applied.append("paper_height")
+
             act.Execute("PageSetup", pset.HSet)
-            return {"status": "ok"}
+
+            # 시도 3 fallback: pyhwpx 의 set_page_def 또는 page_setup 헬퍼 호출
+            try:
+                if hasattr(hwp, "set_page_def") and applied:
+                    margin_kwargs = {}
+                    if "top_margin" in params: margin_kwargs["top"] = params["top_margin"]
+                    if "bottom_margin" in params: margin_kwargs["bottom"] = params["bottom_margin"]
+                    if "left_margin" in params: margin_kwargs["left"] = params["left_margin"]
+                    if "right_margin" in params: margin_kwargs["right"] = params["right_margin"]
+                    if margin_kwargs:
+                        try:
+                            hwp.set_page_def(**margin_kwargs)
+                        except Exception as e:
+                            print(f"[INFO] set_page_def fallback failed: {e}", file=sys.stderr)
+            except Exception:
+                pass
+
+            return {"status": "ok", "applied": applied}
         except Exception as e:
             return {"status": "error", "error": f"페이지 설정 실패: {e}"}
 
@@ -1598,44 +1748,80 @@ def dispatch(hwp, method, params):
             _exit_table_safely(hwp)
 
     if method == "insert_textbox":
-        # 글상자 생성 (위치/크기 지정)
-        x = params.get("x", 0)  # mm
-        y = params.get("y", 0)  # mm
-        width = params.get("width", 60)  # mm
-        height = params.get("height", 30)  # mm
+        # v0.7.3 #3: HShapeObject.ShapeType 속성 제거됨 → multi-fallback
+        # 시도 1: pyhwpx 헬퍼 hwp.create_textbox / hwp.insert_textbox
+        # 시도 2: HShapeObject (ShapeType 없이)
+        # 시도 3: HAction.Run("DrawObjCreator") + insert_text
+        x = params.get("x", 0)
+        y = params.get("y", 0)
+        width = params.get("width", 60)
+        height = params.get("height", 30)
         text = params.get("text", "")
         border = params.get("border", True)
+
+        # 시도 1: pyhwpx 헬퍼
+        for helper_name in ("create_textbox", "insert_textbox", "create_text_box"):
+            if hasattr(hwp, helper_name):
+                try:
+                    fn = getattr(hwp, helper_name)
+                    fn(x=int(x * 283.465), y=int(y * 283.465),
+                       width=int(width * 283.465), height=int(height * 283.465))
+                    if text:
+                        hwp.insert_text(text)
+                    try:
+                        hwp.MovePos(3)  # textbox 탈출
+                    except Exception:
+                        pass
+                    return {"status": "ok", "method": f"pyhwpx_{helper_name}",
+                            "x": x, "y": y, "width": width, "height": height}
+                except Exception as e:
+                    print(f"[INFO] {helper_name} failed: {e}", file=sys.stderr)
+                    continue
+
+        # 시도 2: HShapeObject without ShapeType
         try:
-            # 방법 1: HParameterSet.HShapeObject로 위치/크기 지정
             act = hwp.HAction
             pset = hwp.HParameterSet.HShapeObject
             act.GetDefault("InsertDrawObj", pset.HSet)
-            pset.ShapeType = 1  # 1=사각형(글상자)
-            pset.HorzRelTo = 0  # 0=페이지 기준
-            pset.VertRelTo = 0
-            pset.HorzOffset = int(x * 283.465)  # mm → HWPUNIT (1mm=283.465)
-            pset.VertOffset = int(y * 283.465)
-            pset.Width = int(width * 283.465)
-            pset.Height = int(height * 283.465)
+            # ShapeType 제거 (속성 없음). 다른 속성 시도
+            try:
+                pset.HSet.SetItem("ShapeType", 1)  # ParameterSet 직접
+            except Exception:
+                pass
+            try:
+                pset.HorzRelTo = 0
+                pset.VertRelTo = 0
+                pset.HorzOffset = int(x * 283.465)
+                pset.VertOffset = int(y * 283.465)
+                pset.Width = int(width * 283.465)
+                pset.Height = int(height * 283.465)
+            except Exception as e:
+                print(f"[INFO] HShapeObject attr: {e}", file=sys.stderr)
             act.Execute("InsertDrawObj", pset.HSet)
             if text:
                 hwp.insert_text(text)
-            hwp.HAction.Run("Cancel")
-            return {"status": "ok", "x": x, "y": y, "width": width, "height": height}
-        except Exception as e:
-            # 방법 2: CreateAction 방식
             try:
-                act_tb = hwp.CreateAction("DrawTextBox")
-                ps = act_tb.CreateSet()
-                act_tb.GetDefault(ps)
-                act_tb.Execute(ps)
-                if text:
-                    hwp.insert_text(text)
-                hwp.HAction.Run("Cancel")
-                return {"status": "ok", "method": "fallback", "text": text,
-                        "warning": f"위치/크기 파라미터가 적용되지 않았습니다: {e}"}
-            except Exception as e2:
-                raise RuntimeError(f"글상자 생성 실패: {e} / {e2}")
+                hwp.MovePos(3)
+            except Exception:
+                pass
+            return {"status": "ok", "method": "HShapeObject_no_ShapeType",
+                    "x": x, "y": y, "width": width, "height": height}
+        except Exception as e:
+            print(f"[INFO] HShapeObject path failed: {e}", file=sys.stderr)
+
+        # 시도 3: 단순 HAction (위치 지정 없이)
+        try:
+            hwp.HAction.Run("DrawObjTextBoxNew")
+            if text:
+                hwp.insert_text(text)
+            try:
+                hwp.MovePos(3)
+            except Exception:
+                pass
+            return {"status": "ok", "method": "DrawObjTextBoxNew_no_position",
+                    "warning": "위치/크기 미지정"}
+        except Exception as e:
+            raise RuntimeError(f"글상자 생성 모든 fallback 실패: {e}")
 
     if method == "draw_line":
         # 선 그리기 (두께/색상/스타일)
@@ -2256,8 +2442,15 @@ def dispatch(hwp, method, params):
     if method == "insert_picture":
         validate_params(params, ["file_path"], method)
         from hwp_editor import insert_picture
-        return insert_picture(hwp, params["file_path"],
-                              params.get("width", 0), params.get("height", 0))
+        # v0.7.3 #7+#8: width/height 소문자 + treat_as_char/embedded 옵션 전달
+        return insert_picture(
+            hwp,
+            params["file_path"],
+            params.get("width", 0),
+            params.get("height", 0),
+            treat_as_char=params.get("treat_as_char"),
+            embedded=params.get("embedded"),
+        )
 
     if method == "privacy_scan":
         validate_params(params, ["text"], method)
@@ -2599,30 +2792,120 @@ def dispatch(hwp, method, params):
 
     # v0.7.1 신규: 패턴 프로파일 일괄 적용 (MVP)
     if method == "apply_style_profile":
+        # v0.7.3 #4: 이전엔 AlignType/LineSpacing PascalCase 만 처리 + cursor 위치 미보장
+        # 정정: snake_case (align/line_spacing/left_margin/space_before/font_size/color)
+        # 처리 + MoveDocBegin 명시 + char/para 둘 다 적용
         validate_params(params, ["profile"], method)
         profile = params["profile"]
         target = params.get("target", "all")
 
-        # MVP: profile.body_style을 현재 단락에 적용
         body = profile.get("body_style", {}) if isinstance(profile, dict) else {}
-        applied = 0
-        try:
-            if body.get("para"):
-                # set_paragraph_style 분기로 위임 (실제는 내부 함수 호출 어려우므로 직접 처리)
+
+        # cursor 본문 첫 단락 명시 이동
+        if target == "all":
+            try:
+                hwp.HAction.Run("MoveDocBegin")
+            except Exception:
+                pass
+
+        applied_para = 0
+        applied_char = 0
+
+        # === ParaShape 적용 ===
+        para = body.get("para", {}) if isinstance(body, dict) else {}
+        if para:
+            try:
                 act = hwp.HAction
                 pset = hwp.HParameterSet.HParaShape
                 act.GetDefault("ParaShape", pset.HSet)
-                # 안전한 옵션만 적용
-                p = body["para"]
-                if "AlignType" in p:
-                    pset.AlignType = int(p["AlignType"])
-                if "LineSpacing" in p:
-                    pset.LineSpacing = int(p["LineSpacing"])
+                align_map = {"left": 0, "center": 1, "right": 2, "justify": 3}
+
+                # snake_case 입력 처리 (v0.7.3 신규)
+                if "align" in para:
+                    try: pset.AlignType = align_map.get(para["align"], 0)
+                    except Exception: pass
+                if "line_spacing" in para:
+                    try:
+                        pset.LineSpacingType = 0
+                        pset.LineSpacing = int(para["line_spacing"])
+                    except Exception: pass
+                if "space_before" in para:
+                    try:
+                        v = para["space_before"]
+                        pset.PrevSpacing = int(v * 100) if isinstance(v, float) else int(v)
+                    except Exception: pass
+                if "space_after" in para:
+                    try:
+                        v = para["space_after"]
+                        pset.NextSpacing = int(v * 100) if isinstance(v, float) else int(v)
+                    except Exception: pass
+                if "left_margin" in para:
+                    lm = int(para["left_margin"])
+                    try: pset.HSet.SetItem("LeftMargin", lm)
+                    except Exception:
+                        try: pset.LeftMargin = lm
+                        except Exception: pass
+                if "right_margin" in para:
+                    rm = int(para["right_margin"])
+                    try: pset.HSet.SetItem("RightMargin", rm)
+                    except Exception:
+                        try: pset.RightMargin = rm
+                        except Exception: pass
+                if "indent" in para:
+                    ind = int(para["indent"])
+                    try: pset.HSet.SetItem("Indent", ind)
+                    except Exception:
+                        try: pset.Indent = ind
+                        except Exception: pass
+
+                # PascalCase backward compat
+                if "AlignType" in para:
+                    try: pset.AlignType = int(para["AlignType"])
+                    except Exception: pass
+                if "LineSpacing" in para:
+                    try: pset.LineSpacing = int(para["LineSpacing"])
+                    except Exception: pass
+
                 act.Execute("ParaShape", pset.HSet)
-                applied += 1
-            return {"status": "ok", "applied_paragraphs": applied, "target": target}
-        except Exception as e:
-            return {"status": "error", "error": f"profile 적용 실패: {e}"}
+                applied_para += 1
+            except Exception as e:
+                print(f"[WARN] apply_style_profile para: {e}", file=sys.stderr)
+
+        # === CharShape 적용 ===
+        char = body.get("char", {}) if isinstance(body, dict) else {}
+        if char:
+            try:
+                act = hwp.HAction
+                cset = hwp.HParameterSet.HCharShape
+                act.GetDefault("CharShape", cset.HSet)
+
+                if "font_size" in char:
+                    try: cset.Height = int(float(char["font_size"]) * 100)
+                    except Exception: pass
+                if "bold" in char:
+                    try: cset.Bold = 1 if char["bold"] else 0
+                    except Exception: pass
+                if "italic" in char:
+                    try: cset.Italic = 1 if char["italic"] else 0
+                    except Exception: pass
+                if "color" in char and isinstance(char.get("color"), str) and char["color"].startswith("#"):
+                    try:
+                        c = char["color"]
+                        r, g, b = int(c[1:3], 16), int(c[3:5], 16), int(c[5:7], 16)
+                        cset.TextColor = hwp.RGBColor(r, g, b)
+                    except Exception: pass
+
+                act.Execute("CharShape", cset.HSet)
+                applied_char += 1
+            except Exception as e:
+                print(f"[WARN] apply_style_profile char: {e}", file=sys.stderr)
+
+        return {
+            "status": "ok",
+            "applied_paragraphs": applied_para,
+            "applied_chars": applied_char,
+            "target": target,
+        }
 
     # v0.7.1 신규: 작성된 결과의 양식 일관성 검증 (MVP)
     if method == "validate_consistency":

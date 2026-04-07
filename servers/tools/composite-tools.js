@@ -1294,10 +1294,34 @@ export function registerCompositeTools(server, bridge) {
             }
             let score_after = score_before;
             if (auto_fix && issues.length > 0) {
-                // 안전한 자동 수정만: privacy는 수동 필수, consistency 일부만 시도
-                // 실제 fix 로직은 v0.7.2.4에서 확장. 현재는 placeholder.
-                score_after = Math.min(100, score_before + 5);
-                auto_fixed.push({ note: 'auto_fix placeholder — v0.7.2.4에서 확장 예정' });
+                // v0.7.3 #9: consistency deviations 중 안전한 항목만 자동 수정.
+                // (1) consistency 류 deviation 에 대해 apply_style_profile 호출 시도
+                // (2) privacy 는 수동 필수 — 자동 fix 안 함 (이미 requires_manual 에 분류)
+                const consistencyIssues = issues.filter(i => i.check === 'consistency');
+                if (consistencyIssues.length > 0 && expected_profile) {
+                    try {
+                        const fixR = await bridge.send('apply_style_profile', { profile: expected_profile, target: 'all' }, ANALYSIS_TIMEOUT);
+                        if (fixR.success) {
+                            auto_fixed.push({ check: 'consistency', method: 'apply_style_profile', applied: fixR.data });
+                            // 재검증
+                            const reR = await bridge.send('validate_consistency', { file_path, expected_profile }, ANALYSIS_TIMEOUT);
+                            if (reR.success && reR.data) {
+                                const newScore = reR.data.consistency_score;
+                                if (typeof newScore === 'number')
+                                    score_after = newScore;
+                            }
+                        }
+                        else {
+                            auto_fixed.push({ check: 'consistency', method: 'apply_style_profile', error: fixR.error });
+                        }
+                    }
+                    catch (e) {
+                        auto_fixed.push({ check: 'consistency', error: e.message });
+                    }
+                }
+                else if (consistencyIssues.length > 0) {
+                    auto_fixed.push({ note: 'expected_profile 없음 → consistency auto_fix skip' });
+                }
             }
             return { content: [{ type: 'text', text: JSON.stringify({
                             ok: true, file_path, checks: Array.from(checkSet),
@@ -1363,8 +1387,29 @@ export function registerCompositeTools(server, bridge) {
                 }
             }
             const format_score = format_total === 0 ? 100 : Math.round((format_match / format_total) * 100);
-            // content: 단순 placeholder (자체비교는 100)
-            const content_score = result_path === template_path ? 100 : 80;
+            // v0.7.3 #10: content_score 실제 계산 (이전: self=100/else=80 placeholder)
+            // get_document_text 양쪽 호출 → 단어 set Jaccard 유사도 × 100
+            let content_score = result_path === template_path ? 100 : 0;
+            if (result_path !== template_path) {
+                try {
+                    const tText = await bridge.send('get_document_text', { file_path: template_path, max_chars: 50000 }, ANALYSIS_TIMEOUT);
+                    const rText = await bridge.send('get_document_text', { file_path: result_path, max_chars: 50000 }, ANALYSIS_TIMEOUT);
+                    const tStr = String(tText.data?.text || '').trim();
+                    const rStr = String(rText.data?.text || '').trim();
+                    if (tStr && rStr) {
+                        const tokenize = (s) => new Set(s.split(/\s+|[.,!?;:()\[\]{}<>'"`~\-_=+|\\\/]+/).filter(w => w.length >= 2));
+                        const tSet = tokenize(tStr);
+                        const rSet = tokenize(rStr);
+                        const union = new Set([...tSet, ...rSet]);
+                        const inter = [...tSet].filter(w => rSet.has(w));
+                        const jaccard = union.size === 0 ? 0 : inter.length / union.size;
+                        content_score = Math.round(jaccard * 100);
+                    }
+                }
+                catch {
+                    content_score = 0;
+                }
+            }
             const overall_score = Math.round(format_score * w.format + structure_score * w.structure + content_score * w.content);
             return { content: [{ type: 'text', text: JSON.stringify({
                             ok: true,

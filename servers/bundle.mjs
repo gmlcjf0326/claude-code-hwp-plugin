@@ -37596,11 +37596,13 @@ function registerEditingTools(server2, bridge2, toolset2 = "standard") {
         return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }], isError: true };
       }
     });
-    server2.tool("hwp_insert_picture", "\uD604\uC7AC \uCEE4\uC11C \uC704\uCE58\uC5D0 \uC774\uBBF8\uC9C0\uB97C \uC0BD\uC785\uD569\uB2C8\uB2E4. \uD45C \uC140 \uC548\uC5D0\uC11C\uB3C4 \uC0AC\uC6A9 \uAC00\uB2A5\uD569\uB2C8\uB2E4. \uC0AC\uC5C5\uACC4\uD68D\uC11C\uC758 \uC81C\uD488\uC0AC\uC9C4 \uB4F1\uC744 \uC0BD\uC785\uD560 \uB54C \uC0AC\uC6A9\uD558\uC138\uC694.", {
+    server2.tool("hwp_insert_picture", "\uD604\uC7AC \uCEE4\uC11C \uC704\uCE58\uC5D0 \uC774\uBBF8\uC9C0\uB97C \uC0BD\uC785\uD569\uB2C8\uB2E4. \uD45C \uC140 \uC548\uC5D0\uC11C\uB3C4 \uC0AC\uC6A9 \uAC00\uB2A5. (v0.7.3) treat_as_char (\uAE00\uC790\uCC98\uB7FC \uCDE8\uAE09) + embedded (\uBCF8\uBB38\uC5D0 \uBC15\uD798) \uC635\uC158 \uC9C0\uC6D0.", {
       file_path: external_exports.string().describe("\uC774\uBBF8\uC9C0 \uD30C\uC77C \uACBD\uB85C (jpg, png, bmp \uB4F1)"),
-      width: external_exports.number().min(0).optional().describe("\uAC00\uB85C \uD06C\uAE30 (mm, 0\uC774\uBA74 \uC6D0\uBCF8 \uD06C\uAE30)"),
-      height: external_exports.number().min(0).optional().describe("\uC138\uB85C \uD06C\uAE30 (mm, 0\uC774\uBA74 \uC6D0\uBCF8 \uD06C\uAE30)")
-    }, async ({ file_path, width, height }) => {
+      width: external_exports.number().min(0).optional().describe("\uAC00\uB85C \uD06C\uAE30 (mm, 0\uC774\uBA74 \uC6D0\uBCF8)"),
+      height: external_exports.number().min(0).optional().describe("\uC138\uB85C \uD06C\uAE30 (mm, 0\uC774\uBA74 \uC6D0\uBCF8)"),
+      treat_as_char: external_exports.boolean().optional().describe("v0.7.3 \uC2E0\uADDC: \uAE00\uC790\uCC98\uB7FC \uCDE8\uAE09 (\uAE30\uBCF8 true). false \uBA74 \uBCF8\uBB38\uACFC \uBD84\uB9AC\uB41C \uADF8\uB9BC \uAC1D\uCCB4\uB85C \uBC30\uCE58."),
+      embedded: external_exports.boolean().optional().describe("v0.7.3 \uC2E0\uADDC: \uBCF8\uBB38\uC5D0 \uBC15\uD798 \uC5EC\uBD80. treat_as_char \uC640 \uBCF4\uC644 \uAD00\uACC4.")
+    }, async ({ file_path, width, height, treat_as_char, embedded }) => {
       if (!bridge2.getCurrentDocument()) {
         return { content: [{ type: "text", text: JSON.stringify({
           error: "\uC5F4\uB9B0 \uBB38\uC11C\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4. hwp_open_document\uB85C \uBB38\uC11C\uB97C \uC5F4\uC5B4\uC8FC\uC138\uC694."
@@ -37613,6 +37615,10 @@ function registerEditingTools(server2, bridge2, toolset2 = "standard") {
           params.width = width;
         if (height)
           params.height = height;
+        if (treat_as_char !== void 0)
+          params.treat_as_char = treat_as_char;
+        if (embedded !== void 0)
+          params.embedded = embedded;
         const response = await bridge2.send("insert_picture", params);
         if (!response.success) {
           return { content: [{ type: "text", text: JSON.stringify({ error: response.error }) }], isError: true };
@@ -39502,8 +39508,27 @@ function registerCompositeTools(server2, bridge2) {
       }
       let score_after = score_before;
       if (auto_fix && issues.length > 0) {
-        score_after = Math.min(100, score_before + 5);
-        auto_fixed.push({ note: "auto_fix placeholder \u2014 v0.7.2.4\uC5D0\uC11C \uD655\uC7A5 \uC608\uC815" });
+        const consistencyIssues = issues.filter((i) => i.check === "consistency");
+        if (consistencyIssues.length > 0 && expected_profile) {
+          try {
+            const fixR = await bridge2.send("apply_style_profile", { profile: expected_profile, target: "all" }, ANALYSIS_TIMEOUT2);
+            if (fixR.success) {
+              auto_fixed.push({ check: "consistency", method: "apply_style_profile", applied: fixR.data });
+              const reR = await bridge2.send("validate_consistency", { file_path, expected_profile }, ANALYSIS_TIMEOUT2);
+              if (reR.success && reR.data) {
+                const newScore = reR.data.consistency_score;
+                if (typeof newScore === "number")
+                  score_after = newScore;
+              }
+            } else {
+              auto_fixed.push({ check: "consistency", method: "apply_style_profile", error: fixR.error });
+            }
+          } catch (e) {
+            auto_fixed.push({ check: "consistency", error: e.message });
+          }
+        } else if (consistencyIssues.length > 0) {
+          auto_fixed.push({ note: "expected_profile \uC5C6\uC74C \u2192 consistency auto_fix skip" });
+        }
       }
       return { content: [{ type: "text", text: JSON.stringify({
         ok: true,
@@ -39569,7 +39594,26 @@ function registerCompositeTools(server2, bridge2) {
         }
       }
       const format_score = format_total === 0 ? 100 : Math.round(format_match / format_total * 100);
-      const content_score = result_path === template_path ? 100 : 80;
+      let content_score = result_path === template_path ? 100 : 0;
+      if (result_path !== template_path) {
+        try {
+          const tText = await bridge2.send("get_document_text", { file_path: template_path, max_chars: 5e4 }, ANALYSIS_TIMEOUT2);
+          const rText = await bridge2.send("get_document_text", { file_path: result_path, max_chars: 5e4 }, ANALYSIS_TIMEOUT2);
+          const tStr = String(tText.data?.text || "").trim();
+          const rStr = String(rText.data?.text || "").trim();
+          if (tStr && rStr) {
+            const tokenize = (s) => new Set(s.split(/\s+|[.,!?;:()\[\]{}<>'"`~\-_=+|\\\/]+/).filter((w2) => w2.length >= 2));
+            const tSet = tokenize(tStr);
+            const rSet = tokenize(rStr);
+            const union2 = /* @__PURE__ */ new Set([...tSet, ...rSet]);
+            const inter = [...tSet].filter((w2) => rSet.has(w2));
+            const jaccard = union2.size === 0 ? 0 : inter.length / union2.size;
+            content_score = Math.round(jaccard * 100);
+          }
+        } catch {
+          content_score = 0;
+        }
+      }
       const overall_score = Math.round(format_score * w.format + structure_score * w.structure + content_score * w.content);
       return { content: [{ type: "text", text: JSON.stringify({
         ok: true,

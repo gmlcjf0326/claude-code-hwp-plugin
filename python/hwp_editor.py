@@ -926,21 +926,38 @@ def auto_map_reference_to_table(hwp, table_idx, ref_headers, ref_row):
     return {"mappings": mappings, "unmapped": unmapped, "total_matched": len(mappings)}
 
 
-def insert_picture(hwp, file_path, width=0, height=0):
+def insert_picture(hwp, file_path, width=0, height=0, treat_as_char=None, embedded=None):
     """현재 커서 위치에 이미지 삽입.
 
     file_path: 이미지 파일 경로
     width/height: mm 단위 (0이면 원본 크기)
+    treat_as_char: 글자처럼 취급 (None=pyhwpx 기본, True/False)
+    embedded: 본문 안에 박힘 (None=기본)
     """
     file_path = os.path.abspath(file_path)
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"이미지 파일을 찾을 수 없습니다: {file_path}")
 
-    # pyhwpx insert_picture: Width/Height는 HWPUNIT (1mm = 283.46 HWP 단위)
-    hwp.insert_picture(file_path,
-                        Width=int(width * 283.46) if width else 0,
-                        Height=int(height * 283.46) if height else 0)
-    return {"status": "ok", "file_path": file_path, "width_mm": width, "height_mm": height}
+    # v0.7.3 #7: pyhwpx 는 소문자 width/height 키 요구 (이전 Width/Height 대문자 → 에러)
+    # v0.7.3 #8: treat_as_char/embedded 옵션 지원 (글자처럼 취급 on/off)
+    kwargs = {}
+    if width:
+        kwargs["width"] = int(width * 283.46)  # mm → HWPUNIT
+    if height:
+        kwargs["height"] = int(height * 283.46)
+    if treat_as_char is not None:
+        kwargs["treat_as_char"] = treat_as_char
+    if embedded is not None:
+        kwargs["embedded"] = embedded
+    hwp.insert_picture(file_path, **kwargs)
+    return {
+        "status": "ok",
+        "file_path": file_path,
+        "width_mm": width,
+        "height_mm": height,
+        "treat_as_char": treat_as_char,
+        "embedded": embedded,
+    }
 
 
 def fill_table_cells_by_label(hwp, table_idx, cells):
