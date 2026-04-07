@@ -799,6 +799,63 @@ def dispatch(hwp, method, params):
                 _need_execute = True
             except Exception as e:
                 print(f"[WARN] BorderShadowing: {e}", file=sys.stderr)
+        # v0.7.2.1 신규: ParaShape 정밀 옵션 (multi-fallback)
+        # first_line_indent_hwpunit (1mm = 283 hwpunit, indent보다 정밀)
+        if "first_line_indent_hwpunit" in s:
+            try:
+                fli_hwpu = int(s["first_line_indent_hwpunit"])
+                # 시도 1: SetItem (v0.6.9.3 패턴)
+                try:
+                    pset.HSet.SetItem("Indent", fli_hwpu)
+                except Exception:
+                    pset.Indent = fli_hwpu  # 시도 2: 직접 attribute
+                _need_execute = True
+            except Exception as e:
+                print(f"[WARN] first_line_indent_hwpunit: {e}", file=sys.stderr)
+        # hanging_indent: 음수 indent 명시적 표현 (내어쓰기 체크박스 효과)
+        if s.get("hanging_indent"):
+            try:
+                # 현재 Indent를 음수로 (이미 |Indent|만큼 내어쓰기)
+                cur_indent = getattr(pset, "Indent", 0)
+                if cur_indent > 0:
+                    pset.Indent = -abs(int(cur_indent))
+                _need_execute = True
+            except Exception as e:
+                print(f"[WARN] hanging_indent: {e}", file=sys.stderr)
+        # paragraph_heading_type: none/outline/number (HeadingType 매핑)
+        if "paragraph_heading_type" in s:
+            try:
+                pht_map = {"none": 0, "outline": 1, "number": 2}
+                pht_val = pht_map.get(s["paragraph_heading_type"], 0)
+                try:
+                    pset.HSet.SetItem("HeadingType", pht_val)
+                except Exception:
+                    pset.HeadingType = pht_val
+                _need_execute = True
+            except Exception as e:
+                print(f"[WARN] paragraph_heading_type: {e}", file=sys.stderr)
+        # word_spacing: 단어 간격 (-50 ~ +50)
+        if "word_spacing" in s:
+            try:
+                ws = int(s["word_spacing"])
+                try:
+                    pset.HSet.SetItem("WordSpacing", ws)
+                except Exception:
+                    pset.WordSpacing = ws
+                _need_execute = True
+            except Exception as e:
+                print(f"[WARN] word_spacing: {e}", file=sys.stderr)
+        # line_weight: 줄 두께 (50% ~ 500%)
+        if "line_weight" in s:
+            try:
+                lw = int(s["line_weight"])
+                try:
+                    pset.HSet.SetItem("LineWeight", lw)
+                except Exception:
+                    pset.LineWeight = lw
+                _need_execute = True
+            except Exception as e:
+                print(f"[WARN] line_weight: {e}", file=sys.stderr)
         if _need_execute:
             act.Execute("ParaShape", pset.HSet)
         # Execute로 미반영되는 속성 (LeftMargin, Indentation) → set_para 사용

@@ -20839,6 +20839,7 @@ __export(hwpx_engine_exports, {
   TEMPLATES: () => TEMPLATES,
   compareCOMAndXML: () => compareCOMAndXML,
   createBlankHwpx: () => createBlankHwpx,
+  enumerateNestedTables: () => enumerateNestedTables,
   extractTextFromSection: () => extractTextFromSection,
   findAndAppendInSection: () => findAndAppendInSection,
   generateFromTemplate: () => generateFromTemplate,
@@ -21214,25 +21215,191 @@ function replaceInNestedTable(doc, path7, find, replace) {
     throw new Error("NestedPathError: empty path");
   }
   if (path7.length === 1) {
-    const step2 = path7[0];
+    const step = path7[0];
     return replaceInTableCell(doc, {
-      tableIndex: step2.tableIndex,
-      rowIndex: step2.row,
-      colIndex: step2.col,
+      tableIndex: step.tableIndex,
+      rowIndex: step.row,
+      colIndex: step.col,
       find,
       replace
     });
   }
-  const step = path7[0];
-  const result = replaceInTableCell(doc, {
-    tableIndex: step.tableIndex,
-    rowIndex: step.row,
-    colIndex: step.col,
-    find,
-    replace
-  });
-  result.warnings.push(`nested-table-experimental: depth=${path7.length}, only first step processed (full support in v0.7.2.1)`);
+  const firstStep = path7[0];
+  const tbls = doc.getElementsByTagNameNS(NS_HP, "tbl");
+  if (firstStep.tableIndex < 0 || firstStep.tableIndex >= tbls.length) {
+    throw new Error(`NestedPathError step 0: TableNotFound idx=${firstStep.tableIndex}, total=${tbls.length}`);
+  }
+  let currentTbl = tbls[firstStep.tableIndex];
+  let currentTc = _getTcAt(currentTbl, firstStep.row, firstStep.col, 0);
+  for (let stepIdx = 1; stepIdx < path7.length; stepIdx++) {
+    if (!currentTc) {
+      throw new Error(`NestedPathError step ${stepIdx}: tc not found at previous step`);
+    }
+    const subListEl = _getDirectSubList(currentTc);
+    if (!subListEl) {
+      throw new Error(`NestedPathError step ${stepIdx}: tc has no subList (no nested content)`);
+    }
+    const innerTbls = subListEl.getElementsByTagNameNS(NS_HP, "tbl");
+    const directInnerTbls = [];
+    for (let i = 0; i < innerTbls.length; i++) {
+      directInnerTbls.push(innerTbls[i]);
+    }
+    const step = path7[stepIdx];
+    if (step.tableIndex < 0 || step.tableIndex >= directInnerTbls.length) {
+      throw new Error(`NestedPathError step ${stepIdx}: nested TableNotFound idx=${step.tableIndex}, total=${directInnerTbls.length}`);
+    }
+    currentTbl = directInnerTbls[step.tableIndex];
+    currentTc = _getTcAt(currentTbl, step.row, step.col, stepIdx);
+  }
+  if (!currentTc) {
+    throw new Error("NestedPathError: final tc not found");
+  }
+  const result = _replaceTextInTc(currentTc, find, replace);
   return result;
+}
+function _getTcAt(tbl, row, col, stepIdx) {
+  const allTrs = tbl.getElementsByTagNameNS(NS_HP, "tr");
+  const trs = [];
+  for (let i = 0; i < allTrs.length; i++) {
+    const tr2 = allTrs[i];
+    if (tr2.parentNode === tbl)
+      trs.push(tr2);
+  }
+  if (row < 0 || row >= trs.length) {
+    throw new Error(`NestedPathError step ${stepIdx}: RowOutOfRange row=${row}, total=${trs.length}`);
+  }
+  const tr = trs[row];
+  const allTcs = tr.getElementsByTagNameNS(NS_HP, "tc");
+  const tcs = [];
+  for (let i = 0; i < allTcs.length; i++) {
+    const tc = allTcs[i];
+    if (tc.parentNode === tr)
+      tcs.push(tc);
+  }
+  if (col < 0 || col >= tcs.length) {
+    throw new Error(`NestedPathError step ${stepIdx}: ColOutOfRange col=${col}, total=${tcs.length}`);
+  }
+  return tcs[col];
+}
+function _getDirectSubList(tc) {
+  const allSubLists = tc.getElementsByTagNameNS(NS_HP, "subList");
+  for (let i = 0; i < allSubLists.length; i++) {
+    const sl = allSubLists[i];
+    if (sl.parentNode === tc)
+      return sl;
+  }
+  return null;
+}
+function _replaceTextInTc(tc, find, replace) {
+  const warnings = [];
+  const subList = _getDirectSubList(tc);
+  if (!subList) {
+    return { matched: 0, cellText: "", charPrIDRef: null, warnings: ["NoSubList"] };
+  }
+  const tNodes = subList.getElementsByTagNameNS(NS_HP, "t");
+  const tElements = [];
+  let cellText = "";
+  let charPrIDRef = null;
+  for (let i = 0; i < tNodes.length; i++) {
+    const tEl = tNodes[i];
+    tElements.push(tEl);
+    cellText += tEl.textContent || "";
+    if (charPrIDRef === null) {
+      const runEl = tEl.parentNode;
+      if (runEl) {
+        const ref = runEl.getAttribute("charPrIDRef");
+        if (ref)
+          charPrIDRef = ref;
+      }
+    }
+  }
+  if (!find || cellText.indexOf(find) === -1) {
+    return { matched: 0, cellText, charPrIDRef, warnings };
+  }
+  const newCellText = cellText.split(find).join(replace);
+  const matched = cellText.split(find).length - 1;
+  if (tElements.length > 0) {
+    tElements[0].textContent = newCellText;
+    for (let i = 1; i < tElements.length; i++) {
+      tElements[i].textContent = "";
+    }
+  }
+  removeLinesegarrayInElement(tc);
+  return { matched, cellText: newCellText, charPrIDRef, warnings };
+}
+function enumerateNestedTables(doc) {
+  const result = [];
+  const allTbls = doc.getElementsByTagNameNS(NS_HP, "tbl");
+  for (let i = 0; i < allTbls.length; i++) {
+    const tbl = allTbls[i];
+    let isNested = false;
+    let cur = tbl.parentNode;
+    while (cur) {
+      if (cur.nodeType === 1 && cur.localName === "tbl") {
+        isNested = true;
+        break;
+      }
+      cur = cur.parentNode;
+    }
+    if (isNested)
+      continue;
+    result.push(_buildTreeNode(tbl, [{ tableIndex: result.length, row: 0, col: 0 }], 0));
+  }
+  return result;
+}
+function _buildTreeNode(tbl, basePath, localIdx) {
+  const allTrs = tbl.getElementsByTagNameNS(NS_HP, "tr");
+  const trs = [];
+  for (let i = 0; i < allTrs.length; i++) {
+    if (allTrs[i].parentNode === tbl)
+      trs.push(allTrs[i]);
+  }
+  let cols = 0;
+  if (trs.length > 0) {
+    const firstTr = trs[0];
+    const allTcs = firstTr.getElementsByTagNameNS(NS_HP, "tc");
+    for (let i = 0; i < allTcs.length; i++) {
+      if (allTcs[i].parentNode === firstTr)
+        cols++;
+    }
+  }
+  const node = {
+    path: basePath.slice(0, basePath.length - 1).concat([{ tableIndex: localIdx, row: 0, col: 0 }]),
+    rows: trs.length,
+    cols,
+    children: []
+  };
+  for (let r = 0; r < trs.length; r++) {
+    const tr = trs[r];
+    const tcs = [];
+    const allTcs = tr.getElementsByTagNameNS(NS_HP, "tc");
+    for (let i = 0; i < allTcs.length; i++) {
+      if (allTcs[i].parentNode === tr)
+        tcs.push(allTcs[i]);
+    }
+    for (let c = 0; c < tcs.length; c++) {
+      const tc = tcs[c];
+      const subList = _getDirectSubList(tc);
+      if (!subList)
+        continue;
+      const innerTbls = subList.getElementsByTagNameNS(NS_HP, "tbl");
+      const directInnerTbls = [];
+      for (let i = 0; i < innerTbls.length; i++) {
+        directInnerTbls.push(innerTbls[i]);
+      }
+      for (let ii = 0; ii < directInnerTbls.length; ii++) {
+        const inner = directInnerTbls[ii];
+        const innerPath = node.path.concat([{ tableIndex: ii, row: r, col: c }]);
+        const childNode = _buildTreeNode(inner, innerPath, ii);
+        if (childNode.path.length > 0) {
+          childNode.path[childNode.path.length - 1].row = r;
+          childNode.path[childNode.path.length - 1].col = c;
+        }
+        node.children.push(childNode);
+      }
+    }
+  }
+  return node;
 }
 async function createMinimalHwpx(outputPath, title) {
   const zip = new import_jszip.default();
@@ -37322,8 +37489,13 @@ function registerEditingTools(server2, bridge2, toolset2 = "standard") {
         color: external_exports.string().optional()
       }).optional().describe("\uC544\uB798\uCABD \uBB38\uB2E8 \uD14C\uB450\uB9AC (v0.6.7 \uC2E0\uADDC)"),
       border_color: external_exports.string().optional().describe("4\uBA74 \uD14C\uB450\uB9AC \uC0C9 \uC77C\uAD04 (#RRGGBB, v0.6.7 \uC2E0\uADDC)"),
-      border_shadowing: external_exports.boolean().optional().describe("\uD14C\uB450\uB9AC \uADF8\uB9BC\uC790 (v0.6.7 \uC2E0\uADDC)")
-    }, async ({ align, line_spacing, line_spacing_type, space_before, space_after, indent, first_line_indent, left_margin, right_margin, page_break_before, keep_with_next, widow_orphan, line_wrap, snap_to_grid, auto_space_eAsian_eng, auto_space_eAsian_num, break_latin_word, heading_type, keep_lines_together, condense, border_left, border_right, border_top, border_bottom, border_color, border_shadowing }) => {
+      border_shadowing: external_exports.boolean().optional().describe("\uD14C\uB450\uB9AC \uADF8\uB9BC\uC790 (v0.6.7 \uC2E0\uADDC)"),
+      first_line_indent_hwpunit: external_exports.number().int().optional().describe("\uCCAB \uC904 \uB4E4\uC5EC\uC4F0\uAE30 (HWP \uB2E8\uC704, 1mm=283 hwpunit, v0.7.2.1 \uC2E0\uADDC). pt \uAE30\uBC18 indent\uBCF4\uB2E4 \uC815\uBC00."),
+      hanging_indent: external_exports.boolean().optional().describe('\uB0B4\uC5B4\uC4F0\uAE30 \uCCB4\uD06C\uBC15\uC2A4 (v0.7.2.1 \uC2E0\uADDC). true\uBA74 \uD604\uC7AC Indent\uB97C \uC74C\uC218\uB85C \uC124\uC815 (\uD55C\uCEF4 "\uB0B4\uC5B4\uC4F0\uAE30" \uD6A8\uACFC).'),
+      paragraph_heading_type: external_exports.enum(["none", "outline", "number"]).optional().describe("\uB2E8\uB77D \uC81C\uBAA9 \uC885\uB958 (v0.7.2.1 \uC2E0\uADDC). none/outline/number \u2014 HeadingType 0/1/2 \uB9E4\uD551."),
+      word_spacing: external_exports.number().int().min(-50).max(50).optional().describe("\uB2E8\uC5B4 \uAC04\uACA9 (-50~+50, v0.7.2.1 \uC2E0\uADDC)"),
+      line_weight: external_exports.number().int().min(50).max(500).optional().describe("\uC904 \uB450\uAED8 (50%~500%, v0.7.2.1 \uC2E0\uADDC)")
+    }, async ({ align, line_spacing, line_spacing_type, space_before, space_after, indent, first_line_indent, left_margin, right_margin, page_break_before, keep_with_next, widow_orphan, line_wrap, snap_to_grid, auto_space_eAsian_eng, auto_space_eAsian_num, break_latin_word, heading_type, keep_lines_together, condense, border_left, border_right, border_top, border_bottom, border_color, border_shadowing, first_line_indent_hwpunit, hanging_indent, paragraph_heading_type, word_spacing, line_weight }) => {
       if (!bridge2.getCurrentDocument()) {
         return { content: [{ type: "text", text: JSON.stringify({ error: "\uC5F4\uB9B0 \uBB38\uC11C\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4." }) }], isError: true };
       }
@@ -37382,6 +37554,16 @@ function registerEditingTools(server2, bridge2, toolset2 = "standard") {
           style.border_color = border_color;
         if (border_shadowing !== void 0)
           style.border_shadowing = border_shadowing;
+        if (first_line_indent_hwpunit !== void 0)
+          style.first_line_indent_hwpunit = first_line_indent_hwpunit;
+        if (hanging_indent !== void 0)
+          style.hanging_indent = hanging_indent;
+        if (paragraph_heading_type !== void 0)
+          style.paragraph_heading_type = paragraph_heading_type;
+        if (word_spacing !== void 0)
+          style.word_spacing = word_spacing;
+        if (line_weight !== void 0)
+          style.line_weight = line_weight;
         const response = await bridge2.send("set_paragraph_style", { style }, FILL_TIMEOUT);
         if (!response.success) {
           return { content: [{ type: "text", text: JSON.stringify({ error: response.error }) }], isError: true };
@@ -38918,6 +39100,70 @@ function registerCompositeTools(server2, bridge2) {
       if (!r.success)
         return { content: [{ type: "text", text: JSON.stringify({ error: r.error }) }], isError: true };
       return { content: [{ type: "text", text: JSON.stringify(r.data) }] };
+    } catch (err) {
+      return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }], isError: true };
+    }
+  });
+  server2.tool("hwp_xml_edit_nested_cell", 'HWPX \uC911\uCCA9 \uD45C(\uD45C \uC548\uC758 \uD45C)\uC758 \uD2B9\uC815 \uC140 \uD14D\uC2A4\uD2B8\uB97C \uC7AC\uADC0 \uACBD\uB85C\uB85C \uD3B8\uC9D1\uD569\uB2C8\uB2E4. (v0.7.2.1 \uC2E0\uADDC) path \uBC30\uC5F4\uB85C \uC911\uCCA9 \uAE4A\uC774 \uD45C\uD604 \u2014 \uC608: [{tableIndex:0,row:0,col:0},{tableIndex:0,row:1,col:1}]\uC740 "0\uBC88 \uD45C (0,0) \uC140 \uC548\uC758 0\uBC88 nested \uD45C (1,1) \uC140". v0.7.0 hwp_xml_edit_table_cell\uC758 \uB2E4\uB2E8\uACC4 \uD655\uC7A5. linesegarray \uC140 \uB0B4\uBD80\uB9CC \uC790\uB3D9 \uC0AD\uC81C, charPrIDRef \uBCF4\uC874.', {
+    file_path: external_exports.string().describe("\uC218\uC815\uD560 HWPX \uD30C\uC77C \uACBD\uB85C"),
+    path: external_exports.array(external_exports.object({
+      tableIndex: external_exports.number().int().min(0).describe("\uC774 \uB2E8\uACC4\uC758 \uD45C \uC778\uB371\uC2A4 (\uAC01 \uB2E8\uACC4\uB294 \uBD80\uBAA8 \uC140 \uC548\uC758 \uD3C9\uD0C4\uD654 \uC778\uB371\uC2A4)"),
+      row: external_exports.number().int().min(0).describe("0-based \uD589"),
+      col: external_exports.number().int().min(0).describe("0-based \uC5F4")
+    })).min(1).describe("\uC911\uCCA9 \uACBD\uB85C \uBC30\uC5F4 (length=1: \uB2E8\uC77C \uC140, length\u22652: \uC7AC\uADC0)"),
+    find: external_exports.string().describe("\uCC3E\uC744 \uD14D\uC2A4\uD2B8"),
+    replace: external_exports.string().describe("\uBC14\uAFC0 \uD14D\uC2A4\uD2B8"),
+    output_path: external_exports.string().optional().describe("\uC800\uC7A5 \uACBD\uB85C (\uC0DD\uB7B5 \uC2DC \uC6D0\uBCF8 \uB36E\uC5B4\uC4F0\uAE30)")
+  }, async ({ file_path, path: cellPath, find, replace, output_path }) => {
+    try {
+      if (!file_path.toLowerCase().endsWith(".hwpx")) {
+        return { content: [{ type: "text", text: JSON.stringify({
+          error: "XML_ONLY_HWPX: \uC774 \uB3C4\uAD6C\uB294 .hwpx \uD30C\uC77C\uB9CC \uC9C0\uC6D0\uD569\uB2C8\uB2E4.",
+          file_path
+        }) }], isError: true };
+      }
+      const { readHwpxXml: readHwpxXml2, writeHwpxXml: writeHwpxXml2, replaceInNestedTable: replaceInNestedTable2 } = await Promise.resolve().then(() => (init_hwpx_engine(), hwpx_engine_exports));
+      const resolved = path6.resolve(file_path);
+      const outResolved = output_path ? path6.resolve(output_path) : resolved;
+      if (!fs5.existsSync(resolved)) {
+        return { content: [{ type: "text", text: JSON.stringify({ error: `\uD30C\uC77C\uC744 \uCC3E\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4: ${resolved}` }) }], isError: true };
+      }
+      const doc = await readHwpxXml2(resolved, "Contents/section0.xml");
+      const result = replaceInNestedTable2(doc, cellPath, find, replace);
+      await writeHwpxXml2(resolved, outResolved, "Contents/section0.xml", doc);
+      return { content: [{ type: "text", text: JSON.stringify({
+        ok: true,
+        path: outResolved,
+        path_depth: cellPath.length,
+        matched: result.matched,
+        cell_text: result.cellText,
+        char_pr_id_ref: result.charPrIDRef,
+        warnings: result.warnings
+      }) }] };
+    } catch (err) {
+      return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }], isError: true };
+    }
+  });
+  server2.tool("hwp_enumerate_nested_tables", "HWPX \uBB38\uC11C\uC758 \uBAA8\uB4E0 \uD45C(\uC911\uCCA9 \uD3EC\uD568)\uB97C \uD2B8\uB9AC \uAD6C\uC870\uB85C \uC5F4\uAC70\uD569\uB2C8\uB2E4. (v0.7.2.1 \uC2E0\uADDC) DFS \uC21C\uD68C\uB85C top-level \uD45C + \uAC01 \uC140 \uB0B4\uBD80\uC758 nested \uD45C\uB97C \uC7AC\uADC0\uC801\uC73C\uB85C \uBC1C\uACAC. \uCD9C\uB825: NestedTableNode[] (path, rows, cols, children).", {
+    file_path: external_exports.string().describe("\uB300\uC0C1 HWPX \uD30C\uC77C \uACBD\uB85C")
+  }, async ({ file_path }) => {
+    try {
+      if (!file_path.toLowerCase().endsWith(".hwpx")) {
+        return { content: [{ type: "text", text: JSON.stringify({ error: "XML_ONLY_HWPX", file_path }) }], isError: true };
+      }
+      const { readHwpxXml: readHwpxXml2, enumerateNestedTables: enumerateNestedTables2 } = await Promise.resolve().then(() => (init_hwpx_engine(), hwpx_engine_exports));
+      const resolved = path6.resolve(file_path);
+      if (!fs5.existsSync(resolved)) {
+        return { content: [{ type: "text", text: JSON.stringify({ error: `\uD30C\uC77C\uC744 \uCC3E\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4: ${resolved}` }) }], isError: true };
+      }
+      const doc = await readHwpxXml2(resolved, "Contents/section0.xml");
+      const tree = enumerateNestedTables2(doc);
+      return { content: [{ type: "text", text: JSON.stringify({
+        ok: true,
+        path: resolved,
+        top_level_count: tree.length,
+        tree
+      }) }] };
     } catch (err) {
       return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }], isError: true };
     }

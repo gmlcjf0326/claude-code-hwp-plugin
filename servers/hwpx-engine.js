@@ -498,17 +498,20 @@ export async function compareCOMAndXML(filePath, comStats) {
     return { com: comStats, xml, diff, ok, warnings };
 }
 /**
- * v0.7.0 신규 (인터페이스만): 중첩 표 셀 텍스트 치환.
- * - path.length === 1: replaceInTableCell로 위임 (정식 지원)
- * - path.length >= 2: 'nested-table-experimental' warning + 첫 단계만 처리
+ * v0.7.0 인터페이스 → v0.7.2.1 정식 다단계 지원.
+ * 중첩 표 셀 텍스트 치환. 재귀 처리 (tc → subList → tbl → tr → tc → ...).
  *
- * 정식 다단계 지원은 v0.7.2.1에서 구현 (재귀 처리).
+ * - path.length === 1: 단일 셀 (replaceInTableCell 위임)
+ * - path.length >= 2: 재귀 — 각 step의 tc 도달 → 그 안의 subList → 다음 tbl 검색
+ *
+ * @throws Error 'NestedPathError' / 'TableNotFound' / 'RowOutOfRange' / 'ColOutOfRange'
  */
 export function replaceInNestedTable(doc, path, find, replace) {
     if (path.length === 0) {
         throw new Error('NestedPathError: empty path');
     }
     if (path.length === 1) {
+        // 단일 셀: 기존 함수 위임
         const step = path[0];
         return replaceInTableCell(doc, {
             tableIndex: step.tableIndex,
@@ -518,17 +521,212 @@ export function replaceInNestedTable(doc, path, find, replace) {
             replace,
         });
     }
-    // path.length >= 2: 첫 단계만 처리, 경고 추가
-    const step = path[0];
-    const result = replaceInTableCell(doc, {
-        tableIndex: step.tableIndex,
-        rowIndex: step.row,
-        colIndex: step.col,
-        find,
-        replace,
-    });
-    result.warnings.push(`nested-table-experimental: depth=${path.length}, only first step processed (full support in v0.7.2.1)`);
+    // v0.7.2.1: path.length >= 2 정식 재귀
+    // 1. 첫 step으로 tc 도달
+    const firstStep = path[0];
+    const tbls = doc.getElementsByTagNameNS(NS_HP, 'tbl');
+    if (firstStep.tableIndex < 0 || firstStep.tableIndex >= tbls.length) {
+        throw new Error(`NestedPathError step 0: TableNotFound idx=${firstStep.tableIndex}, total=${tbls.length}`);
+    }
+    let currentTbl = tbls[firstStep.tableIndex];
+    let currentTc = _getTcAt(currentTbl, firstStep.row, firstStep.col, 0);
+    // 2. 중간 step들 — 각 tc → subList → 다음 tbl 검색
+    for (let stepIdx = 1; stepIdx < path.length; stepIdx++) {
+        if (!currentTc) {
+            throw new Error(`NestedPathError step ${stepIdx}: tc not found at previous step`);
+        }
+        // currentTc 내부의 subList 찾기
+        const subListEl = _getDirectSubList(currentTc);
+        if (!subListEl) {
+            throw new Error(`NestedPathError step ${stepIdx}: tc has no subList (no nested content)`);
+        }
+        // subList 내부의 tbl 평탄화 검색 (재귀 X — direct subList tree만)
+        const innerTbls = subListEl.getElementsByTagNameNS(NS_HP, 'tbl');
+        const directInnerTbls = [];
+        for (let i = 0; i < innerTbls.length; i++) {
+            directInnerTbls.push(innerTbls[i]);
+        }
+        const step = path[stepIdx];
+        if (step.tableIndex < 0 || step.tableIndex >= directInnerTbls.length) {
+            throw new Error(`NestedPathError step ${stepIdx}: nested TableNotFound idx=${step.tableIndex}, total=${directInnerTbls.length}`);
+        }
+        currentTbl = directInnerTbls[step.tableIndex];
+        currentTc = _getTcAt(currentTbl, step.row, step.col, stepIdx);
+    }
+    if (!currentTc) {
+        throw new Error('NestedPathError: final tc not found');
+    }
+    // 3. 최종 tc에서 텍스트 치환 (replaceInTableCell의 본체 로직 인라인)
+    const result = _replaceTextInTc(currentTc, find, replace);
     return result;
+}
+/**
+ * v0.7.2.1 helper: tbl의 (row, col) tc 반환. direct children 필터.
+ */
+function _getTcAt(tbl, row, col, stepIdx) {
+    const allTrs = tbl.getElementsByTagNameNS(NS_HP, 'tr');
+    const trs = [];
+    for (let i = 0; i < allTrs.length; i++) {
+        const tr = allTrs[i];
+        if (tr.parentNode === tbl)
+            trs.push(tr);
+    }
+    if (row < 0 || row >= trs.length) {
+        throw new Error(`NestedPathError step ${stepIdx}: RowOutOfRange row=${row}, total=${trs.length}`);
+    }
+    const tr = trs[row];
+    const allTcs = tr.getElementsByTagNameNS(NS_HP, 'tc');
+    const tcs = [];
+    for (let i = 0; i < allTcs.length; i++) {
+        const tc = allTcs[i];
+        if (tc.parentNode === tr)
+            tcs.push(tc);
+    }
+    if (col < 0 || col >= tcs.length) {
+        throw new Error(`NestedPathError step ${stepIdx}: ColOutOfRange col=${col}, total=${tcs.length}`);
+    }
+    return tcs[col];
+}
+/**
+ * v0.7.2.1 helper: tc의 direct subList 반환.
+ */
+function _getDirectSubList(tc) {
+    const allSubLists = tc.getElementsByTagNameNS(NS_HP, 'subList');
+    for (let i = 0; i < allSubLists.length; i++) {
+        const sl = allSubLists[i];
+        if (sl.parentNode === tc)
+            return sl;
+    }
+    return null;
+}
+/**
+ * v0.7.2.1 helper: tc 내부 텍스트 치환 + linesegarray 셀 내부 삭제 + charPrIDRef 보존.
+ * (replaceInTableCell의 핵심 로직 추출)
+ */
+function _replaceTextInTc(tc, find, replace) {
+    const warnings = [];
+    const subList = _getDirectSubList(tc);
+    if (!subList) {
+        return { matched: 0, cellText: '', charPrIDRef: null, warnings: ['NoSubList'] };
+    }
+    const tNodes = subList.getElementsByTagNameNS(NS_HP, 't');
+    const tElements = [];
+    let cellText = '';
+    let charPrIDRef = null;
+    for (let i = 0; i < tNodes.length; i++) {
+        const tEl = tNodes[i];
+        tElements.push(tEl);
+        cellText += tEl.textContent || '';
+        if (charPrIDRef === null) {
+            const runEl = tEl.parentNode;
+            if (runEl) {
+                const ref = runEl.getAttribute('charPrIDRef');
+                if (ref)
+                    charPrIDRef = ref;
+            }
+        }
+    }
+    if (!find || cellText.indexOf(find) === -1) {
+        return { matched: 0, cellText, charPrIDRef, warnings };
+    }
+    const newCellText = cellText.split(find).join(replace);
+    const matched = cellText.split(find).length - 1;
+    if (tElements.length > 0) {
+        tElements[0].textContent = newCellText;
+        for (let i = 1; i < tElements.length; i++) {
+            tElements[i].textContent = '';
+        }
+    }
+    removeLinesegarrayInElement(tc);
+    return { matched, cellText: newCellText, charPrIDRef, warnings };
+}
+/**
+ * v0.7.2.1 신규: 문서의 모든 표(중첩 포함)를 트리 형태로 열거 (DFS).
+ */
+export function enumerateNestedTables(doc) {
+    const result = [];
+    // 최상위 tbl만 (재귀 X — 자식 tbl은 children에 들어감)
+    // 단순 휴리스틱: 모든 tbl을 분석한 후, parent에 tbl이 없는 것만 top-level
+    const allTbls = doc.getElementsByTagNameNS(NS_HP, 'tbl');
+    for (let i = 0; i < allTbls.length; i++) {
+        const tbl = allTbls[i];
+        // parent chain에 tbl이 있으면 nested → top-level 아님
+        let isNested = false;
+        let cur = tbl.parentNode;
+        while (cur) {
+            if (cur.nodeType === 1 && cur.localName === 'tbl') {
+                isNested = true;
+                break;
+            }
+            cur = cur.parentNode;
+        }
+        if (isNested)
+            continue;
+        // top-level tbl: tree node 생성
+        result.push(_buildTreeNode(tbl, [{ tableIndex: result.length, row: 0, col: 0 }], 0));
+    }
+    return result;
+}
+/**
+ * helper: tbl을 트리 노드로 변환 (재귀)
+ */
+function _buildTreeNode(tbl, basePath, localIdx) {
+    // 행 수
+    const allTrs = tbl.getElementsByTagNameNS(NS_HP, 'tr');
+    const trs = [];
+    for (let i = 0; i < allTrs.length; i++) {
+        if (allTrs[i].parentNode === tbl)
+            trs.push(allTrs[i]);
+    }
+    // 열 수 (첫 행 기준)
+    let cols = 0;
+    if (trs.length > 0) {
+        const firstTr = trs[0];
+        const allTcs = firstTr.getElementsByTagNameNS(NS_HP, 'tc');
+        for (let i = 0; i < allTcs.length; i++) {
+            if (allTcs[i].parentNode === firstTr)
+                cols++;
+        }
+    }
+    const node = {
+        path: basePath.slice(0, basePath.length - 1).concat([{ tableIndex: localIdx, row: 0, col: 0 }]),
+        rows: trs.length,
+        cols,
+        children: [],
+    };
+    // 각 tc 안의 nested tbl 검색
+    for (let r = 0; r < trs.length; r++) {
+        const tr = trs[r];
+        const tcs = [];
+        const allTcs = tr.getElementsByTagNameNS(NS_HP, 'tc');
+        for (let i = 0; i < allTcs.length; i++) {
+            if (allTcs[i].parentNode === tr)
+                tcs.push(allTcs[i]);
+        }
+        for (let c = 0; c < tcs.length; c++) {
+            const tc = tcs[c];
+            const subList = _getDirectSubList(tc);
+            if (!subList)
+                continue;
+            const innerTbls = subList.getElementsByTagNameNS(NS_HP, 'tbl');
+            const directInnerTbls = [];
+            for (let i = 0; i < innerTbls.length; i++) {
+                directInnerTbls.push(innerTbls[i]);
+            }
+            for (let ii = 0; ii < directInnerTbls.length; ii++) {
+                const inner = directInnerTbls[ii];
+                const innerPath = node.path.concat([{ tableIndex: ii, row: r, col: c }]);
+                const childNode = _buildTreeNode(inner, innerPath, ii);
+                // 마지막 path step의 row/col을 r/c로 정정
+                if (childNode.path.length > 0) {
+                    childNode.path[childNode.path.length - 1].row = r;
+                    childNode.path[childNode.path.length - 1].col = c;
+                }
+                node.children.push(childNode);
+            }
+        }
+    }
+    return node;
 }
 // ── 빈 HWPX 생성 ──
 /**

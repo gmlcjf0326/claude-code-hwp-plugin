@@ -107,13 +107,29 @@ export interface NestedPathStep {
     col: number;
 }
 /**
- * v0.7.0 신규 (인터페이스만): 중첩 표 셀 텍스트 치환.
- * - path.length === 1: replaceInTableCell로 위임 (정식 지원)
- * - path.length >= 2: 'nested-table-experimental' warning + 첫 단계만 처리
+ * v0.7.2.1 신규: 중첩 표 트리 노드 (재귀)
+ */
+export interface NestedTableNode {
+    path: NestedPathStep[];
+    rows: number;
+    cols: number;
+    cellTextPreview?: string[][];
+    children: NestedTableNode[];
+}
+/**
+ * v0.7.0 인터페이스 → v0.7.2.1 정식 다단계 지원.
+ * 중첩 표 셀 텍스트 치환. 재귀 처리 (tc → subList → tbl → tr → tc → ...).
  *
- * 정식 다단계 지원은 v0.7.2.1에서 구현 (재귀 처리).
+ * - path.length === 1: 단일 셀 (replaceInTableCell 위임)
+ * - path.length >= 2: 재귀 — 각 step의 tc 도달 → 그 안의 subList → 다음 tbl 검색
+ *
+ * @throws Error 'NestedPathError' / 'TableNotFound' / 'RowOutOfRange' / 'ColOutOfRange'
  */
 export declare function replaceInNestedTable(doc: Document, path: NestedPathStep[], find: string, replace: string): CellReplaceResult;
+/**
+ * v0.7.2.1 신규: 문서의 모든 표(중첩 포함)를 트리 형태로 열거 (DFS).
+ */
+export declare function enumerateNestedTables(doc: Document): NestedTableNode[];
 /**
  * 빈 HWPX 파일 생성.
  * BUG-9 fix: blank_template.hwpx가 없으면 프로그래밍적으로 생성.

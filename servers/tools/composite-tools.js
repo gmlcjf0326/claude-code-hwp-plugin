@@ -875,6 +875,74 @@ export function registerCompositeTools(server, bridge) {
             return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
         }
     });
+    // v0.7.2.1 신규: 중첩 표 셀 텍스트 직접 편집 (재귀 path)
+    server.tool('hwp_xml_edit_nested_cell', 'HWPX 중첩 표(표 안의 표)의 특정 셀 텍스트를 재귀 경로로 편집합니다. (v0.7.2.1 신규) path 배열로 중첩 깊이 표현 — 예: [{tableIndex:0,row:0,col:0},{tableIndex:0,row:1,col:1}]은 "0번 표 (0,0) 셀 안의 0번 nested 표 (1,1) 셀". v0.7.0 hwp_xml_edit_table_cell의 다단계 확장. linesegarray 셀 내부만 자동 삭제, charPrIDRef 보존.', {
+        file_path: z.string().describe('수정할 HWPX 파일 경로'),
+        path: z.array(z.object({
+            tableIndex: z.number().int().min(0).describe('이 단계의 표 인덱스 (각 단계는 부모 셀 안의 평탄화 인덱스)'),
+            row: z.number().int().min(0).describe('0-based 행'),
+            col: z.number().int().min(0).describe('0-based 열'),
+        })).min(1).describe('중첩 경로 배열 (length=1: 단일 셀, length≥2: 재귀)'),
+        find: z.string().describe('찾을 텍스트'),
+        replace: z.string().describe('바꿀 텍스트'),
+        output_path: z.string().optional().describe('저장 경로 (생략 시 원본 덮어쓰기)'),
+    }, async ({ file_path, path: cellPath, find, replace, output_path }) => {
+        try {
+            if (!file_path.toLowerCase().endsWith('.hwpx')) {
+                return { content: [{ type: 'text', text: JSON.stringify({
+                                error: 'XML_ONLY_HWPX: 이 도구는 .hwpx 파일만 지원합니다.',
+                                file_path,
+                            }) }], isError: true };
+            }
+            const { readHwpxXml, writeHwpxXml, replaceInNestedTable } = await import('../hwpx-engine.js');
+            const resolved = path.resolve(file_path);
+            const outResolved = output_path ? path.resolve(output_path) : resolved;
+            if (!fs.existsSync(resolved)) {
+                return { content: [{ type: 'text', text: JSON.stringify({ error: `파일을 찾을 수 없습니다: ${resolved}` }) }], isError: true };
+            }
+            const doc = await readHwpxXml(resolved, 'Contents/section0.xml');
+            const result = replaceInNestedTable(doc, cellPath, find, replace);
+            await writeHwpxXml(resolved, outResolved, 'Contents/section0.xml', doc);
+            return { content: [{ type: 'text', text: JSON.stringify({
+                            ok: true,
+                            path: outResolved,
+                            path_depth: cellPath.length,
+                            matched: result.matched,
+                            cell_text: result.cellText,
+                            char_pr_id_ref: result.charPrIDRef,
+                            warnings: result.warnings,
+                        }) }] };
+        }
+        catch (err) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+        }
+    });
+    // v0.7.2.1 신규: 모든 표(중첩 포함)를 트리로 열거
+    server.tool('hwp_enumerate_nested_tables', 'HWPX 문서의 모든 표(중첩 포함)를 트리 구조로 열거합니다. (v0.7.2.1 신규) DFS 순회로 top-level 표 + 각 셀 내부의 nested 표를 재귀적으로 발견. 출력: NestedTableNode[] (path, rows, cols, children).', {
+        file_path: z.string().describe('대상 HWPX 파일 경로'),
+    }, async ({ file_path }) => {
+        try {
+            if (!file_path.toLowerCase().endsWith('.hwpx')) {
+                return { content: [{ type: 'text', text: JSON.stringify({ error: 'XML_ONLY_HWPX', file_path }) }], isError: true };
+            }
+            const { readHwpxXml, enumerateNestedTables } = await import('../hwpx-engine.js');
+            const resolved = path.resolve(file_path);
+            if (!fs.existsSync(resolved)) {
+                return { content: [{ type: 'text', text: JSON.stringify({ error: `파일을 찾을 수 없습니다: ${resolved}` }) }], isError: true };
+            }
+            const doc = await readHwpxXml(resolved, 'Contents/section0.xml');
+            const tree = enumerateNestedTables(doc);
+            return { content: [{ type: 'text', text: JSON.stringify({
+                            ok: true,
+                            path: resolved,
+                            top_level_count: tree.length,
+                            tree,
+                        }) }] };
+        }
+        catch (err) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+        }
+    });
     // v0.7.1 신규: 작성된 결과의 양식 일관성 검증
     server.tool('hwp_validate_consistency', '작성된 문서의 양식 일관성을 검증합니다. (v0.7.1 신규) expected_profile(WritingPatterns)과 비교하여 deviations와 0~100 점수 반환. 작성 중간/완료 후 호출하여 양식 준수 확인.', {
         file_path: z.string().describe('검증 대상 파일 경로'),

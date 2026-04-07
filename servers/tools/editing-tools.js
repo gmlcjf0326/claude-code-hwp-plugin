@@ -333,7 +333,12 @@ export function registerEditingTools(server, bridge, toolset = 'standard') {
             }).optional().describe('아래쪽 문단 테두리 (v0.6.7 신규)'),
             border_color: z.string().optional().describe('4면 테두리 색 일괄 (#RRGGBB, v0.6.7 신규)'),
             border_shadowing: z.boolean().optional().describe('테두리 그림자 (v0.6.7 신규)'),
-        }, async ({ align, line_spacing, line_spacing_type, space_before, space_after, indent, first_line_indent, left_margin, right_margin, page_break_before, keep_with_next, widow_orphan, line_wrap, snap_to_grid, auto_space_eAsian_eng, auto_space_eAsian_num, break_latin_word, heading_type, keep_lines_together, condense, border_left, border_right, border_top, border_bottom, border_color, border_shadowing }) => {
+            first_line_indent_hwpunit: z.number().int().optional().describe('첫 줄 들여쓰기 (HWP 단위, 1mm=283 hwpunit, v0.7.2.1 신규). pt 기반 indent보다 정밀.'),
+            hanging_indent: z.boolean().optional().describe('내어쓰기 체크박스 (v0.7.2.1 신규). true면 현재 Indent를 음수로 설정 (한컴 "내어쓰기" 효과).'),
+            paragraph_heading_type: z.enum(['none', 'outline', 'number']).optional().describe('단락 제목 종류 (v0.7.2.1 신규). none/outline/number — HeadingType 0/1/2 매핑.'),
+            word_spacing: z.number().int().min(-50).max(50).optional().describe('단어 간격 (-50~+50, v0.7.2.1 신규)'),
+            line_weight: z.number().int().min(50).max(500).optional().describe('줄 두께 (50%~500%, v0.7.2.1 신규)'),
+        }, async ({ align, line_spacing, line_spacing_type, space_before, space_after, indent, first_line_indent, left_margin, right_margin, page_break_before, keep_with_next, widow_orphan, line_wrap, snap_to_grid, auto_space_eAsian_eng, auto_space_eAsian_num, break_latin_word, heading_type, keep_lines_together, condense, border_left, border_right, border_top, border_bottom, border_color, border_shadowing, first_line_indent_hwpunit, hanging_indent, paragraph_heading_type, word_spacing, line_weight }) => {
             if (!bridge.getCurrentDocument()) {
                 return { content: [{ type: 'text', text: JSON.stringify({ error: '열린 문서가 없습니다.' }) }], isError: true };
             }
@@ -392,6 +397,16 @@ export function registerEditingTools(server, bridge, toolset = 'standard') {
                     style.border_color = border_color;
                 if (border_shadowing !== undefined)
                     style.border_shadowing = border_shadowing;
+                if (first_line_indent_hwpunit !== undefined)
+                    style.first_line_indent_hwpunit = first_line_indent_hwpunit;
+                if (hanging_indent !== undefined)
+                    style.hanging_indent = hanging_indent;
+                if (paragraph_heading_type !== undefined)
+                    style.paragraph_heading_type = paragraph_heading_type;
+                if (word_spacing !== undefined)
+                    style.word_spacing = word_spacing;
+                if (line_weight !== undefined)
+                    style.line_weight = line_weight;
                 const response = await bridge.send('set_paragraph_style', { style }, FILL_TIMEOUT);
                 if (!response.success) {
                     return { content: [{ type: 'text', text: JSON.stringify({ error: response.error }) }], isError: true };
