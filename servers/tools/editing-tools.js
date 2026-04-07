@@ -605,13 +605,16 @@ export function registerEditingTools(server, bridge, toolset = 'standard') {
                 return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
             }
         });
-        server.tool('hwp_table_create_from_data', '2D 배열 데이터로 새 표를 생성합니다. col_widths로 열 너비(mm), row_heights로 행 높이(mm)를 지정할 수 있습니다. 공문서 표 등 정밀한 레이아웃에 사용하세요.', {
-            data: z.array(z.array(z.string())).describe('2D 배열 데이터 [["헤더1","헤더2"],["값1","값2"]]'),
-            header_style: z.boolean().optional().describe('첫 행을 헤더로 자동 스타일링 (Bold+배경색)'),
-            col_widths: z.array(z.number()).optional().describe('열 너비 배열 (mm 단위, 예: [18, 65, 23, 23])'),
-            row_heights: z.array(z.number()).optional().describe('행 높이 배열 (mm 단위, 예: [10, 12, 12])'),
-            alignment: z.enum(['left', 'center', 'right']).optional().describe('표 정렬 (기본: left)'),
-        }, async ({ data, header_style, col_widths, row_heights, alignment }) => {
+        server.tool('hwp_table_create_from_data', '2D 배열 데이터로 새 표를 생성합니다. col_widths/row_heights 로 mm 단위 정밀 레이아웃. ' +
+            '(v0.7.3.1) cell 안 호출 시 자동으로 cell 폭 기반 col_widths 축소. row_heights 도 페이지 높이 자동 축소. ' +
+            'treat_as_char 옵션으로 글자처럼 취급 on/off 제어 (cell 안 표는 한컴 자동 적용).', {
+            data: z.array(z.array(z.string())).describe('2D 배열 데이터'),
+            header_style: z.boolean().optional().describe('첫 행 헤더 스타일 (Bold+배경색)'),
+            col_widths: z.array(z.number()).optional().describe('열 너비 (mm, 자동 축소 가능)'),
+            row_heights: z.array(z.number()).optional().describe('행 높이 (mm, v0.7.3.1 자동 축소 추가)'),
+            alignment: z.enum(['left', 'center', 'right']).optional().describe('표 정렬 (기본 left)'),
+            treat_as_char: z.boolean().optional().describe('v0.7.3.1 신규: 글자처럼 취급 on/off. cell 안 nested 표는 자동 true. top-level 표는 false 가 기본.'),
+        }, async ({ data, header_style, col_widths, row_heights, alignment, treat_as_char }) => {
             if (!bridge.getCurrentDocument())
                 return { content: [{ type: 'text', text: JSON.stringify({ error: '열린 문서가 없습니다.' }) }], isError: true };
             try {
@@ -625,6 +628,8 @@ export function registerEditingTools(server, bridge, toolset = 'standard') {
                     params.row_heights = row_heights;
                 if (alignment)
                     params.alignment = alignment;
+                if (treat_as_char !== undefined)
+                    params.treat_as_char = treat_as_char;
                 const r = await bridge.send('table_create_from_data', params, FILL_TIMEOUT);
                 if (!r.success)
                     return { content: [{ type: 'text', text: JSON.stringify({ error: r.error }) }], isError: true };
@@ -788,9 +793,16 @@ export function registerEditingTools(server, bridge, toolset = 'standard') {
         });
         // v0.6.8.1 신규: 표 진입 (셀에 머무름 — 후속 셀 작업의 진입점)
         // v0.6.8 navigate_cell/insert_row_at_cursor의 mcp 자동화 한계 해소.
-        server.tool('hwp_enter_table', '지정된 표(0-based 인덱스, 음수 가능)에 진입하여 첫 셀에 커서를 위치시킵니다. (v0.6.8.1 신규) 진입 후 hwp_navigate_cell, hwp_insert_row_at_cursor, hwp_insert_text, hwp_merge_current_selection 등으로 셀 단위 작업 가능. 작업 완료 후 hwp_exit_table로 명시적 탈출. WOW #4 시나리오 ("두 번째 표 마지막 행에 합계 추가")의 mcp 자동화 진입점. 안전망: 이미 다른 표 셀 안에 있으면 자동으로 먼저 탈출.', {
-            table_index: z.number().int().describe('0-based 표 인덱스. 음수 가능 (-1=마지막 표, -2=뒤에서 두 번째)'),
-            select_cell: z.boolean().optional().describe('진입 후 첫 셀을 블록으로 선택할지 여부 (기본 false=일반 커서)'),
+        server.tool('hwp_enter_table', '지정된 표에 진입하여 첫 셀에 커서를 위치시킵니다. (v0.6.8.1 + v0.7.3.1 path-based) ' +
+            '평탄 인덱스 (number) 또는 nested 진입을 위한 path (number[]) 지원. ' +
+            'path 형식: [outer_idx, row, col, inner_idx, row, col, inner_idx, ...] — 첫 원소는 outer table_index, 그 다음 (row, col, inner_idx) 3-원소 그룹 반복. ' +
+            '예: [0, 1, 1, 0] = 0번 표 → (1,1) 셀 → 그 셀 안의 0번 nested 표 (2단). ' +
+            '진입 후 hwp_navigate_cell/hwp_insert_text/hwp_table_create_from_data 등으로 셀 단위 작업 가능. 작업 완료 후 hwp_exit_table 호출.', {
+            table_index: z.union([
+                z.number().int(),
+                z.array(z.number().int()),
+            ]).describe('0-based 표 인덱스 (number) 또는 nested path (number[])'),
+            select_cell: z.boolean().optional().describe('진입 후 첫 셀을 블록으로 선택 (기본 false)'),
         }, async ({ table_index, select_cell }) => {
             if (!bridge.getCurrentDocument())
                 return { content: [{ type: 'text', text: JSON.stringify({ error: '열린 문서가 없습니다.' }) }], isError: true };

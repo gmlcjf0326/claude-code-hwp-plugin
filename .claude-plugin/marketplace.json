@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "hwp-marketplace",
-  "version": "0.7.3.0",
+  "version": "0.7.3.1",
   "description": "HWP Studio - 한글(HWP/HWPX) 문서 자동화 플러그인 마켓플레이스",
   "owner": {
     "name": "김희철",
@@ -10,8 +10,8 @@
   "plugins": [
     {
       "name": "claude-code-hwp-plugin",
-      "description": "한글(HWP/HWPX) 문서 자동화. 102개 MCP 도구 + 8개 워크플로우 커맨드 + HWPX 규칙 hooks. v0.7.0: HWPX XML 강화 — replaceInTableCell(tc→subList→p→run→t 경로) + markFieldsForRecalc(목차/페이지번호 dirty mark) + compareCOMAndXML(검증) + replaceInNestedTable(인터페이스, v0.7.3.0 정식). 신규 MCP: hwp_xml_edit_table_cell, hwp_refresh_fields. COM/XML 경계 명시화. v0.7.1/v0.7.2 전제조건.",
-      "version": "0.7.3.0",
+      "description": "한글(HWP/HWPX) 문서 자동화. 102개 MCP 도구 + 8개 워크플로우 커맨드 + HWPX 규칙 hooks. v0.7.0: HWPX XML 강화 — replaceInTableCell(tc→subList→p→run→t 경로) + markFieldsForRecalc(목차/페이지번호 dirty mark) + compareCOMAndXML(검증) + replaceInNestedTable(인터페이스, v0.7.3.1 정식). 신규 MCP: hwp_xml_edit_table_cell, hwp_refresh_fields. COM/XML 경계 명시화. v0.7.1/v0.7.2 전제조건.",
+      "version": "0.7.3.1",
       "author": {
         "name": "김희철",
         "email": "gmlcjf0326@hanmail.net"

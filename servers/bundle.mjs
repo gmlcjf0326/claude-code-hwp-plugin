@@ -37751,13 +37751,14 @@ function registerEditingTools(server2, bridge2, toolset2 = "standard") {
         return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }], isError: true };
       }
     });
-    server2.tool("hwp_table_create_from_data", "2D \uBC30\uC5F4 \uB370\uC774\uD130\uB85C \uC0C8 \uD45C\uB97C \uC0DD\uC131\uD569\uB2C8\uB2E4. col_widths\uB85C \uC5F4 \uB108\uBE44(mm), row_heights\uB85C \uD589 \uB192\uC774(mm)\uB97C \uC9C0\uC815\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4. \uACF5\uBB38\uC11C \uD45C \uB4F1 \uC815\uBC00\uD55C \uB808\uC774\uC544\uC6C3\uC5D0 \uC0AC\uC6A9\uD558\uC138\uC694.", {
-      data: external_exports.array(external_exports.array(external_exports.string())).describe('2D \uBC30\uC5F4 \uB370\uC774\uD130 [["\uD5E4\uB3541","\uD5E4\uB3542"],["\uAC121","\uAC122"]]'),
-      header_style: external_exports.boolean().optional().describe("\uCCAB \uD589\uC744 \uD5E4\uB354\uB85C \uC790\uB3D9 \uC2A4\uD0C0\uC77C\uB9C1 (Bold+\uBC30\uACBD\uC0C9)"),
-      col_widths: external_exports.array(external_exports.number()).optional().describe("\uC5F4 \uB108\uBE44 \uBC30\uC5F4 (mm \uB2E8\uC704, \uC608: [18, 65, 23, 23])"),
-      row_heights: external_exports.array(external_exports.number()).optional().describe("\uD589 \uB192\uC774 \uBC30\uC5F4 (mm \uB2E8\uC704, \uC608: [10, 12, 12])"),
-      alignment: external_exports.enum(["left", "center", "right"]).optional().describe("\uD45C \uC815\uB82C (\uAE30\uBCF8: left)")
-    }, async ({ data, header_style, col_widths, row_heights, alignment }) => {
+    server2.tool("hwp_table_create_from_data", "2D \uBC30\uC5F4 \uB370\uC774\uD130\uB85C \uC0C8 \uD45C\uB97C \uC0DD\uC131\uD569\uB2C8\uB2E4. col_widths/row_heights \uB85C mm \uB2E8\uC704 \uC815\uBC00 \uB808\uC774\uC544\uC6C3. (v0.7.3.1) cell \uC548 \uD638\uCD9C \uC2DC \uC790\uB3D9\uC73C\uB85C cell \uD3ED \uAE30\uBC18 col_widths \uCD95\uC18C. row_heights \uB3C4 \uD398\uC774\uC9C0 \uB192\uC774 \uC790\uB3D9 \uCD95\uC18C. treat_as_char \uC635\uC158\uC73C\uB85C \uAE00\uC790\uCC98\uB7FC \uCDE8\uAE09 on/off \uC81C\uC5B4 (cell \uC548 \uD45C\uB294 \uD55C\uCEF4 \uC790\uB3D9 \uC801\uC6A9).", {
+      data: external_exports.array(external_exports.array(external_exports.string())).describe("2D \uBC30\uC5F4 \uB370\uC774\uD130"),
+      header_style: external_exports.boolean().optional().describe("\uCCAB \uD589 \uD5E4\uB354 \uC2A4\uD0C0\uC77C (Bold+\uBC30\uACBD\uC0C9)"),
+      col_widths: external_exports.array(external_exports.number()).optional().describe("\uC5F4 \uB108\uBE44 (mm, \uC790\uB3D9 \uCD95\uC18C \uAC00\uB2A5)"),
+      row_heights: external_exports.array(external_exports.number()).optional().describe("\uD589 \uB192\uC774 (mm, v0.7.3.1 \uC790\uB3D9 \uCD95\uC18C \uCD94\uAC00)"),
+      alignment: external_exports.enum(["left", "center", "right"]).optional().describe("\uD45C \uC815\uB82C (\uAE30\uBCF8 left)"),
+      treat_as_char: external_exports.boolean().optional().describe("v0.7.3.1 \uC2E0\uADDC: \uAE00\uC790\uCC98\uB7FC \uCDE8\uAE09 on/off. cell \uC548 nested \uD45C\uB294 \uC790\uB3D9 true. top-level \uD45C\uB294 false \uAC00 \uAE30\uBCF8.")
+    }, async ({ data, header_style, col_widths, row_heights, alignment, treat_as_char }) => {
       if (!bridge2.getCurrentDocument())
         return { content: [{ type: "text", text: JSON.stringify({ error: "\uC5F4\uB9B0 \uBB38\uC11C\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4." }) }], isError: true };
       try {
@@ -37771,6 +37772,8 @@ function registerEditingTools(server2, bridge2, toolset2 = "standard") {
           params.row_heights = row_heights;
         if (alignment)
           params.alignment = alignment;
+        if (treat_as_char !== void 0)
+          params.treat_as_char = treat_as_char;
         const r = await bridge2.send("table_create_from_data", params, FILL_TIMEOUT);
         if (!r.success)
           return { content: [{ type: "text", text: JSON.stringify({ error: r.error }) }], isError: true };
@@ -37920,9 +37923,12 @@ function registerEditingTools(server2, bridge2, toolset2 = "standard") {
         return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }], isError: true };
       }
     });
-    server2.tool("hwp_enter_table", '\uC9C0\uC815\uB41C \uD45C(0-based \uC778\uB371\uC2A4, \uC74C\uC218 \uAC00\uB2A5)\uC5D0 \uC9C4\uC785\uD558\uC5EC \uCCAB \uC140\uC5D0 \uCEE4\uC11C\uB97C \uC704\uCE58\uC2DC\uD0B5\uB2C8\uB2E4. (v0.6.8.1 \uC2E0\uADDC) \uC9C4\uC785 \uD6C4 hwp_navigate_cell, hwp_insert_row_at_cursor, hwp_insert_text, hwp_merge_current_selection \uB4F1\uC73C\uB85C \uC140 \uB2E8\uC704 \uC791\uC5C5 \uAC00\uB2A5. \uC791\uC5C5 \uC644\uB8CC \uD6C4 hwp_exit_table\uB85C \uBA85\uC2DC\uC801 \uD0C8\uCD9C. WOW #4 \uC2DC\uB098\uB9AC\uC624 ("\uB450 \uBC88\uC9F8 \uD45C \uB9C8\uC9C0\uB9C9 \uD589\uC5D0 \uD569\uACC4 \uCD94\uAC00")\uC758 mcp \uC790\uB3D9\uD654 \uC9C4\uC785\uC810. \uC548\uC804\uB9DD: \uC774\uBBF8 \uB2E4\uB978 \uD45C \uC140 \uC548\uC5D0 \uC788\uC73C\uBA74 \uC790\uB3D9\uC73C\uB85C \uBA3C\uC800 \uD0C8\uCD9C.', {
-      table_index: external_exports.number().int().describe("0-based \uD45C \uC778\uB371\uC2A4. \uC74C\uC218 \uAC00\uB2A5 (-1=\uB9C8\uC9C0\uB9C9 \uD45C, -2=\uB4A4\uC5D0\uC11C \uB450 \uBC88\uC9F8)"),
-      select_cell: external_exports.boolean().optional().describe("\uC9C4\uC785 \uD6C4 \uCCAB \uC140\uC744 \uBE14\uB85D\uC73C\uB85C \uC120\uD0DD\uD560\uC9C0 \uC5EC\uBD80 (\uAE30\uBCF8 false=\uC77C\uBC18 \uCEE4\uC11C)")
+    server2.tool("hwp_enter_table", "\uC9C0\uC815\uB41C \uD45C\uC5D0 \uC9C4\uC785\uD558\uC5EC \uCCAB \uC140\uC5D0 \uCEE4\uC11C\uB97C \uC704\uCE58\uC2DC\uD0B5\uB2C8\uB2E4. (v0.6.8.1 + v0.7.3.1 path-based) \uD3C9\uD0C4 \uC778\uB371\uC2A4 (number) \uB610\uB294 nested \uC9C4\uC785\uC744 \uC704\uD55C path (number[]) \uC9C0\uC6D0. path \uD615\uC2DD: [outer_idx, row, col, inner_idx, row, col, inner_idx, ...] \u2014 \uCCAB \uC6D0\uC18C\uB294 outer table_index, \uADF8 \uB2E4\uC74C (row, col, inner_idx) 3-\uC6D0\uC18C \uADF8\uB8F9 \uBC18\uBCF5. \uC608: [0, 1, 1, 0] = 0\uBC88 \uD45C \u2192 (1,1) \uC140 \u2192 \uADF8 \uC140 \uC548\uC758 0\uBC88 nested \uD45C (2\uB2E8). \uC9C4\uC785 \uD6C4 hwp_navigate_cell/hwp_insert_text/hwp_table_create_from_data \uB4F1\uC73C\uB85C \uC140 \uB2E8\uC704 \uC791\uC5C5 \uAC00\uB2A5. \uC791\uC5C5 \uC644\uB8CC \uD6C4 hwp_exit_table \uD638\uCD9C.", {
+      table_index: external_exports.union([
+        external_exports.number().int(),
+        external_exports.array(external_exports.number().int())
+      ]).describe("0-based \uD45C \uC778\uB371\uC2A4 (number) \uB610\uB294 nested path (number[])"),
+      select_cell: external_exports.boolean().optional().describe("\uC9C4\uC785 \uD6C4 \uCCAB \uC140\uC744 \uBE14\uB85D\uC73C\uB85C \uC120\uD0DD (\uAE30\uBCF8 false)")
     }, async ({ table_index, select_cell }) => {
       if (!bridge2.getCurrentDocument())
         return { content: [{ type: "text", text: JSON.stringify({ error: "\uC5F4\uB9B0 \uBB38\uC11C\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4." }) }], isError: true };

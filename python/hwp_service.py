@@ -828,24 +828,22 @@ def dispatch(hwp, method, params):
                 print(f"[WARN] BorderShadowing: {e}", file=sys.stderr)
         # v0.7.2.1 신규: ParaShape 정밀 옵션 (multi-fallback)
         # first_line_indent_hwpunit (1mm = 283 hwpunit, indent보다 정밀)
+        # v0.7.3.1: 정확한 키는 Indentation (NOT "Indent")
+        # 가이드 hwp-control-ParameterSet-Table.md:1600 → "Indentation PIT_I4"
         if "first_line_indent_hwpunit" in s:
             try:
                 fli_hwpu = int(s["first_line_indent_hwpunit"])
-                # 시도 1: SetItem (v0.6.9.3 패턴)
-                try:
-                    pset.HSet.SetItem("Indent", fli_hwpu)
-                except Exception:
-                    pset.Indent = fli_hwpu  # 시도 2: 직접 attribute
+                pset.Indentation = fli_hwpu  # 직접 attribute (PrevSpacing/AlignType 패턴과 동일)
                 _need_execute = True
             except Exception as e:
                 print(f"[WARN] first_line_indent_hwpunit: {e}", file=sys.stderr)
         # hanging_indent: 음수 indent 명시적 표현 (내어쓰기 체크박스 효과)
         if s.get("hanging_indent"):
             try:
-                # 현재 Indent를 음수로 (이미 |Indent|만큼 내어쓰기)
-                cur_indent = getattr(pset, "Indent", 0)
+                # v0.7.3.1: Indent → Indentation
+                cur_indent = getattr(pset, "Indentation", 0)
                 if cur_indent > 0:
-                    pset.Indent = -abs(int(cur_indent))
+                    pset.Indentation = -abs(int(cur_indent))
                 _need_execute = True
             except Exception as e:
                 print(f"[WARN] hanging_indent: {e}", file=sys.stderr)
@@ -900,44 +898,42 @@ def dispatch(hwp, method, params):
         if indent_val is not None and indent_val < 0 and left_margin_val is None:
             left_margin_val = abs(indent_val)
 
-        # ParaShape SetItem 으로 직접 적용 (양수/음수 모두 정확)
+        # v0.7.3.1: ParaShape 직접 attribute (PrevSpacing/AlignType 패턴과 동일)
+        # 가이드: docs/원본가이드소스/hwp-control-ParameterSet-Table.md L1600
+        #   "Indentation PIT_I4 들여쓰기/내어쓰기 (URC)"
+        # 가이드: docs/원본가이드소스/02-hwp-charshape-parashape-reference.md L146-151
+        #   pset.Indentation = -1000 (양수=들여쓰기, 음수=내어쓰기)
+        # v0.7.3.0 의 SetItem("Indent") 는 키 이름 잘못 ("Indent" ≠ "Indentation")
         _need_para_execute = False
         if indent_val is not None:
             try:
-                # pt → HWPUNIT (1pt ≈ 200 HWPUNIT, set_paragraph_style 다른 곳과 동일 단위)
-                indent_hwpunit = int(indent_val * 200)
-                try:
-                    pset.HSet.SetItem("Indent", indent_hwpunit)
-                except Exception:
-                    pset.Indent = indent_hwpunit
+                indent_hwpunit = int(indent_val * 200)  # pt → HWPUNIT
+                pset.Indentation = indent_hwpunit  # 직접 attribute (가이드 정답)
                 _need_para_execute = True
             except Exception as e:
                 print(f"[WARN] indent={indent_val}: {e}", file=sys.stderr)
         if left_margin_val is not None:
             try:
                 lm_hwpunit = int(left_margin_val * 200)
-                try:
-                    pset.HSet.SetItem("LeftMargin", lm_hwpunit)
-                except Exception:
-                    pset.LeftMargin = lm_hwpunit
+                pset.LeftMargin = lm_hwpunit
                 _need_para_execute = True
             except Exception as e:
                 print(f"[WARN] left_margin={left_margin_val}: {e}", file=sys.stderr)
         if right_margin_val is not None:
             try:
                 rm_hwpunit = int(right_margin_val * 200)
-                try:
-                    pset.HSet.SetItem("RightMargin", rm_hwpunit)
-                except Exception:
-                    pset.RightMargin = rm_hwpunit
+                pset.RightMargin = rm_hwpunit
                 _need_para_execute = True
             except Exception as e:
                 print(f"[WARN] right_margin={right_margin_val}: {e}", file=sys.stderr)
 
+        # ParameterSet Execute (반드시 set_para fallback 보다 먼저, 또는 단독)
         if _need_execute or _need_para_execute:
             act.Execute("ParaShape", pset.HSet)
 
-        # 폴백: hwp.set_para 도 함께 호출 (양쪽 경로로 안전성 확보)
+        # 폴백: hwp.set_para — ParameterSet Execute 가 성공한 경우 skip 가능 하지만
+        # 일관성을 위해 그대로 호출. set_para 가 ParameterSet 변경을 무효화하지 않도록 주의.
+        # (실제로 set_para 는 다른 attribute 를 추가로 set 만 하고 indent/left_margin 은 ParameterSet 와 같은 값을 다시 set 하므로 무해)
         _para_kwargs = {}
         if left_margin_val is not None:
             _para_kwargs["LeftMargin"] = left_margin_val
@@ -1113,27 +1109,71 @@ def dispatch(hwp, method, params):
         validate_params(params, ["table_index"], method)
         table_index = params["table_index"]
         select_cell = params.get("select_cell", False)
+        # v0.7.3.1: table_index 가 list 면 path-based 진입 (3단/4단 nested 지원)
+        # 형식: [outer_idx, row, col, inner_idx, row, col, inner_idx, ...]
+        # 첫 원소 = outer table_index, 그 다음 (row, col, inner_idx) 3-원소 그룹 반복
         # 다른 표 셀에 있으면 먼저 탈출
         try:
             if hwp.is_cell():
                 _exit_table_safely(hwp)
         except Exception:
             pass
+
         try:
-            hwp.get_into_nth_table(table_index)
-            in_cell = False
-            try:
-                in_cell = hwp.is_cell()
-            except Exception:
-                pass
-            if not in_cell:
-                return {"status": "error", "error": f"표 {table_index} 진입 실패"}
-            if select_cell:
+            if isinstance(table_index, list):
+                # path-based 진입 (nested)
+                if not table_index:
+                    return {"status": "error", "error": "table_index list 비어있음"}
+                path = table_index
+                hwp.get_into_nth_table(path[0])
+                # (row, col, inner_idx) 3-원소 그룹 반복
+                i = 1
+                while i + 2 < len(path):
+                    row = int(path[i])
+                    col = int(path[i+1])
+                    inner_idx = int(path[i+2])
+                    # 현재 표 첫 셀로 이동 (안전망)
+                    for _ in range(50):
+                        try: hwp.HAction.Run("TableLeftCell")
+                        except Exception: break
+                    for _ in range(50):
+                        try: hwp.HAction.Run("TableUpperCell")
+                        except Exception: break
+                    # (row, col) 로 이동
+                    for _ in range(row):
+                        hwp.HAction.Run("TableLowerCell")
+                    for _ in range(col):
+                        hwp.HAction.Run("TableRightCell")
+                    # 셀 안 nested 표로 진입 (cell 컨텍스트)
+                    try:
+                        hwp.get_into_nth_table(inner_idx)
+                    except Exception as e:
+                        return {"status": "error", "error": f"path 단계 {i//3 + 1} inner_idx={inner_idx} 진입 실패: {e}"}
+                    i += 3
+                # 최종 진입 확인
+                in_cell = False
+                try: in_cell = hwp.is_cell()
+                except Exception: pass
+                if select_cell:
+                    try: hwp.HAction.Run("TableCellBlock")
+                    except Exception: pass
+                return {"status": "ok", "table_index": path, "in_cell": in_cell, "path_depth": (len(path) - 1) // 3 + 1}
+            else:
+                # 평탄 인덱스 (기존 동작)
+                hwp.get_into_nth_table(int(table_index))
+                in_cell = False
                 try:
-                    hwp.HAction.Run("TableCellBlock")
+                    in_cell = hwp.is_cell()
                 except Exception:
                     pass
-            return {"status": "ok", "table_index": table_index, "in_cell": in_cell}
+                if not in_cell:
+                    return {"status": "error", "error": f"표 {table_index} 진입 실패"}
+                if select_cell:
+                    try:
+                        hwp.HAction.Run("TableCellBlock")
+                    except Exception:
+                        pass
+                return {"status": "ok", "table_index": table_index, "in_cell": in_cell}
         except Exception as e:
             return {"status": "error", "error": f"enter_table 실패: {e}"}
 
@@ -1315,30 +1355,75 @@ def dispatch(hwp, method, params):
         col_widths = params.get("col_widths")  # [mm, mm, ...] H1 fix
         row_heights = params.get("row_heights")  # [mm, mm, ...]
         alignment = params.get("alignment")  # left/center/right
+        treat_as_char = params.get("treat_as_char")  # v0.7.3.1 #F7
 
-        # 표 너비를 페이지 사용 가능 폭에 맞춤 (통일된 표 너비)
+        # v0.7.3.1 #F5: cell 안 호출 감지 → cell 너비 기준 (nested table)
         col_width_warning = None
+        in_cell_for_table = False
         try:
-            page_d = hwp.get_pagedef_as_dict()
-            usable_width = page_d.get("용지폭", 210) - page_d.get("왼쪽", 30) - page_d.get("오른쪽", 30)
+            in_cell_for_table = hwp.is_cell()
         except Exception:
-            usable_width = 160  # fallback
-        usable_width = max(usable_width, 50)  # 최소 50mm 보장 (좁은 용지 방어)
-        target_width = max(usable_width - 5, 20)  # 약간 여유 (5mm), 최소 20mm
+            pass
+
+        if in_cell_for_table:
+            # nested 표: 부모 cell 너비 측정
+            cell_width_mm = 50  # fallback
+            try:
+                # 시도 1: hwp.CellShape 직접 (가이드 05-hwp-supplement-deep-dive.md:87)
+                cs = hwp.CellShape
+                cell_width_hwpu = None
+                try: cell_width_hwpu = cs.Item("Width")
+                except Exception: cell_width_hwpu = getattr(cs, "Width", None)
+                if cell_width_hwpu:
+                    cell_width_mm = cell_width_hwpu / 283.465
+            except Exception:
+                try:
+                    # 시도 2: GetDefault("CellShape", ...) (가이드 hwp-control-ParameterSet-Table.md:209-210)
+                    pset_cs = hwp.HParameterSet.HCellShape
+                    hwp.HAction.GetDefault("CellShape", pset_cs.HSet)
+                    cell_width_mm = pset_cs.Width / 283.465
+                except Exception as e:
+                    print(f"[INFO] cell width 측정 실패, fallback 50mm: {e}", file=sys.stderr)
+            target_width = max(cell_width_mm - 2, 10)
+            page_d = {}  # cell 안에서 row_heights 자동 축소 비활성
+        else:
+            # top-level 표: 페이지 가용 폭
+            try:
+                page_d = hwp.get_pagedef_as_dict()
+                usable_width = page_d.get("용지폭", 210) - page_d.get("왼쪽", 30) - page_d.get("오른쪽", 30)
+            except Exception:
+                usable_width = 160
+                page_d = {}
+            usable_width = max(usable_width, 50)
+            target_width = max(usable_width - 5, 20)
 
         if col_widths:
             total_width = sum(col_widths)
-            if abs(total_width - target_width) > 1:  # 1mm 이상 차이면 비율 조정
+            if abs(total_width - target_width) > 1:
                 ratio = target_width / total_width
                 col_widths = [round(w * ratio, 1) for w in col_widths]
                 if total_width > target_width + 5:
-                    col_width_warning = f"col_widths 합계({total_width}mm)를 페이지 폭({target_width}mm)에 맞춰 조정했습니다."
+                    ctx = "cell 폭" if in_cell_for_table else "페이지 폭"
+                    col_width_warning = f"col_widths 합계({total_width}mm)를 {ctx}({target_width}mm)에 맞춰 조정했습니다."
         else:
-            # col_widths 미지정 시: 균등 분배로 페이지 폭에 맞춤
             if cols > 0:
                 col_widths = [round(target_width / cols, 1)] * cols
             else:
                 col_widths = []
+
+        # v0.7.3.1 #F6: row_heights 자동 축소 (cell 안에서는 비활성)
+        row_height_warning = None
+        if not in_cell_for_table and row_heights:
+            try:
+                usable_height = page_d.get("용지길이", 297) - page_d.get("위쪽", 20) - page_d.get("아래쪽", 15)
+                target_height = max(usable_height - 5, 30)
+                total_height = sum(row_heights)
+                if total_height > target_height + 1:
+                    ratio = target_height / total_height
+                    row_heights = [round(h * ratio, 1) for h in row_heights]
+                    row_height_warning = f"row_heights 합계({total_height}mm)를 페이지 높이({target_height}mm)에 맞춰 조정했습니다."
+            except Exception as e:
+                print(f"[WARN] row_heights ratio: {e}", file=sys.stderr)
 
         # H1: col_widths/row_heights가 있으면 HTableCreation으로 정밀 생성
         if col_widths or row_heights:
@@ -1397,15 +1482,37 @@ def dispatch(hwp, method, params):
                     hwp.TableRightCell()
         # 표 밖으로 안전하게 탈출 (is_cell 확인 후 Cancel 반복)
         _exit_table_safely(hwp)
-        try:
-            pass  # _exit_table_safely에서 이미 MoveDocEnd + BreakPara 수행
-        except Exception as e:
-            print(f"[WARN] Table exit: {e}", file=sys.stderr)
-        # header_style: Bold는 이미 표 생성 시 적용됨
-        # 배경색은 set_cell_color로 별도 적용 (표 진입/탈출 부작용 방지)
+
+        # v0.7.3.1 #F7: treat_as_char 옵션 적용 (표 생성 직후, 탈출 후)
+        # cell 안 nested 표는 한컴 기본 동작이 글자처럼 취급. top-level 표는 별도 액션.
+        treat_as_char_result = None
+        if treat_as_char is not None:
+            try:
+                # 방금 만든 표를 다시 진입하지 말고, ShapeObject 액션으로 토글
+                # multi-fallback: 한컴 액션 이름 후보들
+                action_tried = False
+                for action_name in ("TableTreatAsChar", "ShapeObjTreatAsChar", "TreatAsChar"):
+                    try:
+                        hwp.HAction.Run(action_name)
+                        treat_as_char_result = {"action": action_name, "value": treat_as_char}
+                        action_tried = True
+                        break
+                    except Exception:
+                        continue
+                if not action_tried:
+                    treat_as_char_result = {"warning": "TreatAsChar 액션 미지원 — top-level 표는 한컴 기본 동작 (cell 안 표는 자동)"}
+            except Exception as e:
+                treat_as_char_result = {"error": str(e)}
+
         result = {"status": "ok", "rows": rows, "cols": cols, "filled": filled, "header_styled": bool(header_style)}
         if col_width_warning:
-            result["warning"] = col_width_warning
+            result["col_width_warning"] = col_width_warning
+        if row_height_warning:
+            result["row_height_warning"] = row_height_warning
+        if in_cell_for_table:
+            result["in_cell_nested"] = True
+        if treat_as_char_result is not None:
+            result["treat_as_char"] = treat_as_char_result
         return result
 
     if method == "create_approval_box":
@@ -1640,78 +1747,52 @@ def dispatch(hwp, method, params):
             return {"status": "error", "error": f"레이아웃 검증 실패: {e}"}
 
     if method == "set_page_setup":
-        # v0.7.3 #5: pdef.attr 직접 변경이 ParameterSet 에 반영 안 됨 → SetItem 우선 시도
-        # 이전: pdef = pset.PageDef; pdef.TopMargin = X 가 무시되고 한컴 기본값 복귀
-        # multi-fallback (v0.6.9 OutlineLevel 패턴): SetItem → pdef.attr → set_page_def
+        # v0.7.3.1: 가이드 정확한 패턴
+        # docs/원본가이드소스/05-hwp-supplement-deep-dive.md L785-799 인용:
+        #   hwp.HAction.GetDefault("SectionDef", hwp.HParameterSet.HSecDef.HSet)
+        #   pd = hwp.HParameterSet.HSecDef.HPageDef
+        #   pd.TopMargin = ...
+        #   hwp.HAction.Execute("SectionDef", hwp.HParameterSet.HSecDef.HSet)
+        #
+        # 이전 v0.7.3.0 의 잘못:
+        #   GetDefault("PageSetup")  ← 액션 이름 잘못 ("SectionDef" 정답)
+        #   pset.PageDef             ← 소문자 d 잘못 ("HPageDef" 정답)
         try:
             act = hwp.HAction
-            pset = hwp.HParameterSet.HSecDef
-            act.GetDefault("PageSetup", pset.HSet)
-            pdef = pset.PageDef
-
-            def _set_pdef(attr_name, value):
-                """multi-fallback: SetItem → pdef.attr"""
-                # 시도 1: ParameterSet HSet.SetItem (가장 안정)
-                try:
-                    pdef.HSet.SetItem(attr_name, value)
-                    return True
-                except Exception:
-                    pass
-                # 시도 2: pdef 객체 attr 직접
-                try:
-                    setattr(pdef, attr_name, value)
-                    return True
-                except Exception as e:
-                    print(f"[WARN] PageSetup {attr_name}={value}: {e}", file=sys.stderr)
-                    return False
+            hsec = hwp.HParameterSet.HSecDef
+            act.GetDefault("SectionDef", hsec.HSet)
+            pd = hwp.HParameterSet.HSecDef.HPageDef  # 대문자 H 접두
 
             applied = []
             if "top_margin" in params:
-                if _set_pdef("TopMargin", hwp.MiliToHwpUnit(params["top_margin"])):
-                    applied.append("top_margin")
+                pd.TopMargin = hwp.MiliToHwpUnit(params["top_margin"])
+                applied.append("top_margin")
             if "bottom_margin" in params:
-                if _set_pdef("BottomMargin", hwp.MiliToHwpUnit(params["bottom_margin"])):
-                    applied.append("bottom_margin")
+                pd.BottomMargin = hwp.MiliToHwpUnit(params["bottom_margin"])
+                applied.append("bottom_margin")
             if "left_margin" in params:
-                if _set_pdef("LeftMargin", hwp.MiliToHwpUnit(params["left_margin"])):
-                    applied.append("left_margin")
+                pd.LeftMargin = hwp.MiliToHwpUnit(params["left_margin"])
+                applied.append("left_margin")
             if "right_margin" in params:
-                if _set_pdef("RightMargin", hwp.MiliToHwpUnit(params["right_margin"])):
-                    applied.append("right_margin")
+                pd.RightMargin = hwp.MiliToHwpUnit(params["right_margin"])
+                applied.append("right_margin")
             if "header_margin" in params:
-                if _set_pdef("HeaderLen", hwp.MiliToHwpUnit(params["header_margin"])):
-                    applied.append("header_margin")
+                pd.HeaderLen = hwp.MiliToHwpUnit(params["header_margin"])
+                applied.append("header_margin")
             if "footer_margin" in params:
-                if _set_pdef("FooterLen", hwp.MiliToHwpUnit(params["footer_margin"])):
-                    applied.append("footer_margin")
+                pd.FooterLen = hwp.MiliToHwpUnit(params["footer_margin"])
+                applied.append("footer_margin")
             if "orientation" in params:
-                if _set_pdef("Landscape", 1 if params["orientation"] == "landscape" else 0):
-                    applied.append("orientation")
+                pd.Landscape = 1 if params["orientation"] == "landscape" else 0
+                applied.append("orientation")
             if "paper_width" in params:
-                if _set_pdef("PaperWidth", hwp.MiliToHwpUnit(params["paper_width"])):
-                    applied.append("paper_width")
+                pd.PaperWidth = hwp.MiliToHwpUnit(params["paper_width"])
+                applied.append("paper_width")
             if "paper_height" in params:
-                if _set_pdef("PaperHeight", hwp.MiliToHwpUnit(params["paper_height"])):
-                    applied.append("paper_height")
+                pd.PaperHeight = hwp.MiliToHwpUnit(params["paper_height"])
+                applied.append("paper_height")
 
-            act.Execute("PageSetup", pset.HSet)
-
-            # 시도 3 fallback: pyhwpx 의 set_page_def 또는 page_setup 헬퍼 호출
-            try:
-                if hasattr(hwp, "set_page_def") and applied:
-                    margin_kwargs = {}
-                    if "top_margin" in params: margin_kwargs["top"] = params["top_margin"]
-                    if "bottom_margin" in params: margin_kwargs["bottom"] = params["bottom_margin"]
-                    if "left_margin" in params: margin_kwargs["left"] = params["left_margin"]
-                    if "right_margin" in params: margin_kwargs["right"] = params["right_margin"]
-                    if margin_kwargs:
-                        try:
-                            hwp.set_page_def(**margin_kwargs)
-                        except Exception as e:
-                            print(f"[INFO] set_page_def fallback failed: {e}", file=sys.stderr)
-            except Exception:
-                pass
-
+            act.Execute("SectionDef", hsec.HSet)
             return {"status": "ok", "applied": applied}
         except Exception as e:
             return {"status": "error", "error": f"페이지 설정 실패: {e}"}
@@ -2841,22 +2922,18 @@ def dispatch(hwp, method, params):
                     except Exception: pass
                 if "left_margin" in para:
                     lm = int(para["left_margin"])
-                    try: pset.HSet.SetItem("LeftMargin", lm)
-                    except Exception:
-                        try: pset.LeftMargin = lm
-                        except Exception: pass
+                    # v0.7.3.1: 직접 attribute (가이드 02-hwp-charshape-parashape-reference.md L146-151)
+                    try: pset.LeftMargin = lm
+                    except Exception as e: print(f"[WARN] LeftMargin: {e}", file=sys.stderr)
                 if "right_margin" in para:
                     rm = int(para["right_margin"])
-                    try: pset.HSet.SetItem("RightMargin", rm)
-                    except Exception:
-                        try: pset.RightMargin = rm
-                        except Exception: pass
+                    try: pset.RightMargin = rm
+                    except Exception as e: print(f"[WARN] RightMargin: {e}", file=sys.stderr)
                 if "indent" in para:
                     ind = int(para["indent"])
-                    try: pset.HSet.SetItem("Indent", ind)
-                    except Exception:
-                        try: pset.Indent = ind
-                        except Exception: pass
+                    # v0.7.3.1: Indent → Indentation (가이드 hwp-control-ParameterSet-Table.md:1600)
+                    try: pset.Indentation = ind
+                    except Exception as e: print(f"[WARN] Indentation: {e}", file=sys.stderr)
 
                 # PascalCase backward compat
                 if "AlignType" in para:
