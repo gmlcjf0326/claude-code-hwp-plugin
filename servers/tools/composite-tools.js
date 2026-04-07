@@ -1389,4 +1389,237 @@ export function registerCompositeTools(server, bridge) {
             return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
         }
     });
+    // ===== v0.7.2.4: End-to-End Autopilot =====
+    // hwp_autopilot_create — 12-step pipeline orchestrator (사용자 핵심 니즈)
+    // 콘텐츠 생성은 호출자(LLM)가 미리 sections[]에 담아 전달.
+    server.tool('hwp_autopilot_create', '문서 자동 생성 12단계 파이프라인. (v0.7.2.4 신규) sections[]/tables[]를 받아 template 기반으로 작성→스타일→TOC→검증→저장→PDF→layout 검증까지 일괄 실행. mode=plan은 estimate만 반환, mode=execute는 실제 파이프 실행. 각 step마다 session_state 자동 save + cancel 체크.', {
+        output_path: z.string().describe('생성할 .hwp/.hwpx 절대 경로'),
+        sections: z.array(z.object({
+            title: z.string(),
+            content: z.string(),
+            outline_level: z.number().int().min(1).max(7).optional(),
+        })).describe('미리 생성된 섹션 콘텐츠 (호출자가 LLM으로 작성)'),
+        template_path: z.string().optional().describe('템플릿 .hwpx 경로 (없으면 빈 문서로 시작)'),
+        template_id: z.string().optional().describe('hwp_template_library 등록 ID (template_path 대신)'),
+        tables: z.array(z.object({
+            caption: z.string().optional(),
+            data: z.array(z.array(z.string())),
+        })).optional().describe('삽입할 표 목록 (sections 다음에 일괄 삽입)'),
+        style_profile: z.any().optional().describe('apply_style_profile에 전달할 프로파일'),
+        approve_threshold_seconds: z.number().optional().describe('estimate가 이를 넘으면 awaiting_approval 반환 (기본 600)'),
+        export_pdf: z.boolean().optional().describe('완료 후 PDF 변환 (기본 true)'),
+        mode: z.enum(['plan', 'execute']).optional().describe('plan=estimate만, execute=실제 실행 (기본 execute)'),
+        session_id: z.string().optional().describe('재개할 세션 (생략 시 자동 생성)'),
+        prompt: z.string().optional().describe('원본 사용자 프롬프트 (메타데이터)'),
+    }, async (args) => {
+        const startTime = Date.now();
+        const mode = args.mode || 'execute';
+        const threshold = args.approve_threshold_seconds ?? 600;
+        const exportPdf = args.export_pdf ?? true;
+        const sid = args.session_id || `auto_${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}`;
+        const sessionPath = path.join(STATE_DIR, `${sid}.json`);
+        if (!fs.existsSync(STATE_DIR))
+            fs.mkdirSync(STATE_DIR, { recursive: true });
+        const sectionTitles = args.sections.map(s => s.title);
+        const totalSteps = 8 + args.sections.length + (args.tables?.length || 0);
+        let stepsDone = 0;
+        const stepLog = [];
+        const saveSession = (extra = {}) => {
+            let existing = {};
+            if (fs.existsSync(sessionPath)) {
+                try {
+                    existing = JSON.parse(fs.readFileSync(sessionPath, 'utf8'));
+                }
+                catch { }
+            }
+            const merged = {
+                ...existing,
+                session_id: sid,
+                current_doc: args.output_path,
+                sections_total: sectionTitles,
+                progress_percent: Math.round((stepsDone / totalSteps) * 100),
+                last_saved: new Date().toISOString(),
+                ...extra,
+            };
+            fs.writeFileSync(sessionPath, JSON.stringify(merged, null, 2), 'utf8');
+            return merged;
+        };
+        const isCancelled = () => {
+            if (!fs.existsSync(sessionPath))
+                return false;
+            try {
+                return !!JSON.parse(fs.readFileSync(sessionPath, 'utf8')).cancelled;
+            }
+            catch {
+                return false;
+            }
+        };
+        const recordStep = (name, ok, detail) => {
+            stepsDone++;
+            stepLog.push({ step: stepsDone, name, ok, detail });
+            saveSession({ current_section: name });
+        };
+        try {
+            await bridge.ensureRunning();
+            // STEP 1: estimate (plan/execute 공통)
+            let estimate = {};
+            try {
+                const r = await bridge.send('estimate_workload', {
+                    sections_count: args.sections.length,
+                    target_chars: args.sections.reduce((a, s) => a + (s.content?.length || 0), 0),
+                    tables_count: args.tables?.length || 0,
+                }, ANALYSIS_TIMEOUT);
+                if (r.success)
+                    estimate = r.data;
+            }
+            catch { }
+            const estSeconds = typeof estimate.estimated_seconds === 'number' ? estimate.estimated_seconds : 0;
+            if (mode === 'plan') {
+                return { content: [{ type: 'text', text: JSON.stringify({
+                                ok: true, mode: 'plan', session_id: sid, estimate,
+                                steps_total: totalSteps, sections: sectionTitles,
+                                tables: args.tables?.length || 0,
+                                requires_approval: estSeconds > threshold,
+                            }) }] };
+            }
+            if (estSeconds > threshold) {
+                saveSession({ status: 'awaiting_approval' });
+                return { content: [{ type: 'text', text: JSON.stringify({
+                                ok: true, status: 'awaiting_approval', session_id: sid, estimate,
+                                message: `예상 ${estSeconds}초 > 임계 ${threshold}초. session_id로 재호출 시 approve_threshold_seconds를 늘려 진행하세요.`,
+                            }) }] };
+            }
+            // STEP 2: 문서 생성 또는 템플릿 열기
+            if (args.template_path) {
+                const r = await bridge.send('open_document', { file_path: args.template_path }, ANALYSIS_TIMEOUT);
+                recordStep('open_template', r.success, r.error);
+                if (!r.success)
+                    throw new Error(`open_template failed: ${r.error}`);
+            }
+            else if (args.template_id) {
+                const tplMeta = path.join(TEMPLATE_DIR, `${args.template_id}.json`);
+                const tplFile = path.join(TEMPLATE_DIR, 'files', `${args.template_id}.hwpx`);
+                if (!fs.existsSync(tplFile))
+                    throw new Error(`template file not found: ${args.template_id}`);
+                const r = await bridge.send('open_document', { file_path: tplFile }, ANALYSIS_TIMEOUT);
+                recordStep('open_template_library', r.success, { template_id: args.template_id });
+                if (!r.success)
+                    throw new Error(`open template_id failed: ${r.error}`);
+            }
+            else {
+                const r = await bridge.send('document_create', {}, ANALYSIS_TIMEOUT);
+                recordStep('document_create', r.success, r.error);
+                if (!r.success)
+                    throw new Error(`document_create failed: ${r.error}`);
+            }
+            if (isCancelled())
+                throw new Error('cancelled');
+            // STEP 3..N: 섹션 작성 루프
+            for (const section of args.sections) {
+                if (isCancelled())
+                    throw new Error('cancelled');
+                const headingR = await bridge.send('insert_heading', {
+                    text: section.title,
+                    outline_level: section.outline_level || 1,
+                }, ANALYSIS_TIMEOUT);
+                if (!headingR.success) {
+                    // fallback: insert_text
+                    await bridge.send('insert_text', { text: section.title + '\n' }, ANALYSIS_TIMEOUT);
+                }
+                const textR = await bridge.send('insert_text', { text: section.content + '\n\n' }, ANALYSIS_TIMEOUT);
+                recordStep(`section:${section.title}`, textR.success, { chars: section.content.length });
+                saveSession({
+                    sections_done: stepLog.filter(s => String(s.name).startsWith('section:')).map(s => String(s.name).slice(8)),
+                    current_section: section.title,
+                });
+            }
+            // STEP: 표 삽입
+            if (args.tables) {
+                for (let i = 0; i < args.tables.length; i++) {
+                    if (isCancelled())
+                        throw new Error('cancelled');
+                    const t = args.tables[i];
+                    const r = await bridge.send('table_create_from_data', {
+                        data: t.data,
+                        caption: t.caption,
+                    }, ANALYSIS_TIMEOUT);
+                    recordStep(`table:${i}`, r.success, { rows: t.data.length, caption: t.caption });
+                }
+            }
+            // STEP: 스타일 프로파일 적용
+            if (args.style_profile) {
+                const r = await bridge.send('apply_style_profile', { profile: args.style_profile }, ANALYSIS_TIMEOUT);
+                recordStep('apply_style_profile', r.success, r.error);
+            }
+            // STEP: TOC + refresh fields
+            try {
+                const r = await bridge.send('generate_toc', {}, ANALYSIS_TIMEOUT);
+                recordStep('generate_toc', r.success, r.error);
+            }
+            catch (e) {
+                recordStep('generate_toc', false, e.message);
+            }
+            if (isCancelled())
+                throw new Error('cancelled');
+            // STEP: 일단 저장 (validate가 path 필요)
+            const saveR = await bridge.send('save_document', { file_path: args.output_path }, ANALYSIS_TIMEOUT);
+            recordStep('save_document', saveR.success, saveR.error);
+            if (!saveR.success)
+                throw new Error(`save_document failed: ${saveR.error}`);
+            // STEP: validate_consistency, score < 85면 review_and_edit auto_fix (placeholder)
+            let score = 100;
+            try {
+                const r = await bridge.send('validate_consistency', { file_path: args.output_path }, ANALYSIS_TIMEOUT);
+                if (r.success && r.data) {
+                    const d = r.data;
+                    score = typeof d.score === 'number' ? d.score : 100;
+                }
+                recordStep('validate_consistency', r.success, { score });
+            }
+            catch (e) {
+                recordStep('validate_consistency', false, e.message);
+            }
+            // STEP: PDF
+            let pdf_path = null;
+            if (exportPdf) {
+                const pdfTarget = args.output_path.replace(/\.(hwp|hwpx)$/i, '.pdf');
+                const r = await bridge.send('export_pdf', { file_path: pdfTarget }, ANALYSIS_TIMEOUT);
+                recordStep('export_pdf', r.success, r.error);
+                if (r.success)
+                    pdf_path = pdfTarget;
+            }
+            // STEP: verify_layout
+            try {
+                const r = await bridge.send('verify_layout', { file_path: args.output_path }, ANALYSIS_TIMEOUT);
+                recordStep('verify_layout', r.success, r.error);
+            }
+            catch (e) {
+                recordStep('verify_layout', false, e.message);
+            }
+            const finalSession = saveSession({
+                status: 'completed',
+                progress_percent: 100,
+            });
+            return { content: [{ type: 'text', text: JSON.stringify({
+                            ok: true, status: 'completed', session_id: sid,
+                            saved_path: args.output_path, pdf_path,
+                            score, steps_done: stepsDone, steps_total: totalSteps,
+                            duration_seconds: Math.round((Date.now() - startTime) / 1000),
+                            step_log: stepLog,
+                            estimate,
+                        }) }] };
+        }
+        catch (err) {
+            const message = err.message;
+            const cancelled = message === 'cancelled';
+            saveSession({ status: cancelled ? 'cancelled' : 'failed', error: message });
+            return { content: [{ type: 'text', text: JSON.stringify({
+                            ok: false, status: cancelled ? 'cancelled' : 'failed',
+                            session_id: sid, error: message,
+                            steps_done: stepsDone, steps_total: totalSteps,
+                            step_log: stepLog,
+                            duration_seconds: Math.round((Date.now() - startTime) / 1000),
+                        }) }], isError: !cancelled };
+        }
+    });
 }

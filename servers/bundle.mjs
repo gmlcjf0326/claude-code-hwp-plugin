@@ -39598,6 +39598,233 @@ function registerCompositeTools(server2, bridge2) {
       return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }], isError: true };
     }
   });
+  server2.tool("hwp_autopilot_create", "\uBB38\uC11C \uC790\uB3D9 \uC0DD\uC131 12\uB2E8\uACC4 \uD30C\uC774\uD504\uB77C\uC778. (v0.7.2.4 \uC2E0\uADDC) sections[]/tables[]\uB97C \uBC1B\uC544 template \uAE30\uBC18\uC73C\uB85C \uC791\uC131\u2192\uC2A4\uD0C0\uC77C\u2192TOC\u2192\uAC80\uC99D\u2192\uC800\uC7A5\u2192PDF\u2192layout \uAC80\uC99D\uAE4C\uC9C0 \uC77C\uAD04 \uC2E4\uD589. mode=plan\uC740 estimate\uB9CC \uBC18\uD658, mode=execute\uB294 \uC2E4\uC81C \uD30C\uC774\uD504 \uC2E4\uD589. \uAC01 step\uB9C8\uB2E4 session_state \uC790\uB3D9 save + cancel \uCCB4\uD06C.", {
+    output_path: external_exports.string().describe("\uC0DD\uC131\uD560 .hwp/.hwpx \uC808\uB300 \uACBD\uB85C"),
+    sections: external_exports.array(external_exports.object({
+      title: external_exports.string(),
+      content: external_exports.string(),
+      outline_level: external_exports.number().int().min(1).max(7).optional()
+    })).describe("\uBBF8\uB9AC \uC0DD\uC131\uB41C \uC139\uC158 \uCF58\uD150\uCE20 (\uD638\uCD9C\uC790\uAC00 LLM\uC73C\uB85C \uC791\uC131)"),
+    template_path: external_exports.string().optional().describe("\uD15C\uD50C\uB9BF .hwpx \uACBD\uB85C (\uC5C6\uC73C\uBA74 \uBE48 \uBB38\uC11C\uB85C \uC2DC\uC791)"),
+    template_id: external_exports.string().optional().describe("hwp_template_library \uB4F1\uB85D ID (template_path \uB300\uC2E0)"),
+    tables: external_exports.array(external_exports.object({
+      caption: external_exports.string().optional(),
+      data: external_exports.array(external_exports.array(external_exports.string()))
+    })).optional().describe("\uC0BD\uC785\uD560 \uD45C \uBAA9\uB85D (sections \uB2E4\uC74C\uC5D0 \uC77C\uAD04 \uC0BD\uC785)"),
+    style_profile: external_exports.any().optional().describe("apply_style_profile\uC5D0 \uC804\uB2EC\uD560 \uD504\uB85C\uD30C\uC77C"),
+    approve_threshold_seconds: external_exports.number().optional().describe("estimate\uAC00 \uC774\uB97C \uB118\uC73C\uBA74 awaiting_approval \uBC18\uD658 (\uAE30\uBCF8 600)"),
+    export_pdf: external_exports.boolean().optional().describe("\uC644\uB8CC \uD6C4 PDF \uBCC0\uD658 (\uAE30\uBCF8 true)"),
+    mode: external_exports.enum(["plan", "execute"]).optional().describe("plan=estimate\uB9CC, execute=\uC2E4\uC81C \uC2E4\uD589 (\uAE30\uBCF8 execute)"),
+    session_id: external_exports.string().optional().describe("\uC7AC\uAC1C\uD560 \uC138\uC158 (\uC0DD\uB7B5 \uC2DC \uC790\uB3D9 \uC0DD\uC131)"),
+    prompt: external_exports.string().optional().describe("\uC6D0\uBCF8 \uC0AC\uC6A9\uC790 \uD504\uB86C\uD504\uD2B8 (\uBA54\uD0C0\uB370\uC774\uD130)")
+  }, async (args) => {
+    const startTime = Date.now();
+    const mode = args.mode || "execute";
+    const threshold = args.approve_threshold_seconds ?? 600;
+    const exportPdf = args.export_pdf ?? true;
+    const sid = args.session_id || `auto_${(/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-").slice(0, 19)}`;
+    const sessionPath = path6.join(STATE_DIR, `${sid}.json`);
+    if (!fs5.existsSync(STATE_DIR))
+      fs5.mkdirSync(STATE_DIR, { recursive: true });
+    const sectionTitles = args.sections.map((s) => s.title);
+    const totalSteps = 8 + args.sections.length + (args.tables?.length || 0);
+    let stepsDone = 0;
+    const stepLog = [];
+    const saveSession = (extra = {}) => {
+      let existing = {};
+      if (fs5.existsSync(sessionPath)) {
+        try {
+          existing = JSON.parse(fs5.readFileSync(sessionPath, "utf8"));
+        } catch {
+        }
+      }
+      const merged = {
+        ...existing,
+        session_id: sid,
+        current_doc: args.output_path,
+        sections_total: sectionTitles,
+        progress_percent: Math.round(stepsDone / totalSteps * 100),
+        last_saved: (/* @__PURE__ */ new Date()).toISOString(),
+        ...extra
+      };
+      fs5.writeFileSync(sessionPath, JSON.stringify(merged, null, 2), "utf8");
+      return merged;
+    };
+    const isCancelled = () => {
+      if (!fs5.existsSync(sessionPath))
+        return false;
+      try {
+        return !!JSON.parse(fs5.readFileSync(sessionPath, "utf8")).cancelled;
+      } catch {
+        return false;
+      }
+    };
+    const recordStep = (name, ok, detail) => {
+      stepsDone++;
+      stepLog.push({ step: stepsDone, name, ok, detail });
+      saveSession({ current_section: name });
+    };
+    try {
+      await bridge2.ensureRunning();
+      let estimate = {};
+      try {
+        const r = await bridge2.send("estimate_workload", {
+          sections_count: args.sections.length,
+          target_chars: args.sections.reduce((a, s) => a + (s.content?.length || 0), 0),
+          tables_count: args.tables?.length || 0
+        }, ANALYSIS_TIMEOUT2);
+        if (r.success)
+          estimate = r.data;
+      } catch {
+      }
+      const estSeconds = typeof estimate.estimated_seconds === "number" ? estimate.estimated_seconds : 0;
+      if (mode === "plan") {
+        return { content: [{ type: "text", text: JSON.stringify({
+          ok: true,
+          mode: "plan",
+          session_id: sid,
+          estimate,
+          steps_total: totalSteps,
+          sections: sectionTitles,
+          tables: args.tables?.length || 0,
+          requires_approval: estSeconds > threshold
+        }) }] };
+      }
+      if (estSeconds > threshold) {
+        saveSession({ status: "awaiting_approval" });
+        return { content: [{ type: "text", text: JSON.stringify({
+          ok: true,
+          status: "awaiting_approval",
+          session_id: sid,
+          estimate,
+          message: `\uC608\uC0C1 ${estSeconds}\uCD08 > \uC784\uACC4 ${threshold}\uCD08. session_id\uB85C \uC7AC\uD638\uCD9C \uC2DC approve_threshold_seconds\uB97C \uB298\uB824 \uC9C4\uD589\uD558\uC138\uC694.`
+        }) }] };
+      }
+      if (args.template_path) {
+        const r = await bridge2.send("open_document", { file_path: args.template_path }, ANALYSIS_TIMEOUT2);
+        recordStep("open_template", r.success, r.error);
+        if (!r.success)
+          throw new Error(`open_template failed: ${r.error}`);
+      } else if (args.template_id) {
+        const tplMeta = path6.join(TEMPLATE_DIR, `${args.template_id}.json`);
+        const tplFile = path6.join(TEMPLATE_DIR, "files", `${args.template_id}.hwpx`);
+        if (!fs5.existsSync(tplFile))
+          throw new Error(`template file not found: ${args.template_id}`);
+        const r = await bridge2.send("open_document", { file_path: tplFile }, ANALYSIS_TIMEOUT2);
+        recordStep("open_template_library", r.success, { template_id: args.template_id });
+        if (!r.success)
+          throw new Error(`open template_id failed: ${r.error}`);
+      } else {
+        const r = await bridge2.send("document_create", {}, ANALYSIS_TIMEOUT2);
+        recordStep("document_create", r.success, r.error);
+        if (!r.success)
+          throw new Error(`document_create failed: ${r.error}`);
+      }
+      if (isCancelled())
+        throw new Error("cancelled");
+      for (const section of args.sections) {
+        if (isCancelled())
+          throw new Error("cancelled");
+        const headingR = await bridge2.send("insert_heading", {
+          text: section.title,
+          outline_level: section.outline_level || 1
+        }, ANALYSIS_TIMEOUT2);
+        if (!headingR.success) {
+          await bridge2.send("insert_text", { text: section.title + "\n" }, ANALYSIS_TIMEOUT2);
+        }
+        const textR = await bridge2.send("insert_text", { text: section.content + "\n\n" }, ANALYSIS_TIMEOUT2);
+        recordStep(`section:${section.title}`, textR.success, { chars: section.content.length });
+        saveSession({
+          sections_done: stepLog.filter((s) => String(s.name).startsWith("section:")).map((s) => String(s.name).slice(8)),
+          current_section: section.title
+        });
+      }
+      if (args.tables) {
+        for (let i = 0; i < args.tables.length; i++) {
+          if (isCancelled())
+            throw new Error("cancelled");
+          const t = args.tables[i];
+          const r = await bridge2.send("table_create_from_data", {
+            data: t.data,
+            caption: t.caption
+          }, ANALYSIS_TIMEOUT2);
+          recordStep(`table:${i}`, r.success, { rows: t.data.length, caption: t.caption });
+        }
+      }
+      if (args.style_profile) {
+        const r = await bridge2.send("apply_style_profile", { profile: args.style_profile }, ANALYSIS_TIMEOUT2);
+        recordStep("apply_style_profile", r.success, r.error);
+      }
+      try {
+        const r = await bridge2.send("generate_toc", {}, ANALYSIS_TIMEOUT2);
+        recordStep("generate_toc", r.success, r.error);
+      } catch (e) {
+        recordStep("generate_toc", false, e.message);
+      }
+      if (isCancelled())
+        throw new Error("cancelled");
+      const saveR = await bridge2.send("save_document", { file_path: args.output_path }, ANALYSIS_TIMEOUT2);
+      recordStep("save_document", saveR.success, saveR.error);
+      if (!saveR.success)
+        throw new Error(`save_document failed: ${saveR.error}`);
+      let score = 100;
+      try {
+        const r = await bridge2.send("validate_consistency", { file_path: args.output_path }, ANALYSIS_TIMEOUT2);
+        if (r.success && r.data) {
+          const d = r.data;
+          score = typeof d.score === "number" ? d.score : 100;
+        }
+        recordStep("validate_consistency", r.success, { score });
+      } catch (e) {
+        recordStep("validate_consistency", false, e.message);
+      }
+      let pdf_path = null;
+      if (exportPdf) {
+        const pdfTarget = args.output_path.replace(/\.(hwp|hwpx)$/i, ".pdf");
+        const r = await bridge2.send("export_pdf", { file_path: pdfTarget }, ANALYSIS_TIMEOUT2);
+        recordStep("export_pdf", r.success, r.error);
+        if (r.success)
+          pdf_path = pdfTarget;
+      }
+      try {
+        const r = await bridge2.send("verify_layout", { file_path: args.output_path }, ANALYSIS_TIMEOUT2);
+        recordStep("verify_layout", r.success, r.error);
+      } catch (e) {
+        recordStep("verify_layout", false, e.message);
+      }
+      const finalSession = saveSession({
+        status: "completed",
+        progress_percent: 100
+      });
+      return { content: [{ type: "text", text: JSON.stringify({
+        ok: true,
+        status: "completed",
+        session_id: sid,
+        saved_path: args.output_path,
+        pdf_path,
+        score,
+        steps_done: stepsDone,
+        steps_total: totalSteps,
+        duration_seconds: Math.round((Date.now() - startTime) / 1e3),
+        step_log: stepLog,
+        estimate
+      }) }] };
+    } catch (err) {
+      const message = err.message;
+      const cancelled = message === "cancelled";
+      saveSession({ status: cancelled ? "cancelled" : "failed", error: message });
+      return { content: [{ type: "text", text: JSON.stringify({
+        ok: false,
+        status: cancelled ? "cancelled" : "failed",
+        session_id: sid,
+        error: message,
+        steps_done: stepsDone,
+        steps_total: totalSteps,
+        step_log: stepLog,
+        duration_seconds: Math.round((Date.now() - startTime) / 1e3)
+      }) }], isError: !cancelled };
+    }
+  });
 }
 
 // servers/resources/document-resources.js
