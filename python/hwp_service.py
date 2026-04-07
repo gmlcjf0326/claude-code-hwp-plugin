@@ -219,6 +219,14 @@ def dispatch(hwp, method, params):
         if not result:
             raise RuntimeError(f"한글 프로그램에서 파일을 열 수 없습니다: {file_path}")
         _current_doc_path = file_path
+        # v0.7.2.12: open() 후 한컴이 마지막 cursor 위치를 복원하므로
+        # 본문 첫 단락 보장을 위해 MoveDocBegin 명시 호출.
+        # 이전: cursor 가 마지막 단락에 있어 set_paragraph_style/get_para_shape 가
+        # 본문 첫 단락이 아닌 다른 단락에 작동하는 hidden bug 였음.
+        try:
+            hwp.HAction.Run("MoveDocBegin")
+        except Exception as e:
+            print(f"[WARN] open_document MoveDocBegin failed: {e}", file=sys.stderr)
         return {"status": "ok", "file_path": file_path, "pages": hwp.PageCount}
 
     if method == "get_document_info":
@@ -2335,14 +2343,15 @@ def dispatch(hwp, method, params):
     # v0.7.1 신규: 양식의 서식 패턴 학습
     if method == "analyze_writing_patterns":
         validate_params(params, ["file_path"], method)
-        # v0.7.2.8: file_path 를 실제로 열고 커서를 문서 처음으로 이동 (compare_with_template 정확도 핵심)
-        # 기존 버그: hwp.open 호출이 없어 "현재 열린 문서" 만 읽음 → 두 파일 비교가 동일 값 반환
+        # v0.7.2.8: file_path 를 실제로 열어 두 파일이 다르게 분석되도록
+        # v0.7.2.12: hwp.open() 후 cursor 가 마지막 위치 복원 → MoveDocBegin 으로 본문 첫 단락 강제
+        # MovePos(2) 가 사실 cursor 를 본문 첫 단락으로 보내지 못하는 hidden bug 있었음
         from hwp_editor import get_para_shape, get_char_shape
         try:
             hwp.open(os.path.abspath(params["file_path"]))
-            hwp.MovePos(2)  # movePOS_START: 본문 첫 단락으로
+            hwp.HAction.Run("MoveDocBegin")
         except Exception as e:
-            print(f"[WARN] analyze_writing_patterns open failed: {e}", file=sys.stderr)
+            print(f"[WARN] analyze_writing_patterns open/MoveDocBegin failed: {e}", file=sys.stderr)
         try:
             page_d = hwp.get_pagedef_as_dict()
         except Exception:
