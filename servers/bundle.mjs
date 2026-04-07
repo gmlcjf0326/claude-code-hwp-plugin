@@ -39778,10 +39778,11 @@ function registerCompositeTools(server2, bridge2) {
       }
       if (isCancelled())
         throw new Error("cancelled");
-      const saveR = await bridge2.send("save_document", { file_path: args.output_path }, ANALYSIS_TIMEOUT2);
-      recordStep("save_document", saveR.success, saveR.error);
+      const saveFmt = args.output_path.toLowerCase().endsWith(".hwpx") ? "HWPX" : "HWP";
+      const saveR = await bridge2.send("save_as", { path: args.output_path, format: saveFmt }, ANALYSIS_TIMEOUT2);
+      recordStep("save_as", saveR.success, saveR.error);
       if (!saveR.success)
-        throw new Error(`save_document failed: ${saveR.error}`);
+        throw new Error(`save_as failed: ${saveR.error}`);
       let score = 100;
       try {
         const r = await bridge2.send("validate_consistency", { file_path: args.output_path }, ANALYSIS_TIMEOUT2);
