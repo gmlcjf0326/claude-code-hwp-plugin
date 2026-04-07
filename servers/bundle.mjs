@@ -20837,11 +20837,15 @@ var require_lib4 = __commonJS({
 var hwpx_engine_exports = {};
 __export(hwpx_engine_exports, {
   TEMPLATES: () => TEMPLATES,
+  compareCOMAndXML: () => compareCOMAndXML,
   createBlankHwpx: () => createBlankHwpx,
   extractTextFromSection: () => extractTextFromSection,
   findAndAppendInSection: () => findAndAppendInSection,
   generateFromTemplate: () => generateFromTemplate,
+  markFieldsForRecalc: () => markFieldsForRecalc,
   readHwpxXml: () => readHwpxXml,
+  replaceInNestedTable: () => replaceInNestedTable,
+  replaceInTableCell: () => replaceInTableCell,
   replaceTextInSection: () => replaceTextInSection,
   replaceTextNthInSection: () => replaceTextNthInSection,
   searchTextInSection: () => searchTextInSection,
@@ -20995,6 +20999,240 @@ function removeLinesegarray(doc) {
   for (const el of toRemove) {
     el.parentNode?.removeChild(el);
   }
+}
+function removeLinesegarrayInElement(el) {
+  const linesegArrays = el.getElementsByTagNameNS(NS_HP, "linesegarray");
+  const toRemove = [];
+  for (let i = 0; i < linesegArrays.length; i++) {
+    toRemove.push(linesegArrays[i]);
+  }
+  for (const tgt of toRemove) {
+    tgt.parentNode?.removeChild(tgt);
+  }
+}
+function replaceInTableCell(doc, opts) {
+  const warnings = [];
+  const occurrence = opts.occurrence ?? 0;
+  const tbls = doc.getElementsByTagNameNS(NS_HP, "tbl");
+  if (opts.tableIndex < 0 || opts.tableIndex >= tbls.length) {
+    throw new Error(`TableNotFound: index=${opts.tableIndex}, total=${tbls.length}`);
+  }
+  const tbl = tbls[opts.tableIndex];
+  const allTrs = tbl.getElementsByTagNameNS(NS_HP, "tr");
+  const trs = [];
+  for (let i = 0; i < allTrs.length; i++) {
+    const tr2 = allTrs[i];
+    if (tr2.parentNode === tbl)
+      trs.push(tr2);
+  }
+  if (opts.rowIndex < 0 || opts.rowIndex >= trs.length) {
+    throw new Error(`RowOutOfRange: row=${opts.rowIndex}, total=${trs.length}`);
+  }
+  const tr = trs[opts.rowIndex];
+  const allTcs = tr.getElementsByTagNameNS(NS_HP, "tc");
+  const tcs = [];
+  for (let i = 0; i < allTcs.length; i++) {
+    const tc2 = allTcs[i];
+    if (tc2.parentNode === tr)
+      tcs.push(tc2);
+  }
+  if (opts.colIndex < 0 || opts.colIndex >= tcs.length) {
+    throw new Error(`ColOutOfRange: col=${opts.colIndex}, total=${tcs.length}`);
+  }
+  const tc = tcs[opts.colIndex];
+  const allSubLists = tc.getElementsByTagNameNS(NS_HP, "subList");
+  let subList = null;
+  for (let i = 0; i < allSubLists.length; i++) {
+    const sl = allSubLists[i];
+    if (sl.parentNode === tc) {
+      subList = sl;
+      break;
+    }
+  }
+  if (!subList) {
+    return { matched: 0, cellText: "", charPrIDRef: null, warnings: ["NoSubList"] };
+  }
+  const tNodes = subList.getElementsByTagNameNS(NS_HP, "t");
+  const tElements = [];
+  let cellText = "";
+  let charPrIDRef = null;
+  for (let i = 0; i < tNodes.length; i++) {
+    const tEl = tNodes[i];
+    tElements.push(tEl);
+    cellText += tEl.textContent || "";
+    if (charPrIDRef === null) {
+      const runEl = tEl.parentNode;
+      if (runEl) {
+        const ref = runEl.getAttribute("charPrIDRef");
+        if (ref)
+          charPrIDRef = ref;
+      }
+    }
+  }
+  if (!opts.find || cellText.indexOf(opts.find) === -1) {
+    return { matched: 0, cellText, charPrIDRef, warnings };
+  }
+  let matched = 0;
+  let newCellText;
+  if (occurrence === 0) {
+    const before = cellText;
+    newCellText = before.split(opts.find).join(opts.replace);
+    matched = (before.length - newCellText.replace(new RegExp(escapeRegex2(opts.replace), "g"), "").length) / Math.max(opts.find.length, 1);
+    matched = before.split(opts.find).length - 1;
+  } else {
+    let idx = -1;
+    for (let n = 0; n < occurrence; n++) {
+      idx = cellText.indexOf(opts.find, idx + 1);
+      if (idx === -1)
+        break;
+    }
+    if (idx === -1) {
+      return { matched: 0, cellText, charPrIDRef, warnings: ["OccurrenceNotFound"] };
+    }
+    newCellText = cellText.substring(0, idx) + opts.replace + cellText.substring(idx + opts.find.length);
+    matched = 1;
+  }
+  if (tElements.length > 0) {
+    tElements[0].textContent = newCellText;
+    for (let i = 1; i < tElements.length; i++) {
+      tElements[i].textContent = "";
+    }
+  }
+  removeLinesegarrayInElement(tc);
+  return { matched, cellText: newCellText, charPrIDRef, warnings };
+}
+function escapeRegex2(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+function markFieldsForRecalc(doc, fieldTypes) {
+  const types = fieldTypes && fieldTypes.length > 0 ? fieldTypes : ["all"];
+  const wantAll = types.includes("all");
+  const result = { marked: 0, byType: {}, unsupported: [] };
+  const ctrls = doc.getElementsByTagNameNS(NS_HP, "ctrl");
+  const typeMap = {
+    pageNum: "PageNum",
+    pageNumCtrl: "PageNum",
+    pageInfo: "PageNum",
+    totalPage: "TotalPage",
+    totalPageCtrl: "TotalPage",
+    date: "Date",
+    dateCtrl: "Date",
+    time: "Time",
+    timeCtrl: "Time",
+    tocCtrl: "TOC",
+    toc: "TOC",
+    indexCtrl: "Index",
+    index: "Index",
+    crossRefCtrl: "CrossRef",
+    crossRef: "CrossRef",
+    fieldBegin: "FieldFormula"
+    // generic field
+  };
+  for (let i = 0; i < ctrls.length; i++) {
+    const ctrl = ctrls[i];
+    let firstChildEl = null;
+    const children = ctrl.childNodes;
+    for (let j = 0; j < children.length; j++) {
+      const child = children[j];
+      if (child && child.nodeType === 1) {
+        firstChildEl = child;
+        break;
+      }
+    }
+    if (!firstChildEl) {
+      result.unsupported.push("ctrl-no-child");
+      continue;
+    }
+    const localName = firstChildEl.localName || "";
+    const fieldType = typeMap[localName];
+    if (!fieldType) {
+      result.unsupported.push(localName);
+      continue;
+    }
+    if (!wantAll && !types.includes(fieldType)) {
+      continue;
+    }
+    try {
+      firstChildEl.setAttribute("dirty", "1");
+      ctrl.setAttribute("dirty", "1");
+      result.marked++;
+      result.byType[fieldType] = (result.byType[fieldType] || 0) + 1;
+    } catch (e) {
+      result.unsupported.push(`${localName}-setattr-failed`);
+    }
+  }
+  return result;
+}
+async function compareCOMAndXML(filePath, comStats) {
+  const warnings = [];
+  let doc;
+  try {
+    doc = await readHwpxXml(filePath, "Contents/section0.xml");
+  } catch (e) {
+    return {
+      com: comStats,
+      xml: { tables: 0, paragraphs: 0, fields: 0, runs: 0, chars: 0 },
+      diff: { tables: 0, paragraphs: 0, fields: 0, runs: 0, chars: 0 },
+      ok: false,
+      warnings: [`readHwpxXml failed: ${e.message}`]
+    };
+  }
+  const tables = doc.getElementsByTagNameNS(NS_HP, "tbl").length;
+  const paragraphs = doc.getElementsByTagNameNS(NS_HP, "p").length;
+  const ctrls = doc.getElementsByTagNameNS(NS_HP, "ctrl").length;
+  const runs = doc.getElementsByTagNameNS(NS_HP, "run").length;
+  let chars = 0;
+  const tNodes = doc.getElementsByTagNameNS(NS_HP, "t");
+  for (let i = 0; i < tNodes.length; i++) {
+    chars += (tNodes[i].textContent || "").length;
+  }
+  const xml = { tables, paragraphs, fields: ctrls, runs, chars };
+  const diff = {
+    tables: xml.tables - comStats.tables,
+    paragraphs: xml.paragraphs - comStats.paragraphs,
+    fields: xml.fields - comStats.fields,
+    runs: xml.runs - comStats.runs,
+    chars: xml.chars - comStats.chars
+  };
+  let ok = true;
+  if (Math.abs(diff.tables) > 0) {
+    warnings.push(`table count mismatch: \u0394=${diff.tables}`);
+    ok = false;
+  }
+  if (Math.abs(diff.paragraphs) > 1) {
+    warnings.push(`paragraph count mismatch: \u0394=${diff.paragraphs} (threshold \xB11)`);
+    ok = false;
+  }
+  if (Math.abs(diff.chars) > 5) {
+    warnings.push(`char count mismatch: \u0394=${diff.chars} (threshold \xB15)`);
+    ok = false;
+  }
+  return { com: comStats, xml, diff, ok, warnings };
+}
+function replaceInNestedTable(doc, path7, find, replace) {
+  if (path7.length === 0) {
+    throw new Error("NestedPathError: empty path");
+  }
+  if (path7.length === 1) {
+    const step2 = path7[0];
+    return replaceInTableCell(doc, {
+      tableIndex: step2.tableIndex,
+      rowIndex: step2.row,
+      colIndex: step2.col,
+      find,
+      replace
+    });
+  }
+  const step = path7[0];
+  const result = replaceInTableCell(doc, {
+    tableIndex: step.tableIndex,
+    rowIndex: step.row,
+    colIndex: step.col,
+    find,
+    replace
+  });
+  result.warnings.push(`nested-table-experimental: depth=${path7.length}, only first step processed (full support in v0.7.2.1)`);
+  return result;
 }
 async function createMinimalHwpx(outputPath, title) {
   const zip = new import_jszip.default();
@@ -38482,6 +38720,84 @@ function registerCompositeTools(server2, bridge2) {
         replace,
         replacements: count,
         note: "linesegarray\uAC00 \uC790\uB3D9 \uC0AD\uC81C\uB418\uC5C8\uC2B5\uB2C8\uB2E4 (CLAUDE.md \uADDC\uCE59)"
+      }) }] };
+    } catch (err) {
+      return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }], isError: true };
+    }
+  });
+  server2.tool("hwp_xml_edit_table_cell", "HWPX \uD30C\uC77C\uC758 \uD2B9\uC815 \uD45C \uC140(row, col)\uC5D0\uC11C \uD14D\uC2A4\uD2B8\uB97C \uC9C1\uC811 \uCC3E\uC544 \uBC14\uAFC9\uB2C8\uB2E4. (v0.7.0 \uC2E0\uADDC) \uD55C\uAE00 \uD504\uB85C\uADF8\uB7A8 \uC5C6\uC774 XML \uACBD\uB85C(tc \u2192 subList \u2192 p \u2192 run \u2192 t)\uB85C \uCC98\uB9AC. linesegarray \uC140 \uB0B4\uBD80\uB9CC \uC790\uB3D9 \uC0AD\uC81C. charPrIDRef(\uC11C\uC2DD ID)\uB294 \uBCF4\uC874. .hwp\uB294 \uBBF8\uC9C0\uC6D0 (hwp_fill_table_cells \uC0AC\uC6A9).", {
+    file_path: external_exports.string().describe("\uC218\uC815\uD560 HWPX \uD30C\uC77C \uACBD\uB85C (.hwpx\uB9CC \uC9C0\uC6D0)"),
+    table_index: external_exports.number().int().min(0).describe("0-based \uD3C9\uD0C4\uD654 \uD45C \uC778\uB371\uC2A4 (\uC911\uCCA9 \uD45C\uB294 v0.7.2.1)"),
+    row: external_exports.number().int().min(0).describe("0-based \uD589 \uC778\uB371\uC2A4"),
+    col: external_exports.number().int().min(0).describe("0-based \uC5F4 \uC778\uB371\uC2A4"),
+    find: external_exports.string().describe("\uCC3E\uC744 \uD14D\uC2A4\uD2B8"),
+    replace: external_exports.string().describe("\uBC14\uAFC0 \uD14D\uC2A4\uD2B8"),
+    occurrence: external_exports.number().int().min(0).optional().describe("\uCE58\uD658 \uD69F\uC218 (0=\uC804\uCCB4, 1+=N\uBC88\uC9F8). \uAE30\uBCF8 0"),
+    output_path: external_exports.string().optional().describe("\uC800\uC7A5 \uACBD\uB85C (\uC0DD\uB7B5 \uC2DC \uC6D0\uBCF8 \uB36E\uC5B4\uC4F0\uAE30)")
+  }, async ({ file_path, table_index, row, col, find, replace, occurrence, output_path }) => {
+    try {
+      if (!file_path.toLowerCase().endsWith(".hwpx")) {
+        return { content: [{ type: "text", text: JSON.stringify({
+          error: "XML_ONLY_HWPX: \uC774 \uB3C4\uAD6C\uB294 .hwpx \uD30C\uC77C\uB9CC \uC9C0\uC6D0\uD569\uB2C8\uB2E4. .hwp \uD30C\uC77C\uC740 hwp_fill_table_cells (COM \uACBD\uB85C) \uC0AC\uC6A9.",
+          file_path
+        }) }], isError: true };
+      }
+      const { readHwpxXml: readHwpxXml2, writeHwpxXml: writeHwpxXml2, replaceInTableCell: replaceInTableCell2 } = await Promise.resolve().then(() => (init_hwpx_engine(), hwpx_engine_exports));
+      const resolved = path6.resolve(file_path);
+      const outResolved = output_path ? path6.resolve(output_path) : resolved;
+      if (!fs5.existsSync(resolved)) {
+        return { content: [{ type: "text", text: JSON.stringify({ error: `\uD30C\uC77C\uC744 \uCC3E\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4: ${resolved}` }) }], isError: true };
+      }
+      const doc = await readHwpxXml2(resolved, "Contents/section0.xml");
+      const result = replaceInTableCell2(doc, {
+        tableIndex: table_index,
+        rowIndex: row,
+        colIndex: col,
+        find,
+        replace,
+        occurrence: occurrence ?? 0
+      });
+      await writeHwpxXml2(resolved, outResolved, "Contents/section0.xml", doc);
+      return { content: [{ type: "text", text: JSON.stringify({
+        ok: true,
+        path: outResolved,
+        matched: result.matched,
+        cell_text: result.cellText,
+        char_pr_id_ref: result.charPrIDRef,
+        warnings: result.warnings
+      }) }] };
+    } catch (err) {
+      return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }], isError: true };
+    }
+  });
+  server2.tool("hwp_refresh_fields", 'HWPX \uD30C\uC77C\uC758 \uC790\uB3D9 \uACC4\uC0B0 \uD544\uB4DC(\uBAA9\uCC28, \uD398\uC774\uC9C0\uBC88\uD638, \uC791\uC131\uC77C, \uC778\uB371\uC2A4 \uB4F1)\uC5D0 dirty="1" \uB9C8\uD06C\uB97C \uCD94\uAC00\uD558\uC5EC \uD55C\uAE00\uC774 \uB2E4\uC74C\uC5D0 \uD30C\uC77C\uC744 \uC5F4 \uB54C \uC790\uB3D9 \uC7AC\uACC4\uC0B0\uD558\uB3C4\uB85D \uD569\uB2C8\uB2E4. (v0.7.0 \uC2E0\uADDC, composite tool) \uCC98\uB9AC \uB300\uC0C1: PageNum, TotalPage, Date, Time, TOC, Index, CrossRef, FieldFormula. .hwp\uB294 \uBBF8\uC9C0\uC6D0.', {
+    file_path: external_exports.string().describe("\uB300\uC0C1 HWPX \uD30C\uC77C \uACBD\uB85C (.hwpx\uB9CC)"),
+    field_types: external_exports.array(external_exports.enum(["PageNum", "TotalPage", "Date", "Time", "TOC", "Index", "CrossRef", "FieldFormula", "all"])).optional().describe('\uCC98\uB9AC\uD560 \uD544\uB4DC \uC885\uB958 (\uAE30\uBCF8: ["all"])'),
+    output_path: external_exports.string().optional().describe("\uC800\uC7A5 \uACBD\uB85C (\uC0DD\uB7B5 \uC2DC \uC6D0\uBCF8 \uB36E\uC5B4\uC4F0\uAE30)")
+  }, async ({ file_path, field_types, output_path }) => {
+    try {
+      if (!file_path.toLowerCase().endsWith(".hwpx")) {
+        return { content: [{ type: "text", text: JSON.stringify({
+          error: "XML_ONLY_HWPX: \uC774 \uB3C4\uAD6C\uB294 .hwpx \uD30C\uC77C\uB9CC \uC9C0\uC6D0\uD569\uB2C8\uB2E4. .hwp\uB294 \uD55C\uAE00\uC5D0\uC11C \uC9C1\uC811 F9 \uB610\uB294 export hwpx \uD6C4 \uC0AC\uC6A9.",
+          file_path
+        }) }], isError: true };
+      }
+      const { readHwpxXml: readHwpxXml2, writeHwpxXml: writeHwpxXml2, markFieldsForRecalc: markFieldsForRecalc2 } = await Promise.resolve().then(() => (init_hwpx_engine(), hwpx_engine_exports));
+      const resolved = path6.resolve(file_path);
+      const outResolved = output_path ? path6.resolve(output_path) : resolved;
+      if (!fs5.existsSync(resolved)) {
+        return { content: [{ type: "text", text: JSON.stringify({ error: `\uD30C\uC77C\uC744 \uCC3E\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4: ${resolved}` }) }], isError: true };
+      }
+      const doc = await readHwpxXml2(resolved, "Contents/section0.xml");
+      const result = markFieldsForRecalc2(doc, field_types);
+      await writeHwpxXml2(resolved, outResolved, "Contents/section0.xml", doc);
+      return { content: [{ type: "text", text: JSON.stringify({
+        ok: true,
+        path: outResolved,
+        marked: result.marked,
+        by_type: result.byType,
+        unsupported: result.unsupported,
+        note: "\uD55C\uAE00\uC774 \uB2E4\uC74C\uC5D0 \uC774 \uD30C\uC77C\uC744 \uC5F4 \uB54C \uC790\uB3D9 \uC7AC\uACC4\uC0B0\uB429\uB2C8\uB2E4."
       }) }] };
     } catch (err) {
       return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }], isError: true };

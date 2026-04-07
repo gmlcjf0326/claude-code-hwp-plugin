@@ -1,6 +1,17 @@
 /**
  * Editing tools: fill fields, fill table cells, find/replace, insert text
  * HWPX 파일은 XML 직접 조작으로 라우팅 (COM 우회)
+ *
+ * v0.7.0 COM/XML 경계 명시:
+ * 이 파일의 모든 함수는 python_bridge → pyhwpx COM 경로를 사용합니다.
+ * 한글 프로그램 instance가 필요한 작업 (서식 적용, ParameterSet, 자동 보정 등) 전용.
+ *
+ * 순수 XML 편집 (한글 프로그램 불필요)이 필요하면:
+ *   → mcp-server/src/hwpx-engine.ts 사용
+ *   → composite-tools.ts의 hwp_xml_edit_text, hwp_xml_edit_table_cell, hwp_refresh_fields
+ *
+ * 표 셀 채움: HWPX 파일이라도 hwp_fill_table_cells는 COM 강제 (서식 안전성).
+ *           XML 직접 편집은 hwp_xml_edit_table_cell (v0.7.0 신규) 사용.
  */
 import { z } from 'zod';
 import path from 'node:path';

@@ -661,4 +661,86 @@ export function registerCompositeTools(server, bridge) {
             return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
         }
     });
+    // v0.7.0 신규: HWPX 표 셀 단위 텍스트 직접 편집 (XML 경로, 한글 프로그램 불필요)
+    server.tool('hwp_xml_edit_table_cell', 'HWPX 파일의 특정 표 셀(row, col)에서 텍스트를 직접 찾아 바꿉니다. (v0.7.0 신규) 한글 프로그램 없이 XML 경로(tc → subList → p → run → t)로 처리. linesegarray 셀 내부만 자동 삭제. charPrIDRef(서식 ID)는 보존. .hwp는 미지원 (hwp_fill_table_cells 사용).', {
+        file_path: z.string().describe('수정할 HWPX 파일 경로 (.hwpx만 지원)'),
+        table_index: z.number().int().min(0).describe('0-based 평탄화 표 인덱스 (중첩 표는 v0.7.2.1)'),
+        row: z.number().int().min(0).describe('0-based 행 인덱스'),
+        col: z.number().int().min(0).describe('0-based 열 인덱스'),
+        find: z.string().describe('찾을 텍스트'),
+        replace: z.string().describe('바꿀 텍스트'),
+        occurrence: z.number().int().min(0).optional().describe('치환 횟수 (0=전체, 1+=N번째). 기본 0'),
+        output_path: z.string().optional().describe('저장 경로 (생략 시 원본 덮어쓰기)'),
+    }, async ({ file_path, table_index, row, col, find, replace, occurrence, output_path }) => {
+        try {
+            if (!file_path.toLowerCase().endsWith('.hwpx')) {
+                return { content: [{ type: 'text', text: JSON.stringify({
+                                error: 'XML_ONLY_HWPX: 이 도구는 .hwpx 파일만 지원합니다. .hwp 파일은 hwp_fill_table_cells (COM 경로) 사용.',
+                                file_path,
+                            }) }], isError: true };
+            }
+            const { readHwpxXml, writeHwpxXml, replaceInTableCell } = await import('../hwpx-engine.js');
+            const resolved = path.resolve(file_path);
+            const outResolved = output_path ? path.resolve(output_path) : resolved;
+            if (!fs.existsSync(resolved)) {
+                return { content: [{ type: 'text', text: JSON.stringify({ error: `파일을 찾을 수 없습니다: ${resolved}` }) }], isError: true };
+            }
+            const doc = await readHwpxXml(resolved, 'Contents/section0.xml');
+            const result = replaceInTableCell(doc, {
+                tableIndex: table_index,
+                rowIndex: row,
+                colIndex: col,
+                find,
+                replace,
+                occurrence: occurrence ?? 0,
+            });
+            await writeHwpxXml(resolved, outResolved, 'Contents/section0.xml', doc);
+            return { content: [{ type: 'text', text: JSON.stringify({
+                            ok: true,
+                            path: outResolved,
+                            matched: result.matched,
+                            cell_text: result.cellText,
+                            char_pr_id_ref: result.charPrIDRef,
+                            warnings: result.warnings,
+                        }) }] };
+        }
+        catch (err) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+        }
+    });
+    // v0.7.0 신규: HWPX 자동 계산 필드(목차/페이지번호 등) dirty mark 후 한글이 다음 열 때 자동 재계산
+    server.tool('hwp_refresh_fields', 'HWPX 파일의 자동 계산 필드(목차, 페이지번호, 작성일, 인덱스 등)에 dirty="1" 마크를 추가하여 한글이 다음에 파일을 열 때 자동 재계산하도록 합니다. (v0.7.0 신규, composite tool) 처리 대상: PageNum, TotalPage, Date, Time, TOC, Index, CrossRef, FieldFormula. .hwp는 미지원.', {
+        file_path: z.string().describe('대상 HWPX 파일 경로 (.hwpx만)'),
+        field_types: z.array(z.enum(['PageNum', 'TotalPage', 'Date', 'Time', 'TOC', 'Index', 'CrossRef', 'FieldFormula', 'all'])).optional().describe('처리할 필드 종류 (기본: ["all"])'),
+        output_path: z.string().optional().describe('저장 경로 (생략 시 원본 덮어쓰기)'),
+    }, async ({ file_path, field_types, output_path }) => {
+        try {
+            if (!file_path.toLowerCase().endsWith('.hwpx')) {
+                return { content: [{ type: 'text', text: JSON.stringify({
+                                error: 'XML_ONLY_HWPX: 이 도구는 .hwpx 파일만 지원합니다. .hwp는 한글에서 직접 F9 또는 export hwpx 후 사용.',
+                                file_path,
+                            }) }], isError: true };
+            }
+            const { readHwpxXml, writeHwpxXml, markFieldsForRecalc } = await import('../hwpx-engine.js');
+            const resolved = path.resolve(file_path);
+            const outResolved = output_path ? path.resolve(output_path) : resolved;
+            if (!fs.existsSync(resolved)) {
+                return { content: [{ type: 'text', text: JSON.stringify({ error: `파일을 찾을 수 없습니다: ${resolved}` }) }], isError: true };
+            }
+            const doc = await readHwpxXml(resolved, 'Contents/section0.xml');
+            const result = markFieldsForRecalc(doc, field_types);
+            await writeHwpxXml(resolved, outResolved, 'Contents/section0.xml', doc);
+            return { content: [{ type: 'text', text: JSON.stringify({
+                            ok: true,
+                            path: outResolved,
+                            marked: result.marked,
+                            by_type: result.byType,
+                            unsupported: result.unsupported,
+                            note: '한글이 다음에 이 파일을 열 때 자동 재계산됩니다.',
+                        }) }] };
+        }
+        catch (err) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+        }
+    });
 }
