@@ -39813,14 +39813,21 @@ function registerCompositeTools(server2, bridge2) {
         throw new Error(`save_as failed: ${saveR.error}`);
       try {
         const stat = fs5.statSync(args.output_path);
-        const minBytes = args.output_path.toLowerCase().endsWith(".hwpx") ? 22e3 : 28e3;
+        const minBytes = args.output_path.toLowerCase().endsWith(".hwpx") ? 19e3 : 24e3;
         const sizeOk = stat.size >= minBytes;
-        recordStep("file_size_check", sizeOk, { size: stat.size, min_required: minBytes });
-        if (!sizeOk) {
-          throw new Error(`saved file size ${stat.size} < ${minBytes} bytes \u2014 likely body missing (empty HWPX)`);
+        const allSectionsVerified = stepLog.filter((s) => String(s.name).startsWith("section:")).every((s) => s.detail?.body_verified === true);
+        if (!sizeOk && !allSectionsVerified) {
+          recordStep("file_size_check", false, { size: stat.size, min_required: minBytes });
+          throw new Error(`saved file size ${stat.size} < ${minBytes} bytes and body not verified \u2014 likely empty HWPX`);
         }
+        recordStep("file_size_check", true, {
+          size: stat.size,
+          min_required: minBytes,
+          primary_body_verified: allSectionsVerified,
+          note: sizeOk ? "size ok" : "under threshold but body_verified primary pass"
+        });
       } catch (e) {
-        if (e.message.includes("body missing"))
+        if (e.message.includes("not verified"))
           throw e;
         recordStep("file_size_check", false, e.message);
       }

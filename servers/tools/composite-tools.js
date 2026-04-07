@@ -1618,18 +1618,30 @@ export function registerCompositeTools(server, bridge) {
             recordStep('save_as', saveR.success, saveR.error);
             if (!saveR.success)
                 throw new Error(`save_as failed: ${saveR.error}`);
-            // v0.7.2.9: 파일 사이즈 하한선 검증 (빈 HWPX ~18KB → 22KB 미만이면 본문 누락 의심)
+            // v0.7.2.11: 파일 사이즈 하한선 검증 — body_verified 가 primary, size 는 secondary
+            // 이전 22KB 는 짧은 본문(150자)에서 false positive. body_verified 가 이미 본문 존재를 증명.
+            // 하한선은 19KB (빈 HWPX ~18KB + 마진 1KB). body_verified 가 모두 true 면 size 미달이어도 pass.
             try {
                 const stat = fs.statSync(args.output_path);
-                const minBytes = args.output_path.toLowerCase().endsWith('.hwpx') ? 22000 : 28000;
+                const minBytes = args.output_path.toLowerCase().endsWith('.hwpx') ? 19000 : 24000;
                 const sizeOk = stat.size >= minBytes;
-                recordStep('file_size_check', sizeOk, { size: stat.size, min_required: minBytes });
-                if (!sizeOk) {
-                    throw new Error(`saved file size ${stat.size} < ${minBytes} bytes — likely body missing (empty HWPX)`);
+                const allSectionsVerified = stepLog
+                    .filter(s => String(s.name).startsWith('section:'))
+                    .every(s => (s.detail)?.body_verified === true);
+                if (!sizeOk && !allSectionsVerified) {
+                    // primary + secondary 모두 실패 = 진짜 빈 파일
+                    recordStep('file_size_check', false, { size: stat.size, min_required: minBytes });
+                    throw new Error(`saved file size ${stat.size} < ${minBytes} bytes and body not verified — likely empty HWPX`);
                 }
+                recordStep('file_size_check', true, {
+                    size: stat.size,
+                    min_required: minBytes,
+                    primary_body_verified: allSectionsVerified,
+                    note: sizeOk ? 'size ok' : 'under threshold but body_verified primary pass',
+                });
             }
             catch (e) {
-                if (e.message.includes('body missing'))
+                if (e.message.includes('not verified'))
                     throw e;
                 recordStep('file_size_check', false, e.message);
             }
