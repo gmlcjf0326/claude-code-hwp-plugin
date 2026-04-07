@@ -1534,7 +1534,8 @@ export function registerCompositeTools(server, bridge) {
             }
             if (isCancelled())
                 throw new Error('cancelled');
-            // STEP 3..N: 섹션 작성 루프
+            // STEP 3..N: 섹션 작성 루프 (v0.7.2.9: 본문 길이 cross-check)
+            let lastBodyChars = 0;
             for (const section of args.sections) {
                 if (isCancelled())
                     throw new Error('cancelled');
@@ -1547,7 +1548,31 @@ export function registerCompositeTools(server, bridge) {
                     await bridge.send('insert_text', { text: section.title + '\n' }, ANALYSIS_TIMEOUT);
                 }
                 const textR = await bridge.send('insert_text', { text: section.content + '\n\n' }, ANALYSIS_TIMEOUT);
-                recordStep(`section:${section.title}`, textR.success, { chars: section.content.length });
+                // v0.7.2.9: 본문 검증 — word_count 로 누적 글자 수 측정
+                let bodyVerified = false;
+                let bodyDelta = 0;
+                let currentBodyChars = lastBodyChars;
+                try {
+                    const wc = await bridge.send('word_count', {}, ANALYSIS_TIMEOUT);
+                    if (wc.success && wc.data && typeof wc.data.chars_total === 'number') {
+                        currentBodyChars = wc.data.chars_total;
+                        bodyDelta = currentBodyChars - lastBodyChars;
+                        const expectedDelta = section.title.length + section.content.length;
+                        // 50% 이상 들어갔으면 OK (단락 마커/줄바꿈 차이 허용)
+                        bodyVerified = bodyDelta >= expectedDelta * 0.5;
+                        lastBodyChars = currentBodyChars;
+                    }
+                }
+                catch { }
+                recordStep(`section:${section.title}`, textR.success && bodyVerified, {
+                    chars: section.content.length,
+                    body_chars_after: currentBodyChars,
+                    body_delta: bodyDelta,
+                    body_verified: bodyVerified,
+                });
+                if (!bodyVerified) {
+                    throw new Error(`section "${section.title}" body verification failed: delta=${bodyDelta} expected~=${section.title.length + section.content.length}. autopilot이 본문을 쓰지 못함 — cursor 위치 확인 필요`);
+                }
                 saveSession({
                     sections_done: stepLog.filter(s => String(s.name).startsWith('section:')).map(s => String(s.name).slice(8)),
                     current_section: section.title,
@@ -1571,13 +1596,19 @@ export function registerCompositeTools(server, bridge) {
                 const r = await bridge.send('apply_style_profile', { profile: args.style_profile }, ANALYSIS_TIMEOUT);
                 recordStep('apply_style_profile', r.success, r.error);
             }
-            // STEP: TOC + refresh fields
-            try {
-                const r = await bridge.send('generate_toc', {}, ANALYSIS_TIMEOUT);
-                recordStep('generate_toc', r.success, r.error);
+            // STEP: TOC — v0.7.2.9: outline_level 있는 섹션이 1개 이상일 때만 호출
+            const hasOutline = args.sections.some(s => typeof s.outline_level === 'number' && s.outline_level >= 1);
+            if (hasOutline) {
+                try {
+                    const r = await bridge.send('generate_toc', {}, ANALYSIS_TIMEOUT);
+                    recordStep('generate_toc', r.success, r.error);
+                }
+                catch (e) {
+                    recordStep('generate_toc', false, e.message);
+                }
             }
-            catch (e) {
-                recordStep('generate_toc', false, e.message);
+            else {
+                recordStep('generate_toc', true, { skipped: true, reason: 'no outline_level sections' });
             }
             if (isCancelled())
                 throw new Error('cancelled');
@@ -1587,6 +1618,21 @@ export function registerCompositeTools(server, bridge) {
             recordStep('save_as', saveR.success, saveR.error);
             if (!saveR.success)
                 throw new Error(`save_as failed: ${saveR.error}`);
+            // v0.7.2.9: 파일 사이즈 하한선 검증 (빈 HWPX ~18KB → 22KB 미만이면 본문 누락 의심)
+            try {
+                const stat = fs.statSync(args.output_path);
+                const minBytes = args.output_path.toLowerCase().endsWith('.hwpx') ? 22000 : 28000;
+                const sizeOk = stat.size >= minBytes;
+                recordStep('file_size_check', sizeOk, { size: stat.size, min_required: minBytes });
+                if (!sizeOk) {
+                    throw new Error(`saved file size ${stat.size} < ${minBytes} bytes — likely body missing (empty HWPX)`);
+                }
+            }
+            catch (e) {
+                if (e.message.includes('body missing'))
+                    throw e;
+                recordStep('file_size_check', false, e.message);
+            }
             // STEP: validate_consistency, score < 85면 review_and_edit auto_fix (placeholder)
             let score = 100;
             try {

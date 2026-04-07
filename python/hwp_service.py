@@ -164,11 +164,22 @@ def dispatch(hwp, method, params):
         return {"object": obj_name, "attributes": attrs, "count": len(attrs)}
 
     # v0.7.2.5: 빈 문서 생성 (autopilot blank 분기에서 호출)
+    # v0.7.2.9: cursor 초기화 + 본문 시작점 보장 (이전 문서가 표 셀 cursor였을 수 있음)
     if method == "document_new":
         try:
             hwp.HAction.Run("FileNew")
         except Exception as e:
             return {"status": "error", "error": f"FileNew failed: {e}"}
+        # 이전 문서 잔여 상태 정리 + cursor를 본문 처음으로
+        try:
+            if hwp.is_cell():
+                hwp.MovePos(3)  # 표 탈출 (Cancel() 안 됨, MovePos(3) 필수 — v0.5.x 메모리)
+        except Exception:
+            pass
+        try:
+            hwp.MovePos(2)  # movePOS_START: 본문 첫 단락
+        except Exception as e:
+            print(f"[WARN] document_new MovePos failed: {e}", file=sys.stderr)
         return {"status": "ok"}
 
     if method == "open_document":

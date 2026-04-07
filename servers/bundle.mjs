@@ -39737,6 +39737,7 @@ function registerCompositeTools(server2, bridge2) {
       }
       if (isCancelled())
         throw new Error("cancelled");
+      let lastBodyChars = 0;
       for (const section of args.sections) {
         if (isCancelled())
           throw new Error("cancelled");
@@ -39748,7 +39749,29 @@ function registerCompositeTools(server2, bridge2) {
           await bridge2.send("insert_text", { text: section.title + "\n" }, ANALYSIS_TIMEOUT2);
         }
         const textR = await bridge2.send("insert_text", { text: section.content + "\n\n" }, ANALYSIS_TIMEOUT2);
-        recordStep(`section:${section.title}`, textR.success, { chars: section.content.length });
+        let bodyVerified = false;
+        let bodyDelta = 0;
+        let currentBodyChars = lastBodyChars;
+        try {
+          const wc = await bridge2.send("word_count", {}, ANALYSIS_TIMEOUT2);
+          if (wc.success && wc.data && typeof wc.data.chars_total === "number") {
+            currentBodyChars = wc.data.chars_total;
+            bodyDelta = currentBodyChars - lastBodyChars;
+            const expectedDelta = section.title.length + section.content.length;
+            bodyVerified = bodyDelta >= expectedDelta * 0.5;
+            lastBodyChars = currentBodyChars;
+          }
+        } catch {
+        }
+        recordStep(`section:${section.title}`, textR.success && bodyVerified, {
+          chars: section.content.length,
+          body_chars_after: currentBodyChars,
+          body_delta: bodyDelta,
+          body_verified: bodyVerified
+        });
+        if (!bodyVerified) {
+          throw new Error(`section "${section.title}" body verification failed: delta=${bodyDelta} expected~=${section.title.length + section.content.length}. autopilot\uC774 \uBCF8\uBB38\uC744 \uC4F0\uC9C0 \uBABB\uD568 \u2014 cursor \uC704\uCE58 \uD655\uC778 \uD544\uC694`);
+        }
         saveSession({
           sections_done: stepLog.filter((s) => String(s.name).startsWith("section:")).map((s) => String(s.name).slice(8)),
           current_section: section.title
@@ -39770,11 +39793,16 @@ function registerCompositeTools(server2, bridge2) {
         const r = await bridge2.send("apply_style_profile", { profile: args.style_profile }, ANALYSIS_TIMEOUT2);
         recordStep("apply_style_profile", r.success, r.error);
       }
-      try {
-        const r = await bridge2.send("generate_toc", {}, ANALYSIS_TIMEOUT2);
-        recordStep("generate_toc", r.success, r.error);
-      } catch (e) {
-        recordStep("generate_toc", false, e.message);
+      const hasOutline = args.sections.some((s) => typeof s.outline_level === "number" && s.outline_level >= 1);
+      if (hasOutline) {
+        try {
+          const r = await bridge2.send("generate_toc", {}, ANALYSIS_TIMEOUT2);
+          recordStep("generate_toc", r.success, r.error);
+        } catch (e) {
+          recordStep("generate_toc", false, e.message);
+        }
+      } else {
+        recordStep("generate_toc", true, { skipped: true, reason: "no outline_level sections" });
       }
       if (isCancelled())
         throw new Error("cancelled");
@@ -39783,6 +39811,19 @@ function registerCompositeTools(server2, bridge2) {
       recordStep("save_as", saveR.success, saveR.error);
       if (!saveR.success)
         throw new Error(`save_as failed: ${saveR.error}`);
+      try {
+        const stat = fs5.statSync(args.output_path);
+        const minBytes = args.output_path.toLowerCase().endsWith(".hwpx") ? 22e3 : 28e3;
+        const sizeOk = stat.size >= minBytes;
+        recordStep("file_size_check", sizeOk, { size: stat.size, min_required: minBytes });
+        if (!sizeOk) {
+          throw new Error(`saved file size ${stat.size} < ${minBytes} bytes \u2014 likely body missing (empty HWPX)`);
+        }
+      } catch (e) {
+        if (e.message.includes("body missing"))
+          throw e;
+        recordStep("file_size_check", false, e.message);
+      }
       let score = 100;
       try {
         const r = await bridge2.send("validate_consistency", { file_path: args.output_path }, ANALYSIS_TIMEOUT2);
