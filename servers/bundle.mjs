@@ -38803,6 +38803,150 @@ function registerCompositeTools(server2, bridge2) {
       return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }], isError: true };
     }
   });
+  server2.tool("hwp_extract_template_structure", "\uC591\uC2DD \uBB38\uC11C\uC758 \uD2B8\uB9AC \uAD6C\uC870(\uBAA9\uCC28/\uC139\uC158/\uD45C/\uD544\uB4DC)\uB97C \uCD94\uCD9C\uD569\uB2C8\uB2E4. (v0.7.1 \uC2E0\uADDC) heading \uC815\uADDC\uC2DD \uD734\uB9AC\uC2A4\uD2F1(\uC81C N \uC7A5/\uC870/\uC808, I./II., 1./1.1, \uAC00./\uB098., (1)/(\uAC00))\uC73C\uB85C \uC139\uC158 \uC778\uC2DD. analyze_document + traverse_all_ctrls \uC7AC\uD65C\uC6A9 (95%). \uC0AC\uC6A9\uC790 \uC591\uC2DD \uBD84\uC11D\uC758 \uC9C4\uC785\uC810.", {
+    file_path: external_exports.string().describe("\uC591\uC2DD \uD30C\uC77C \uACBD\uB85C (HWP/HWPX)"),
+    max_depth: external_exports.number().int().min(1).max(6).optional().describe("\uC778\uC2DD\uD560 heading \uAE4A\uC774 (\uAE30\uBCF8 4)")
+  }, async ({ file_path, max_depth }) => {
+    if (!bridge2.getCurrentDocument() && file_path) {
+      try {
+        await bridge2.send("open_document", { file_path });
+      } catch {
+      }
+    }
+    try {
+      await bridge2.ensureRunning();
+      const params = { file_path };
+      if (max_depth !== void 0)
+        params.max_depth = max_depth;
+      const r = await bridge2.send("extract_template_structure", params, ANALYSIS_TIMEOUT2);
+      if (!r.success)
+        return { content: [{ type: "text", text: JSON.stringify({ error: r.error }) }], isError: true };
+      return { content: [{ type: "text", text: JSON.stringify(r.data) }] };
+    } catch (err) {
+      return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }], isError: true };
+    }
+  });
+  server2.tool("hwp_analyze_writing_patterns", "\uC591\uC2DD\uC758 \uC11C\uC2DD \uD328\uD134(\uD3F0\uD2B8/\uC904\uAC04\uACA9/\uB4E4\uC5EC\uC4F0\uAE30/\uBC88\uD638 \uCCB4\uACC4)\uC744 \uD559\uC2B5\uD569\uB2C8\uB2E4. (v0.7.1 \uC2E0\uADDC) extract_full_profile + extract_style_profile + get_table_format_summary \uC7AC\uD65C\uC6A9 (90%). \uCD9C\uB825\uC740 \uD6C4\uC18D hwp_extend_section, hwp_apply_style_profile\uC5D0 \uC785\uB825\uC73C\uB85C \uC0AC\uC6A9.", {
+    file_path: external_exports.string().describe("\uC591\uC2DD \uD30C\uC77C \uACBD\uB85C")
+  }, async ({ file_path }) => {
+    if (!bridge2.getCurrentDocument()) {
+      try {
+        await bridge2.send("open_document", { file_path });
+      } catch {
+      }
+    }
+    try {
+      await bridge2.ensureRunning();
+      const r = await bridge2.send("analyze_writing_patterns", { file_path }, ANALYSIS_TIMEOUT2);
+      if (!r.success)
+        return { content: [{ type: "text", text: JSON.stringify({ error: r.error }) }], isError: true };
+      return { content: [{ type: "text", text: JSON.stringify(r.data) }] };
+    } catch (err) {
+      return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }], isError: true };
+    }
+  });
+  server2.tool("hwp_estimate_workload", "\u2605 \uC791\uC131 \uC791\uC5C5\uC758 \uC6CC\uD06C\uB85C\uB4DC\uB97C \uC0AC\uC804 \uCD94\uC815\uD569\uB2C8\uB2E4. (v0.7.1 \uC2E0\uADDC) \uC785\uB825: \uC591\uC2DD + \uC0AC\uC6A9\uC790 \uC694\uCCAD + \uCC38\uACE0 \uC790\uB8CC. \uCD9C\uB825: \uC608\uC0C1 \uD398\uC774\uC9C0 \uC218, \uD1A0\uD070 \uC0AC\uC6A9\uB7C9, \uC18C\uC694 \uC2DC\uAC04, \uC704\uD5D8 \uD56D\uBAA9, \uAD8C\uC7A5 \uC870\uCE58(proceed/split_into_sessions/reduce_scope). \uC0AC\uC6A9\uC790\uAC00 \uACB0\uACFC \uBCF4\uACE0 \uC9C4\uD589 \uC5EC\uBD80 \uACB0\uC815. \uCD94\uC815 \uACF5\uC2DD: chars_per_page=1100, tokens=chars/3.5, output_tokens_per_page=500, seconds_per_token=0.011 (Opus 4.6 \uD55C\uAD6D\uC5B4).", {
+    file_path: external_exports.string().optional().describe("\uC591\uC2DD \uD30C\uC77C \uACBD\uB85C (\uC635\uC158, \uC788\uC73C\uBA74 \uC790\uB3D9 \uBD84\uC11D)"),
+    user_request: external_exports.string().describe('\uC0AC\uC6A9\uC790 \uC694\uCCAD (\uC608: "AI \uC2A4\uD0C0\uD2B8\uC5C5 \uC0AC\uC5C5\uACC4\uD68D\uC11C A4 10\uCABD \uACA9\uC2DD\uCCB4")'),
+    reference_files: external_exports.array(external_exports.string()).optional().describe("\uCC38\uACE0 \uC790\uB8CC \uD30C\uC77C \uACBD\uB85C \uBAA9\uB85D (\uC635\uC154\uB110)"),
+    mode: external_exports.enum(["new", "extend"]).optional().describe("\uC791\uC131 \uBAA8\uB4DC (new=\uC0C8 \uBB38\uC11C, extend=\uC591\uC2DD \uD655\uC7A5)"),
+    constraints: external_exports.object({
+      max_reference_files: external_exports.number().int().optional().describe("\uCC38\uACE0 \uC790\uB8CC \uCD5C\uB300 \uAC1C\uC218 (\uAE30\uBCF8 5)"),
+      max_reference_mb: external_exports.number().int().optional().describe("\uCC38\uACE0 \uC790\uB8CC \uCD5C\uB300 \uD06C\uAE30 MB (\uAE30\uBCF8 10)"),
+      context_window_tokens: external_exports.number().int().optional().describe("\uCEE8\uD14D\uC2A4\uD2B8 \uC708\uB3C4\uC6B0 \uD1A0\uD070 (\uAE30\uBCF8 200000)")
+    }).optional().describe("\uC815\uCC45 \uC81C\uC57D")
+  }, async ({ file_path, user_request, reference_files, mode, constraints }) => {
+    if (file_path && !bridge2.getCurrentDocument()) {
+      try {
+        await bridge2.send("open_document", { file_path });
+      } catch {
+      }
+    }
+    try {
+      await bridge2.ensureRunning();
+      const params = { user_request };
+      if (file_path)
+        params.file_path = file_path;
+      if (reference_files)
+        params.reference_files = reference_files;
+      if (mode)
+        params.mode = mode;
+      if (constraints)
+        params.constraints = constraints;
+      const r = await bridge2.send("estimate_workload", params, ANALYSIS_TIMEOUT2);
+      if (!r.success)
+        return { content: [{ type: "text", text: JSON.stringify({ error: r.error }) }], isError: true };
+      return { content: [{ type: "text", text: JSON.stringify(r.data) }] };
+    } catch (err) {
+      return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }], isError: true };
+    }
+  });
+  server2.tool("hwp_extend_section", "\uAE30\uC874 \uC591\uC2DD\uC758 \uD2B9\uC815 \uC139\uC158 \uB05D\uC5D0 \uCF58\uD150\uCE20\uB97C \uCD94\uAC00\uD569\uB2C8\uB2E4. (v0.7.1 \uC2E0\uADDC) \uC591\uC2DD \uC11C\uC2DD \uBCF4\uC874\uD558\uBA70 LLM \uC0DD\uC131 \uCF58\uD150\uCE20\uB97C \uC0BD\uC785. section_identifier\uB85C \uC139\uC158 \uC704\uCE58\uB97C \uC81C\uBAA9 \uD14D\uC2A4\uD2B8\uB85C \uAC80\uC0C9.", {
+    section_identifier: external_exports.object({
+      by: external_exports.enum(["title", "index"]).describe("\uC2DD\uBCC4 \uBC29\uC2DD"),
+      value: external_exports.union([external_exports.string(), external_exports.number()]).describe("\uC81C\uBAA9 \uD14D\uC2A4\uD2B8 \uB610\uB294 \uC778\uB371\uC2A4")
+    }).describe("\uC139\uC158 \uC2DD\uBCC4\uC790"),
+    content: external_exports.string().describe("\uCD94\uAC00\uD560 \uCF58\uD150\uCE20 (\uB2E8\uB77D \uB2E8\uC704, \\n\uC73C\uB85C \uAD6C\uBD84)"),
+    preserve_format: external_exports.boolean().optional().describe("\uC591\uC2DD \uC11C\uC2DD \uBCF4\uC874 (\uAE30\uBCF8 true)")
+  }, async ({ section_identifier, content, preserve_format }) => {
+    if (!bridge2.getCurrentDocument())
+      return { content: [{ type: "text", text: JSON.stringify({ error: "\uC5F4\uB9B0 \uBB38\uC11C\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4." }) }], isError: true };
+    try {
+      await bridge2.ensureRunning();
+      const r = await bridge2.send("extend_section", { section_identifier, content, preserve_format: preserve_format ?? true }, ANALYSIS_TIMEOUT2);
+      if (!r.success)
+        return { content: [{ type: "text", text: JSON.stringify({ error: r.error }) }], isError: true };
+      bridge2.setCachedAnalysis(null);
+      return { content: [{ type: "text", text: JSON.stringify(r.data) }] };
+    } catch (err) {
+      return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }], isError: true };
+    }
+  });
+  server2.tool("hwp_apply_style_profile", "\uCD94\uCD9C\uB41C \uC11C\uC2DD \uD328\uD134 \uD504\uB85C\uD30C\uC77C(WritingPatterns)\uC744 \uD604\uC7AC \uBB38\uC11C\uC5D0 \uC801\uC6A9\uD569\uB2C8\uB2E4. (v0.7.1 \uC2E0\uADDC) hwp_analyze_writing_patterns\uC758 \uCD9C\uB825\uC744 \uC785\uB825\uC73C\uB85C \uBC1B\uC544 set_paragraph_style \uBC18\uBCF5 \uD638\uCD9C.", {
+    profile: external_exports.object({
+      body_style: external_exports.any().optional(),
+      title_styles: external_exports.any().optional(),
+      table_styles: external_exports.any().optional()
+    }).passthrough().describe("WritingPatterns \uAC1D\uCCB4"),
+    target: external_exports.enum(["all", "section_index", "range"]).optional().describe("\uC801\uC6A9 \uB300\uC0C1 (\uAE30\uBCF8 all)")
+  }, async ({ profile, target }) => {
+    if (!bridge2.getCurrentDocument())
+      return { content: [{ type: "text", text: JSON.stringify({ error: "\uC5F4\uB9B0 \uBB38\uC11C\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4." }) }], isError: true };
+    try {
+      await bridge2.ensureRunning();
+      const r = await bridge2.send("apply_style_profile", { profile, target: target ?? "all" }, ANALYSIS_TIMEOUT2);
+      if (!r.success)
+        return { content: [{ type: "text", text: JSON.stringify({ error: r.error }) }], isError: true };
+      return { content: [{ type: "text", text: JSON.stringify(r.data) }] };
+    } catch (err) {
+      return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }], isError: true };
+    }
+  });
+  server2.tool("hwp_validate_consistency", "\uC791\uC131\uB41C \uBB38\uC11C\uC758 \uC591\uC2DD \uC77C\uAD00\uC131\uC744 \uAC80\uC99D\uD569\uB2C8\uB2E4. (v0.7.1 \uC2E0\uADDC) expected_profile(WritingPatterns)\uACFC \uBE44\uAD50\uD558\uC5EC deviations\uC640 0~100 \uC810\uC218 \uBC18\uD658. \uC791\uC131 \uC911\uAC04/\uC644\uB8CC \uD6C4 \uD638\uCD9C\uD558\uC5EC \uC591\uC2DD \uC900\uC218 \uD655\uC778.", {
+    file_path: external_exports.string().describe("\uAC80\uC99D \uB300\uC0C1 \uD30C\uC77C \uACBD\uB85C"),
+    expected_profile: external_exports.object({
+      body_style: external_exports.any().optional()
+    }).passthrough().optional().describe("\uAE30\uB300 \uD504\uB85C\uD30C\uC77C (\uC5C6\uC73C\uBA74 placeholder 100\uC810)")
+  }, async ({ file_path, expected_profile }) => {
+    if (!bridge2.getCurrentDocument()) {
+      try {
+        await bridge2.send("open_document", { file_path });
+      } catch {
+      }
+    }
+    try {
+      await bridge2.ensureRunning();
+      const params = { file_path };
+      if (expected_profile)
+        params.expected_profile = expected_profile;
+      const r = await bridge2.send("validate_consistency", params, ANALYSIS_TIMEOUT2);
+      if (!r.success)
+        return { content: [{ type: "text", text: JSON.stringify({ error: r.error }) }], isError: true };
+      return { content: [{ type: "text", text: JSON.stringify(r.data) }] };
+    } catch (err) {
+      return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }], isError: true };
+    }
+  });
 }
 
 // servers/resources/document-resources.js

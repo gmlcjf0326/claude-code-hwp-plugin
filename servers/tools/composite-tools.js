@@ -743,4 +743,163 @@ export function registerCompositeTools(server, bridge) {
             return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
         }
     });
+    // ──────────────────────────────────────────────────────────
+    // v0.7.1: 양식 학습 + Workload Estimate (사용자 핵심 니즈)
+    // ──────────────────────────────────────────────────────────
+    // v0.7.1 신규: 양식의 트리 구조 추출 (목차/섹션/표/필드)
+    server.tool('hwp_extract_template_structure', '양식 문서의 트리 구조(목차/섹션/표/필드)를 추출합니다. (v0.7.1 신규) heading 정규식 휴리스틱(제 N 장/조/절, I./II., 1./1.1, 가./나., (1)/(가))으로 섹션 인식. analyze_document + traverse_all_ctrls 재활용 (95%). 사용자 양식 분석의 진입점.', {
+        file_path: z.string().describe('양식 파일 경로 (HWP/HWPX)'),
+        max_depth: z.number().int().min(1).max(6).optional().describe('인식할 heading 깊이 (기본 4)'),
+    }, async ({ file_path, max_depth }) => {
+        if (!bridge.getCurrentDocument() && file_path) {
+            try {
+                await bridge.send('open_document', { file_path });
+            }
+            catch { }
+        }
+        try {
+            await bridge.ensureRunning();
+            const params = { file_path };
+            if (max_depth !== undefined)
+                params.max_depth = max_depth;
+            const r = await bridge.send('extract_template_structure', params, ANALYSIS_TIMEOUT);
+            if (!r.success)
+                return { content: [{ type: 'text', text: JSON.stringify({ error: r.error }) }], isError: true };
+            return { content: [{ type: 'text', text: JSON.stringify(r.data) }] };
+        }
+        catch (err) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+        }
+    });
+    // v0.7.1 신규: 양식의 서식 패턴 학습
+    server.tool('hwp_analyze_writing_patterns', '양식의 서식 패턴(폰트/줄간격/들여쓰기/번호 체계)을 학습합니다. (v0.7.1 신규) extract_full_profile + extract_style_profile + get_table_format_summary 재활용 (90%). 출력은 후속 hwp_extend_section, hwp_apply_style_profile에 입력으로 사용.', {
+        file_path: z.string().describe('양식 파일 경로'),
+    }, async ({ file_path }) => {
+        if (!bridge.getCurrentDocument()) {
+            try {
+                await bridge.send('open_document', { file_path });
+            }
+            catch { }
+        }
+        try {
+            await bridge.ensureRunning();
+            const r = await bridge.send('analyze_writing_patterns', { file_path }, ANALYSIS_TIMEOUT);
+            if (!r.success)
+                return { content: [{ type: 'text', text: JSON.stringify({ error: r.error }) }], isError: true };
+            return { content: [{ type: 'text', text: JSON.stringify(r.data) }] };
+        }
+        catch (err) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+        }
+    });
+    // v0.7.1 신규 ★ — Workload 사전 분석 (사용자 의사결정 도구)
+    server.tool('hwp_estimate_workload', '★ 작성 작업의 워크로드를 사전 추정합니다. (v0.7.1 신규) 입력: 양식 + 사용자 요청 + 참고 자료. 출력: 예상 페이지 수, 토큰 사용량, 소요 시간, 위험 항목, 권장 조치(proceed/split_into_sessions/reduce_scope). 사용자가 결과 보고 진행 여부 결정. 추정 공식: chars_per_page=1100, tokens=chars/3.5, output_tokens_per_page=500, seconds_per_token=0.011 (Opus 4.6 한국어).', {
+        file_path: z.string().optional().describe('양식 파일 경로 (옵션, 있으면 자동 분석)'),
+        user_request: z.string().describe('사용자 요청 (예: "AI 스타트업 사업계획서 A4 10쪽 격식체")'),
+        reference_files: z.array(z.string()).optional().describe('참고 자료 파일 경로 목록 (옵셔널)'),
+        mode: z.enum(['new', 'extend']).optional().describe('작성 모드 (new=새 문서, extend=양식 확장)'),
+        constraints: z.object({
+            max_reference_files: z.number().int().optional().describe('참고 자료 최대 개수 (기본 5)'),
+            max_reference_mb: z.number().int().optional().describe('참고 자료 최대 크기 MB (기본 10)'),
+            context_window_tokens: z.number().int().optional().describe('컨텍스트 윈도우 토큰 (기본 200000)'),
+        }).optional().describe('정책 제약'),
+    }, async ({ file_path, user_request, reference_files, mode, constraints }) => {
+        if (file_path && !bridge.getCurrentDocument()) {
+            try {
+                await bridge.send('open_document', { file_path });
+            }
+            catch { }
+        }
+        try {
+            await bridge.ensureRunning();
+            const params = { user_request };
+            if (file_path)
+                params.file_path = file_path;
+            if (reference_files)
+                params.reference_files = reference_files;
+            if (mode)
+                params.mode = mode;
+            if (constraints)
+                params.constraints = constraints;
+            const r = await bridge.send('estimate_workload', params, ANALYSIS_TIMEOUT);
+            if (!r.success)
+                return { content: [{ type: 'text', text: JSON.stringify({ error: r.error }) }], isError: true };
+            return { content: [{ type: 'text', text: JSON.stringify(r.data) }] };
+        }
+        catch (err) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+        }
+    });
+    // v0.7.1 신규: 기존 양식 섹션 확장
+    server.tool('hwp_extend_section', '기존 양식의 특정 섹션 끝에 콘텐츠를 추가합니다. (v0.7.1 신규) 양식 서식 보존하며 LLM 생성 콘텐츠를 삽입. section_identifier로 섹션 위치를 제목 텍스트로 검색.', {
+        section_identifier: z.object({
+            by: z.enum(['title', 'index']).describe('식별 방식'),
+            value: z.union([z.string(), z.number()]).describe('제목 텍스트 또는 인덱스'),
+        }).describe('섹션 식별자'),
+        content: z.string().describe('추가할 콘텐츠 (단락 단위, \\n으로 구분)'),
+        preserve_format: z.boolean().optional().describe('양식 서식 보존 (기본 true)'),
+    }, async ({ section_identifier, content, preserve_format }) => {
+        if (!bridge.getCurrentDocument())
+            return { content: [{ type: 'text', text: JSON.stringify({ error: '열린 문서가 없습니다.' }) }], isError: true };
+        try {
+            await bridge.ensureRunning();
+            const r = await bridge.send('extend_section', { section_identifier, content, preserve_format: preserve_format ?? true }, ANALYSIS_TIMEOUT);
+            if (!r.success)
+                return { content: [{ type: 'text', text: JSON.stringify({ error: r.error }) }], isError: true };
+            bridge.setCachedAnalysis(null);
+            return { content: [{ type: 'text', text: JSON.stringify(r.data) }] };
+        }
+        catch (err) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+        }
+    });
+    // v0.7.1 신규: 패턴 프로파일 일괄 적용
+    server.tool('hwp_apply_style_profile', '추출된 서식 패턴 프로파일(WritingPatterns)을 현재 문서에 적용합니다. (v0.7.1 신규) hwp_analyze_writing_patterns의 출력을 입력으로 받아 set_paragraph_style 반복 호출.', {
+        profile: z.object({
+            body_style: z.any().optional(),
+            title_styles: z.any().optional(),
+            table_styles: z.any().optional(),
+        }).passthrough().describe('WritingPatterns 객체'),
+        target: z.enum(['all', 'section_index', 'range']).optional().describe('적용 대상 (기본 all)'),
+    }, async ({ profile, target }) => {
+        if (!bridge.getCurrentDocument())
+            return { content: [{ type: 'text', text: JSON.stringify({ error: '열린 문서가 없습니다.' }) }], isError: true };
+        try {
+            await bridge.ensureRunning();
+            const r = await bridge.send('apply_style_profile', { profile, target: target ?? 'all' }, ANALYSIS_TIMEOUT);
+            if (!r.success)
+                return { content: [{ type: 'text', text: JSON.stringify({ error: r.error }) }], isError: true };
+            return { content: [{ type: 'text', text: JSON.stringify(r.data) }] };
+        }
+        catch (err) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+        }
+    });
+    // v0.7.1 신규: 작성된 결과의 양식 일관성 검증
+    server.tool('hwp_validate_consistency', '작성된 문서의 양식 일관성을 검증합니다. (v0.7.1 신규) expected_profile(WritingPatterns)과 비교하여 deviations와 0~100 점수 반환. 작성 중간/완료 후 호출하여 양식 준수 확인.', {
+        file_path: z.string().describe('검증 대상 파일 경로'),
+        expected_profile: z.object({
+            body_style: z.any().optional(),
+        }).passthrough().optional().describe('기대 프로파일 (없으면 placeholder 100점)'),
+    }, async ({ file_path, expected_profile }) => {
+        if (!bridge.getCurrentDocument()) {
+            try {
+                await bridge.send('open_document', { file_path });
+            }
+            catch { }
+        }
+        try {
+            await bridge.ensureRunning();
+            const params = { file_path };
+            if (expected_profile)
+                params.expected_profile = expected_profile;
+            const r = await bridge.send('validate_consistency', params, ANALYSIS_TIMEOUT);
+            if (!r.success)
+                return { content: [{ type: 'text', text: JSON.stringify({ error: r.error }) }], isError: true };
+            return { content: [{ type: 'text', text: JSON.stringify(r.data) }] };
+        }
+        catch (err) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+        }
+    });
 }

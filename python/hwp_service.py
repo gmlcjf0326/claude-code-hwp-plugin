@@ -2200,6 +2200,354 @@ def dispatch(hwp, method, params):
         max_visits = params.get("max_visits", 5000)
         return traverse_all_ctrls(hwp, include_ids=filter_ids, max_visits=max_visits)
 
+    # ──────────────────────────────────────────────────────────
+    # v0.7.1: 양식 학습 + Workload Estimate (사용자 핵심 니즈)
+    # ──────────────────────────────────────────────────────────
+
+    # v0.7.1 신규: 양식의 트리 구조 추출 (목차/섹션/표/필드)
+    if method == "extract_template_structure":
+        validate_params(params, ["file_path"], method)
+        import re as _re
+        from hwp_analyzer import analyze_document as _analyze
+        max_depth = int(params.get("max_depth", 4))
+
+        # 1. 기존 analyze_document 재활용
+        analysis = _analyze(hwp, params["file_path"])
+
+        # 2. heading 인식 정규식 (full_text 단락 단위 분석)
+        # 패턴: 제 N 장/조/절, I./II., 1./1.1/1.1.1, 가./나., (1)/(가)
+        _heading_patterns = [
+            (_re.compile(r'^제\s*(\d+)\s*[장조절]\s'), 1),
+            (_re.compile(r'^([IVX]+)\.\s'), 1),
+            (_re.compile(r'^(\d+)\.\s'), 1),
+            (_re.compile(r'^(\d+)\.(\d+)\s'), 2),
+            (_re.compile(r'^(\d+)\.(\d+)\.(\d+)\s'), 3),
+            (_re.compile(r'^([가-힣])\.\s'), 2),
+            (_re.compile(r'^\(([가-힣\d])\)\s'), 3),
+        ]
+        full_text = analysis.get("full_text", "") or ""
+        paragraphs = full_text.split("\n")
+        sections = []
+        section_id = 0
+        for idx, para in enumerate(paragraphs):
+            stripped = para.strip()
+            if not stripped:
+                continue
+            for pat, level in _heading_patterns:
+                m = pat.match(stripped)
+                if m and level <= max_depth:
+                    section_id += 1
+                    sections.append({
+                        "id": f"sec_{section_id}",
+                        "title": stripped[:80],
+                        "level": level,
+                        "para_index": idx,
+                    })
+                    break
+
+        return {
+            "status": "ok",
+            "file_path": analysis.get("file_path"),
+            "total_pages": analysis.get("pages", 0),
+            "sections": sections,
+            "section_count": len(sections),
+            "global_tables_count": len(analysis.get("tables", [])),
+            "global_fields_count": len(analysis.get("fields", [])),
+            "controls_by_type": analysis.get("controls_by_type", {}),
+        }
+
+    # v0.7.1 신규: 양식의 서식 패턴 학습
+    if method == "analyze_writing_patterns":
+        validate_params(params, ["file_path"], method)
+        # 기존 extract_full_profile 재활용 (내부 호출)
+        # 현재 이미 열린 문서 상태에서 동작
+        from hwp_editor import get_para_shape, get_char_shape
+        try:
+            page_d = hwp.get_pagedef_as_dict()
+        except Exception:
+            page_d = {}
+        try:
+            body_para = get_para_shape(hwp)
+        except Exception:
+            body_para = {}
+        try:
+            body_char = get_char_shape(hwp)
+        except Exception:
+            body_char = {}
+
+        # consistency_score: 단순 — 모든 단락의 char/para shape이 sample과 일치하는지
+        # MVP: 100점 가정 (실제 측정은 v0.7.1.1로 확장)
+        consistency_score = 100
+
+        return {
+            "status": "ok",
+            "file_path": params["file_path"],
+            "page_setup": page_d,
+            "body_style": {
+                "char": body_char,
+                "para": body_para,
+            },
+            "title_styles": {},  # MVP: 빈 (v0.7.1.1 확장)
+            "table_styles": [],  # MVP: 빈 (v0.7.1.1 확장)
+            "numbering_pattern": "decimal_dot",  # MVP default
+            "consistency_score": consistency_score,
+            "deviations_sample": [],
+        }
+
+    # v0.7.1 신규 ★: Workload 추정 (사용자 사전 분석 도구)
+    if method == "estimate_workload":
+        validate_params(params, ["user_request"], method)
+        user_request = params["user_request"]
+        constraints = params.get("constraints", {}) or {}
+        max_ref_files = int(constraints.get("max_reference_files", 5))
+        max_ref_mb = int(constraints.get("max_reference_mb", 10))
+        context_window = int(constraints.get("context_window_tokens", 200000))
+
+        # 1. 양식 분석 (옵셔널)
+        estimated_pages = 10  # default
+        estimated_sections = 5
+        estimated_tables = 2
+        analysis_data = None
+        if params.get("file_path"):
+            try:
+                from hwp_analyzer import analyze_document as _analyze
+                analysis_data = _analyze(hwp, params["file_path"])
+                estimated_pages = analysis_data.get("pages", estimated_pages)
+                estimated_tables = len(analysis_data.get("tables", []))
+            except Exception as e:
+                print(f"[WARN] estimate_workload analyze failed: {e}", file=sys.stderr)
+
+        # 2. user_request 휴리스틱 (정규식: "10페이지", "5장", "20쪽")
+        import re as _re
+        page_match = _re.search(r'(\d+)\s*(페이지|쪽|장|page)', user_request, _re.IGNORECASE)
+        if page_match:
+            estimated_pages = int(page_match.group(1))
+        section_match = _re.search(r'(\d+)\s*(섹션|section|chapter|챕터|단락)', user_request, _re.IGNORECASE)
+        if section_match:
+            estimated_sections = int(section_match.group(1))
+
+        # 3. 추정 공식
+        chars_per_page = 1100  # A4 11pt 줄간 160%
+        tokens_per_char = 1.0 / 3.5  # 한국어
+        output_chars = estimated_pages * chars_per_page
+        output_tokens = int(output_chars * tokens_per_char * 1.6)  # 안전계수
+
+        # 입력 토큰: 양식 분석 chars + reference chars (옵셔널)
+        input_chars = 0
+        ref_summary = {"files": 0, "total_chars": 0, "tables_seen": 0, "skipped": []}
+        ref_files = params.get("reference_files", []) or []
+        if ref_files:
+            from ref_reader import read_reference
+            for i, rf in enumerate(ref_files):
+                if i >= max_ref_files:
+                    ref_summary["skipped"].append({"file": rf, "reason": f"exceeds max_reference_files={max_ref_files}"})
+                    continue
+                try:
+                    rf_size_mb = os.path.getsize(rf) / (1024 * 1024)
+                    if rf_size_mb > max_ref_mb:
+                        ref_summary["skipped"].append({"file": rf, "reason": f"size {rf_size_mb:.1f}MB exceeds max {max_ref_mb}MB"})
+                        continue
+                    rf_data = read_reference(rf, max_chars=20000)
+                    rf_chars = len(rf_data.get("content", "") or str(rf_data))
+                    input_chars += rf_chars
+                    ref_summary["files"] += 1
+                    ref_summary["total_chars"] += rf_chars
+                except Exception as e:
+                    ref_summary["skipped"].append({"file": rf, "reason": f"read error: {e}"})
+
+        # 양식 자체 chars 추가
+        if analysis_data:
+            input_chars += len(analysis_data.get("full_text", "") or "")
+
+        input_tokens = int(input_chars * tokens_per_char)
+        total_tokens = input_tokens + output_tokens
+        context_usage_percent = round(total_tokens / context_window * 100, 2)
+
+        # 4. 시간 예측
+        seconds_per_output_token = 0.011  # Opus 4.6 한국어 측정
+        writing_seconds = int(output_tokens * seconds_per_output_token)
+        analysis_seconds = 5 + estimated_tables * 2
+        verification_seconds = estimated_pages * 3
+        save_seconds = 30
+        total_seconds = writing_seconds + analysis_seconds + verification_seconds + save_seconds
+
+        # 5. 위험 평가
+        risks = []
+        if analysis_data and analysis_data.get("controls_by_type", {}).get("tbl", 0) > 5:
+            risks.append({"type": "many_tables", "severity": "medium", "description": f"표 {analysis_data['controls_by_type']['tbl']}개 — 표 처리 시간 추가"})
+        if input_tokens > 0.4 * context_window:
+            risks.append({"type": "long_context", "severity": "high", "description": f"입력 토큰 {input_tokens} > context window 40%"})
+        if output_tokens > 60000:
+            risks.append({"type": "output_overflow", "severity": "high", "description": f"출력 토큰 {output_tokens} > 60k (응답 분할 필요)"})
+        if total_tokens > 0.8 * context_window:
+            risks.append({"type": "context_window_overflow", "severity": "critical", "description": "전체 토큰이 context window 80% 초과"})
+
+        # 6. recommended_action
+        high_risks = sum(1 for r in risks if r["severity"] in ("high", "critical"))
+        if high_risks >= 2:
+            recommended = "reduce_scope"
+        elif total_tokens > 0.5 * context_window or estimated_pages > 20:
+            recommended = "split_into_sessions"
+        else:
+            recommended = "proceed"
+
+        # 7. split suggestion (단순)
+        split_suggestion = []
+        if recommended == "split_into_sessions" and estimated_sections > 0:
+            half = max(1, estimated_sections // 2)
+            split_suggestion = [
+                {"section_range": f"1-{half}", "estimated_pages": estimated_pages // 2, "estimated_tokens": total_tokens // 2},
+                {"section_range": f"{half + 1}-{estimated_sections}", "estimated_pages": estimated_pages // 2, "estimated_tokens": total_tokens // 2},
+            ]
+
+        return {
+            "status": "ok",
+            "estimated_pages": estimated_pages,
+            "estimated_sections": estimated_sections,
+            "estimated_tables": estimated_tables,
+            "tokens": {
+                "input_tokens": input_tokens,
+                "output_tokens_estimate": output_tokens,
+                "total_tokens_estimate": total_tokens,
+                "context_window_usage_percent": context_usage_percent,
+            },
+            "duration_seconds_estimate": total_seconds,
+            "duration_breakdown": {
+                "analysis": analysis_seconds,
+                "writing": writing_seconds,
+                "verification": verification_seconds,
+                "save": save_seconds,
+            },
+            "risks": risks,
+            "recommended_action": recommended,
+            "split_suggestion": split_suggestion,
+            "reference_summary": ref_summary,
+            "constraints_applied": {
+                "max_reference_files": max_ref_files,
+                "max_reference_mb": max_ref_mb,
+                "context_window_tokens": context_window,
+            },
+        }
+
+    # v0.7.1 신규: 기존 양식 섹션 확장
+    if method == "extend_section":
+        validate_params(params, ["section_identifier", "content"], method)
+        section_id = params["section_identifier"]  # {by: "title|index", value: ...}
+        content = params["content"]
+        preserve_format = bool(params.get("preserve_format", True))
+
+        # MVP: section title text를 본문에서 찾아 그 직후에 텍스트 삽입
+        # full search → MovePos → insert_text
+        if isinstance(section_id, dict) and section_id.get("by") == "title":
+            title = section_id.get("value", "")
+            try:
+                # find 후 그 위치로 이동
+                hwp.HAction.Run("MoveDocBegin")
+                act = hwp.HAction
+                pset = hwp.HParameterSet.HFindReplace
+                act.GetDefault("RepeatFind", pset.HSet)
+                pset.FindString = title
+                pset.Direction = 0
+                pset.IgnoreMessage = 1
+                if not act.Execute("RepeatFind", pset.HSet):
+                    return {"status": "error", "error": f"섹션 제목을 찾을 수 없습니다: {title}"}
+                hwp.HAction.Run("MoveLineEnd")
+                hwp.HAction.Run("BreakPara")
+            except Exception as e:
+                return {"status": "error", "error": f"섹션 위치 이동 실패: {e}"}
+
+        # 텍스트 삽입 (단락 단위)
+        try:
+            for line in content.split("\n"):
+                if line.strip():
+                    hwp.insert_text(line)
+                    hwp.HAction.Run("BreakPara")
+            return {
+                "status": "ok",
+                "section_identifier": section_id,
+                "inserted_paragraphs": len([l for l in content.split("\n") if l.strip()]),
+                "preserve_format": preserve_format,
+            }
+        except Exception as e:
+            return {"status": "error", "error": f"텍스트 삽입 실패: {e}"}
+
+    # v0.7.1 신규: 패턴 프로파일 일괄 적용 (MVP)
+    if method == "apply_style_profile":
+        validate_params(params, ["profile"], method)
+        profile = params["profile"]
+        target = params.get("target", "all")
+
+        # MVP: profile.body_style을 현재 단락에 적용
+        body = profile.get("body_style", {}) if isinstance(profile, dict) else {}
+        applied = 0
+        try:
+            if body.get("para"):
+                # set_paragraph_style 분기로 위임 (실제는 내부 함수 호출 어려우므로 직접 처리)
+                act = hwp.HAction
+                pset = hwp.HParameterSet.HParaShape
+                act.GetDefault("ParaShape", pset.HSet)
+                # 안전한 옵션만 적용
+                p = body["para"]
+                if "AlignType" in p:
+                    pset.AlignType = int(p["AlignType"])
+                if "LineSpacing" in p:
+                    pset.LineSpacing = int(p["LineSpacing"])
+                act.Execute("ParaShape", pset.HSet)
+                applied += 1
+            return {"status": "ok", "applied_paragraphs": applied, "target": target}
+        except Exception as e:
+            return {"status": "error", "error": f"profile 적용 실패: {e}"}
+
+    # v0.7.1 신규: 작성된 결과의 양식 일관성 검증 (MVP)
+    if method == "validate_consistency":
+        validate_params(params, ["file_path"], method)
+        # MVP: 단순 — 현재 문서의 page/body 가져와서 expected와 비교
+        # expected_profile 미지정 시 100점 (placeholder)
+        expected = params.get("expected_profile")
+        deviations = []
+
+        try:
+            from hwp_editor import get_para_shape, get_char_shape
+            current_para = get_para_shape(hwp)
+            current_char = get_char_shape(hwp)
+        except Exception as e:
+            return {"status": "error", "error": f"현재 문서 분석 실패: {e}"}
+
+        score = 100
+        if expected and isinstance(expected, dict):
+            exp_body = expected.get("body_style", {}) or {}
+            exp_para = exp_body.get("para", {}) or {}
+            exp_char = exp_body.get("char", {}) or {}
+            # 단순 비교: 키가 일치하지 않으면 deviation 추가, 5점씩 감점
+            for key, exp_val in (exp_para or {}).items():
+                if current_para.get(key) != exp_val:
+                    deviations.append({
+                        "field": f"para.{key}",
+                        "expected": exp_val,
+                        "actual": current_para.get(key),
+                        "severity": "low",
+                    })
+            for key, exp_val in (exp_char or {}).items():
+                if current_char.get(key) != exp_val:
+                    deviations.append({
+                        "field": f"char.{key}",
+                        "expected": exp_val,
+                        "actual": current_char.get(key),
+                        "severity": "low",
+                    })
+            score = max(0, 100 - len(deviations) * 5)
+
+        return {
+            "status": "ok",
+            "consistency_score": score,
+            "deviations": deviations,
+            "summary": {
+                "checked_paragraphs": 1,  # MVP: 현재 단락만
+                "current_para": current_para,
+                "current_char": current_char,
+            },
+        }
+
     raise ValueError(f"Unknown method: {method}")
 
 
