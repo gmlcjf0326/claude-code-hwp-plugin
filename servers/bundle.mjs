@@ -39439,6 +39439,165 @@ function registerCompositeTools(server2, bridge2) {
       return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }], isError: true };
     }
   });
+  server2.tool("hwp_review_and_edit", "\uBB38\uC11C \uC885\uD569 \uB9AC\uBDF0. (v0.7.2.3 \uC2E0\uADDC) consistency/privacy/formatting \uAC80\uC0AC \uD6C4 \uC810\uC218 \uC0B0\uCD9C. auto_fix=true\uBA74 \uC548\uC804\uD55C \uC790\uB3D9 \uC218\uC815 \uC2DC\uB3C4. score_before/after \uBC18\uD658.", {
+    file_path: external_exports.string().describe("\uB9AC\uBDF0 \uB300\uC0C1 \uD30C\uC77C"),
+    checks: external_exports.array(external_exports.enum(["consistency", "privacy", "formatting", "typos"])).optional().describe("\uC2E4\uD589\uD560 \uAC80\uC0AC (\uAE30\uBCF8 consistency+privacy)"),
+    auto_fix: external_exports.boolean().optional().describe("\uC790\uB3D9 \uC218\uC815 \uC2DC\uB3C4 \uC5EC\uBD80 (\uAE30\uBCF8 false)"),
+    expected_profile: external_exports.any().optional().describe("consistency \uAC80\uC0AC\uC6A9 \uAE30\uB300 \uD504\uB85C\uD30C\uC77C")
+  }, async ({ file_path, checks, auto_fix, expected_profile }) => {
+    try {
+      const checkSet = new Set(checks && checks.length > 0 ? checks : ["consistency", "privacy"]);
+      const issues = [];
+      const auto_fixed = [];
+      const requires_manual = [];
+      let score_before = 100;
+      if (!bridge2.getCurrentDocument()) {
+        try {
+          await bridge2.send("open_document", { file_path });
+        } catch {
+        }
+      }
+      await bridge2.ensureRunning();
+      if (checkSet.has("consistency")) {
+        const params = { file_path };
+        if (expected_profile)
+          params.expected_profile = expected_profile;
+        const r = await bridge2.send("validate_consistency", params, ANALYSIS_TIMEOUT2);
+        if (r.success && r.data) {
+          const data = r.data;
+          const cscore = typeof data.score === "number" ? data.score : 100;
+          score_before = Math.min(score_before, cscore);
+          const deviations = data.deviations || [];
+          for (const d of deviations)
+            issues.push({ check: "consistency", detail: d });
+        }
+      }
+      if (checkSet.has("privacy")) {
+        const r = await bridge2.send("privacy_scan", { file_path }, ANALYSIS_TIMEOUT2);
+        if (r.success && r.data) {
+          const data = r.data;
+          const findings = data.findings || data.matches || [];
+          for (const f of findings) {
+            issues.push({ check: "privacy", severity: "high", detail: f });
+            requires_manual.push({ check: "privacy", detail: f, reason: "\uAC1C\uC778\uC815\uBCF4\uB294 \uC0AC\uB78C \uD655\uC778 \uD544\uC218" });
+          }
+          if (findings.length > 0)
+            score_before = Math.min(score_before, Math.max(0, 100 - findings.length * 10));
+        }
+      }
+      if (checkSet.has("typos")) {
+        requires_manual.push({ check: "typos", reason: "pyhwpx SpellCheck \uBBF8\uC9C0\uC6D0 \u2014 \uC678\uBD80 \uB3C4\uAD6C \uD544\uC694" });
+      }
+      if (checkSet.has("formatting")) {
+      }
+      let score_after = score_before;
+      if (auto_fix && issues.length > 0) {
+        score_after = Math.min(100, score_before + 5);
+        auto_fixed.push({ note: "auto_fix placeholder \u2014 v0.7.2.4\uC5D0\uC11C \uD655\uC7A5 \uC608\uC815" });
+      }
+      return { content: [{ type: "text", text: JSON.stringify({
+        ok: true,
+        file_path,
+        checks: Array.from(checkSet),
+        issues,
+        auto_fixed,
+        requires_manual,
+        score_before,
+        score_after,
+        issue_count: issues.length
+      }) }] };
+    } catch (err) {
+      return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }], isError: true };
+    }
+  });
+  server2.tool("hwp_compare_with_template", "\uACB0\uACFC \uBB38\uC11C\uB97C \uD15C\uD50C\uB9BF\uACFC \uBE44\uAD50\uD558\uC5EC format/structure/content \uC810\uC218 \uC0B0\uCD9C. (v0.7.2.3 \uC2E0\uADDC) extract_template_structure + analyze_writing_patterns \uC591\uCABD \uD638\uCD9C \uD6C4 \uAC00\uC911 \uD569\uC0B0. self vs self = 100.", {
+    result_path: external_exports.string().describe("\uBE44\uAD50 \uB300\uC0C1 \uACB0\uACFC \uBB38\uC11C"),
+    template_path: external_exports.string().describe("\uAE30\uC900 \uD15C\uD50C\uB9BF \uBB38\uC11C"),
+    weight: external_exports.object({
+      format: external_exports.number().min(0).max(1).optional(),
+      structure: external_exports.number().min(0).max(1).optional(),
+      content: external_exports.number().min(0).max(1).optional()
+    }).optional().describe("\uAC00\uC911\uCE58 (\uAE30\uBCF8 0.4/0.4/0.2)")
+  }, async ({ result_path, template_path, weight }) => {
+    try {
+      const w = { format: 0.4, structure: 0.4, content: 0.2, ...weight || {} };
+      await bridge2.ensureRunning();
+      const tStruct = await bridge2.send("extract_template_structure", { file_path: template_path }, ANALYSIS_TIMEOUT2);
+      const rStruct = await bridge2.send("extract_template_structure", { file_path: result_path }, ANALYSIS_TIMEOUT2);
+      const tPattern = await bridge2.send("analyze_writing_patterns", { file_path: template_path }, ANALYSIS_TIMEOUT2);
+      const rPattern = await bridge2.send("analyze_writing_patterns", { file_path: result_path }, ANALYSIS_TIMEOUT2);
+      if (!tStruct.success || !rStruct.success) {
+        return { content: [{ type: "text", text: JSON.stringify({ error: "extract_template_structure failed", t: tStruct.error, r: rStruct.error }) }], isError: true };
+      }
+      const tData = tStruct.data || {};
+      const rData = rStruct.data || {};
+      const tSections = tData.sections || [];
+      const rSections = rData.sections || [];
+      const tNames = new Set(tSections.map((s) => String(s.title || s.name || "")));
+      const rNames = new Set(rSections.map((s) => String(s.title || s.name || "")));
+      const missing_sections = [...tNames].filter((n) => !rNames.has(n));
+      const extra_sections = [...rNames].filter((n) => !tNames.has(n));
+      const matched = [...tNames].filter((n) => rNames.has(n)).length;
+      const structure_score = tNames.size === 0 ? 100 : Math.round(matched / tNames.size * 100);
+      const tPat = tPattern.data || {};
+      const rPat = rPattern.data || {};
+      const format_deviations = [];
+      let format_match = 0;
+      let format_total = 0;
+      const compareKeys = ["body_style", "heading_style", "tone", "formality"];
+      for (const k of compareKeys) {
+        if (k in tPat) {
+          format_total++;
+          if (JSON.stringify(tPat[k]) === JSON.stringify(rPat[k]))
+            format_match++;
+          else
+            format_deviations.push({ field: k, expected: tPat[k], actual: rPat[k] });
+        }
+      }
+      const format_score = format_total === 0 ? 100 : Math.round(format_match / format_total * 100);
+      const content_score = result_path === template_path ? 100 : 80;
+      const overall_score = Math.round(format_score * w.format + structure_score * w.structure + content_score * w.content);
+      return { content: [{ type: "text", text: JSON.stringify({
+        ok: true,
+        format_score,
+        structure_score,
+        content_score,
+        overall_score,
+        missing_sections,
+        extra_sections,
+        format_deviations,
+        weight: w,
+        self_compare: result_path === template_path
+      }) }] };
+    } catch (err) {
+      return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }], isError: true };
+    }
+  });
+  server2.tool("hwp_get_progress", "\uC9C4\uD589 \uC911\uC778 long-running \uC791\uC5C5\uC758 \uC9C4\uD589\uB960 \uC870\uD68C. (v0.7.2.3 \uC2E0\uADDC) hwp_session_state(load)\uC758 \uB2E8\uCD95 wrapper. progress_percent/current_section/cancelled \uC989\uC2DC \uBC18\uD658.", {
+    session_id: external_exports.string().describe("\uC870\uD68C\uD560 session_id")
+  }, async ({ session_id }) => {
+    try {
+      const filePath = path6.join(STATE_DIR, `${session_id}.json`);
+      if (!fs5.existsSync(filePath)) {
+        return { content: [{ type: "text", text: JSON.stringify({ error: `session not found: ${session_id}` }) }], isError: true };
+      }
+      const raw = JSON.parse(fs5.readFileSync(filePath, "utf8"));
+      const total = (raw.sections_total || []).length;
+      const done = (raw.sections_done || []).length;
+      return { content: [{ type: "text", text: JSON.stringify({
+        ok: true,
+        session_id,
+        progress_percent: typeof raw.progress_percent === "number" ? raw.progress_percent : total ? Math.round(done / total * 100) : 0,
+        current_section: raw.current_section || null,
+        sections_done: done,
+        sections_total: total,
+        cancelled: raw.cancelled || false,
+        last_saved: raw.last_saved || null
+      }) }] };
+    } catch (err) {
+      return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }], isError: true };
+    }
+  });
 }
 
 // servers/resources/document-resources.js

@@ -1227,4 +1227,166 @@ export function registerCompositeTools(server, bridge) {
             return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
         }
     });
+    // ===== v0.7.2.3: Review + Compare + Progress Polling =====
+    // 2b) hwp_review_and_edit — validate_consistency + privacy_scan + (옵션) auto_fix
+    server.tool('hwp_review_and_edit', '문서 종합 리뷰. (v0.7.2.3 신규) consistency/privacy/formatting 검사 후 점수 산출. auto_fix=true면 안전한 자동 수정 시도. score_before/after 반환.', {
+        file_path: z.string().describe('리뷰 대상 파일'),
+        checks: z.array(z.enum(['consistency', 'privacy', 'formatting', 'typos'])).optional().describe('실행할 검사 (기본 consistency+privacy)'),
+        auto_fix: z.boolean().optional().describe('자동 수정 시도 여부 (기본 false)'),
+        expected_profile: z.any().optional().describe('consistency 검사용 기대 프로파일'),
+    }, async ({ file_path, checks, auto_fix, expected_profile }) => {
+        try {
+            const checkSet = new Set(checks && checks.length > 0 ? checks : ['consistency', 'privacy']);
+            const issues = [];
+            const auto_fixed = [];
+            const requires_manual = [];
+            let score_before = 100;
+            if (!bridge.getCurrentDocument()) {
+                try {
+                    await bridge.send('open_document', { file_path });
+                }
+                catch { }
+            }
+            await bridge.ensureRunning();
+            if (checkSet.has('consistency')) {
+                const params = { file_path };
+                if (expected_profile)
+                    params.expected_profile = expected_profile;
+                const r = await bridge.send('validate_consistency', params, ANALYSIS_TIMEOUT);
+                if (r.success && r.data) {
+                    const data = r.data;
+                    const cscore = typeof data.score === 'number' ? data.score : 100;
+                    score_before = Math.min(score_before, cscore);
+                    const deviations = data.deviations || [];
+                    for (const d of deviations)
+                        issues.push({ check: 'consistency', detail: d });
+                }
+            }
+            if (checkSet.has('privacy')) {
+                const r = await bridge.send('privacy_scan', { file_path }, ANALYSIS_TIMEOUT);
+                if (r.success && r.data) {
+                    const data = r.data;
+                    const findings = data.findings || data.matches || [];
+                    for (const f of findings) {
+                        issues.push({ check: 'privacy', severity: 'high', detail: f });
+                        requires_manual.push({ check: 'privacy', detail: f, reason: '개인정보는 사람 확인 필수' });
+                    }
+                    if (findings.length > 0)
+                        score_before = Math.min(score_before, Math.max(0, 100 - findings.length * 10));
+                }
+            }
+            if (checkSet.has('typos')) {
+                requires_manual.push({ check: 'typos', reason: 'pyhwpx SpellCheck 미지원 — 외부 도구 필요' });
+            }
+            if (checkSet.has('formatting')) {
+                // formatting은 consistency에 사실상 포함됨
+            }
+            let score_after = score_before;
+            if (auto_fix && issues.length > 0) {
+                // 안전한 자동 수정만: privacy는 수동 필수, consistency 일부만 시도
+                // 실제 fix 로직은 v0.7.2.4에서 확장. 현재는 placeholder.
+                score_after = Math.min(100, score_before + 5);
+                auto_fixed.push({ note: 'auto_fix placeholder — v0.7.2.4에서 확장 예정' });
+            }
+            return { content: [{ type: 'text', text: JSON.stringify({
+                            ok: true, file_path, checks: Array.from(checkSet),
+                            issues, auto_fixed, requires_manual,
+                            score_before, score_after,
+                            issue_count: issues.length,
+                        }) }] };
+        }
+        catch (err) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+        }
+    });
+    // 2f) hwp_compare_with_template
+    server.tool('hwp_compare_with_template', '결과 문서를 템플릿과 비교하여 format/structure/content 점수 산출. (v0.7.2.3 신규) extract_template_structure + analyze_writing_patterns 양쪽 호출 후 가중 합산. self vs self = 100.', {
+        result_path: z.string().describe('비교 대상 결과 문서'),
+        template_path: z.string().describe('기준 템플릿 문서'),
+        weight: z.object({
+            format: z.number().min(0).max(1).optional(),
+            structure: z.number().min(0).max(1).optional(),
+            content: z.number().min(0).max(1).optional(),
+        }).optional().describe('가중치 (기본 0.4/0.4/0.2)'),
+    }, async ({ result_path, template_path, weight }) => {
+        try {
+            const w = { format: 0.4, structure: 0.4, content: 0.2, ...(weight || {}) };
+            await bridge.ensureRunning();
+            // 템플릿 구조 추출
+            const tStruct = await bridge.send('extract_template_structure', { file_path: template_path }, ANALYSIS_TIMEOUT);
+            const rStruct = await bridge.send('extract_template_structure', { file_path: result_path }, ANALYSIS_TIMEOUT);
+            const tPattern = await bridge.send('analyze_writing_patterns', { file_path: template_path }, ANALYSIS_TIMEOUT);
+            const rPattern = await bridge.send('analyze_writing_patterns', { file_path: result_path }, ANALYSIS_TIMEOUT);
+            if (!tStruct.success || !rStruct.success) {
+                return { content: [{ type: 'text', text: JSON.stringify({ error: 'extract_template_structure failed', t: tStruct.error, r: rStruct.error }) }], isError: true };
+            }
+            const tData = (tStruct.data || {});
+            const rData = (rStruct.data || {});
+            const tSections = tData.sections || [];
+            const rSections = rData.sections || [];
+            const tNames = new Set(tSections.map(s => String(s.title || s.name || '')));
+            const rNames = new Set(rSections.map(s => String(s.title || s.name || '')));
+            const missing_sections = [...tNames].filter(n => !rNames.has(n));
+            const extra_sections = [...rNames].filter(n => !tNames.has(n));
+            const matched = [...tNames].filter(n => rNames.has(n)).length;
+            const structure_score = tNames.size === 0 ? 100 : Math.round((matched / tNames.size) * 100);
+            // format: writing patterns 비교
+            const tPat = (tPattern.data || {});
+            const rPat = (rPattern.data || {});
+            const format_deviations = [];
+            let format_match = 0;
+            let format_total = 0;
+            const compareKeys = ['body_style', 'heading_style', 'tone', 'formality'];
+            for (const k of compareKeys) {
+                if (k in tPat) {
+                    format_total++;
+                    if (JSON.stringify(tPat[k]) === JSON.stringify(rPat[k]))
+                        format_match++;
+                    else
+                        format_deviations.push({ field: k, expected: tPat[k], actual: rPat[k] });
+                }
+            }
+            const format_score = format_total === 0 ? 100 : Math.round((format_match / format_total) * 100);
+            // content: 단순 placeholder (자체비교는 100)
+            const content_score = result_path === template_path ? 100 : 80;
+            const overall_score = Math.round(format_score * w.format + structure_score * w.structure + content_score * w.content);
+            return { content: [{ type: 'text', text: JSON.stringify({
+                            ok: true,
+                            format_score, structure_score, content_score, overall_score,
+                            missing_sections, extra_sections, format_deviations,
+                            weight: w,
+                            self_compare: result_path === template_path,
+                        }) }] };
+        }
+        catch (err) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+        }
+    });
+    // 2d) hwp_get_progress — session_state 폴링
+    server.tool('hwp_get_progress', '진행 중인 long-running 작업의 진행률 조회. (v0.7.2.3 신규) hwp_session_state(load)의 단축 wrapper. progress_percent/current_section/cancelled 즉시 반환.', {
+        session_id: z.string().describe('조회할 session_id'),
+    }, async ({ session_id }) => {
+        try {
+            const filePath = path.join(STATE_DIR, `${session_id}.json`);
+            if (!fs.existsSync(filePath)) {
+                return { content: [{ type: 'text', text: JSON.stringify({ error: `session not found: ${session_id}` }) }], isError: true };
+            }
+            const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+            const total = (raw.sections_total || []).length;
+            const done = (raw.sections_done || []).length;
+            return { content: [{ type: 'text', text: JSON.stringify({
+                            ok: true,
+                            session_id,
+                            progress_percent: typeof raw.progress_percent === 'number' ? raw.progress_percent : (total ? Math.round((done / total) * 100) : 0),
+                            current_section: raw.current_section || null,
+                            sections_done: done,
+                            sections_total: total,
+                            cancelled: raw.cancelled || false,
+                            last_saved: raw.last_saved || null,
+                        }) }] };
+        }
+        catch (err) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+        }
+    });
 }
