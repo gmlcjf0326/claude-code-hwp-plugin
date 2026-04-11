@@ -207,12 +207,56 @@ export function registerEditingTools(server, bridge, toolset = 'standard') {
             try {
                 // COM 우선 (HWP/HWPX 모두)
                 await bridge.ensureRunning();
-                // COM도 최신 파일 상태에서 검색하도록 save 선행
-                await bridge.send('save_document', {});
+                // v0.7.5.4 P0-1: save_document 선행 호출 제거 — COM in-memory 에서 검색 가능
+                // 이전: 매 편집마다 원본 파일에 자동 저장 → 원본 덮어쓰기 버그
                 const params = { find, append_text };
                 if (color)
                     params.color = color;
                 const response = await bridge.send('find_and_append', params);
+                if (!response.success) {
+                    return { content: [{ type: 'text', text: JSON.stringify({ error: response.error }) }], isError: true };
+                }
+                bridge.setCachedAnalysis(null);
+                return { content: [{ type: 'text', text: JSON.stringify(response.data) }] };
+            }
+            catch (err) {
+                return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+            }
+        });
+        // v0.7.5.1 신규: 소제목 아래 본문 단락 삽입 (TOC skip + 문단 분리 + 본문 스타일)
+        server.tool('hwp_insert_body_after_heading', '소제목 아래에 본문 단락을 삽입합니다. find_and_append 와 달리 (1) 목차(TOC) 항목 자동 skip, (2) 새 문단 분리 (BreakPara), (3) 본문 스타일 자동 리셋 (heading 스타일 상속 방지). 양식 채우기·사업계획서 작성 등에 권장.', {
+            heading: z.string().describe("찾을 소제목 텍스트 (예: '(1) 산업의 특성')"),
+            body_text: z.string().describe('삽입할 본문. 줄바꿈은 \\n 으로 표시하면 BreakPara 로 처리됨.'),
+            body_style: z.object({
+                char: z.object({
+                    font_name: z.string().optional(),
+                    font_size: z.number().positive().optional(),
+                    bold: z.boolean().optional(),
+                    italic: z.boolean().optional(),
+                    color: z.array(z.number().int().min(0).max(255)).length(3).optional(),
+                }).optional().describe('글자 서식 override'),
+                para: z.object({
+                    align: z.enum(['left', 'center', 'right', 'justify']).optional(),
+                    line_spacing: z.number().optional(),
+                    indent: z.number().optional(),
+                    left_margin: z.number().optional(),
+                    space_before: z.number().optional(),
+                }).optional().describe('문단 서식 override'),
+            }).optional().describe('본문 스타일 override (생략 시 맑은 고딕 10pt 본문 기본값)'),
+            skip_toc: z.boolean().optional().describe('TOC 항목 skip (기본 true)'),
+            occurrence: z.number().int().optional().describe('특정 N번째 match 선택 (-1=auto, 기본 -1)'),
+        }, async ({ heading, body_text, body_style, skip_toc, occurrence }) => {
+            try {
+                await bridge.ensureRunning();
+                // v0.7.5.4 P0-1: save_document 선행 호출 제거 (원본 보존)
+                const params = { heading, body_text };
+                if (body_style)
+                    params.body_style = body_style;
+                if (skip_toc !== undefined)
+                    params.skip_toc = skip_toc;
+                if (occurrence !== undefined)
+                    params.occurrence = occurrence;
+                const response = await bridge.send('insert_body_after_heading', params);
                 if (!response.success) {
                     return { content: [{ type: 'text', text: JSON.stringify({ error: response.error }) }], isError: true };
                 }
@@ -1102,9 +1146,26 @@ export function registerEditingTools(server, bridge, toolset = 'standard') {
                 return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
             }
         });
-        server.tool('hwp_delete_guide_text', '양식의 작성요령/가이드 텍스트(< 작성요령 >, ※ 안내문 등)를 자동 삭제합니다. 공공기관 양식 작성 후 제출 전에 사용.', {
-            patterns: z.array(z.string()).optional().describe('삭제할 텍스트 패턴 목록 (기본: < 작성요령 >)'),
-        }, async ({ patterns }) => {
+        server.tool('hwp_extract_guide_text', '양식의 작성요령 박스 내용을 구조화 추출합니다 (v0.7.7 신규). 삭제 전에 호출하여 각 섹션별 요구사항(페이지 제한, 필수 기재, 형식 요구)을 보존. 결과를 AI 콘텐츠 생성 컨텍스트로 활용.', {}, async () => {
+            if (!bridge.getCurrentDocument())
+                return { content: [{ type: 'text', text: JSON.stringify({ error: '열린 문서가 없습니다.' }) }], isError: true };
+            try {
+                await bridge.ensureRunning();
+                const r = await bridge.send('extract_guide_text', {}, FILL_TIMEOUT);
+                if (!r.success)
+                    return { content: [{ type: 'text', text: JSON.stringify({ error: r.error }) }], isError: true };
+                return { content: [{ type: 'text', text: JSON.stringify(r.data) }] };
+            }
+            catch (err) {
+                return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+            }
+        });
+        server.tool('hwp_delete_guide_text', '양식의 작성요령/가이드 텍스트를 자동 삭제합니다. v0.7.5.4 업그레이드: scope="text"(기존 텍스트 리터럴), "table"(작성요령 박스 표 전체 삭제), "both"(둘 다). 공공기관 양식 작성 후 제출 전에 사용. 기본 scope="both" 권장. v0.7.7: extract_first=true 로 삭제 전 작성요령 내용 자동 추출.', {
+            patterns: z.array(z.string()).optional().describe('삭제할 텍스트 패턴 목록 (기본: <작성요령>, <유의사항> 확장)'),
+            table_keywords: z.array(z.string()).optional().describe('작성요령 표 감지 키워드 (기본: 작성요령/유의사항/참고/주의사항)'),
+            scope: z.enum(['text', 'table', 'both']).optional().describe('삭제 범위 (기본 text, 양식 정리는 both 권장)'),
+            extract_first: z.boolean().optional().describe('삭제 전 작성요령 내용 추출 (v0.7.7 신규, 기본 false)'),
+        }, async ({ patterns, table_keywords, scope, extract_first }) => {
             if (!bridge.getCurrentDocument())
                 return { content: [{ type: 'text', text: JSON.stringify({ error: '열린 문서가 없습니다.' }) }], isError: true };
             try {
@@ -1112,6 +1173,12 @@ export function registerEditingTools(server, bridge, toolset = 'standard') {
                 const params = {};
                 if (patterns)
                     params.patterns = patterns;
+                if (table_keywords)
+                    params.table_keywords = table_keywords;
+                if (scope)
+                    params.scope = scope;
+                if (extract_first !== undefined)
+                    params.extract_first = extract_first;
                 const r = await bridge.send('delete_guide_text', params, FILL_TIMEOUT);
                 if (!r.success)
                     return { content: [{ type: 'text', text: JSON.stringify({ error: r.error }) }], isError: true };

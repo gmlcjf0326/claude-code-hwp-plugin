@@ -6,6 +6,7 @@
 import { spawn, execFile } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 const __filename = fileURLToPath(import.meta.url);
@@ -24,6 +25,8 @@ export class HwpBridge {
     lastAnalysis = null;
     lastError = null;
     startTime = Date.now();
+    // v0.7.4.7: 세션 내 1회만 first-run auto-install 시도
+    firstRunCompleted = false;
     getPythonScriptDir() {
         // npm 패키지: dist/hwp-bridge.js → ../python (패키지 내 python/)
         const npmPath = path.resolve(__dirname, '../python');
@@ -32,8 +35,25 @@ export class HwpBridge {
         // 개발 환경: mcp-server/dist/hwp-bridge.js → ../../python (프로젝트 루트)
         return path.resolve(__dirname, '../../python');
     }
+    /**
+     * v0.7.4.5: Python 실행 파일 탐색.
+     * - PYTHON_PATH 환경변수가 있으면 그것 사용 (사용자 override)
+     * - Windows: py launcher 로 Python 3.13 LTS 우선 (pywin32 + 3.14 gen_py 호환성 이슈 회피)
+     * - POSIX: 기본 python3
+     *
+     * 반환 형식: { exe, preArgs } — spawn(exe, [...preArgs, ...args])
+     */
     findPython() {
-        return process.env.PYTHON_PATH || 'python';
+        if (process.env.PYTHON_PATH) {
+            return { exe: process.env.PYTHON_PATH, preArgs: [] };
+        }
+        if (process.platform === 'win32') {
+            // py launcher 가 설치되어 있으면 -3.13 으로 특정 버전 사용
+            // (Python 3.14 + pywin32 311 조합의 gen_py 최초 import 수 시간 hang 회피)
+            // py launcher 가 없거나 3.13 미설치 시 ENOENT → 사용자가 PYTHON_PATH 설정
+            return { exe: 'py', preArgs: ['-3.13'] };
+        }
+        return { exe: 'python3', preArgs: [] };
     }
     async ensureRunning() {
         if (this.process && this.pythonRunning)
@@ -41,6 +61,17 @@ export class HwpBridge {
         // 동시 재시작 방지: 이미 시작 중이면 기다림
         if (this.startPromise)
             return this.startPromise;
+        // v0.7.4.7: 세션 최초 호출 시 의존성 자동 설치 (sentinel 기반 1회만)
+        if (!this.firstRunCompleted) {
+            this.firstRunCompleted = true;
+            try {
+                await this.firstRunSetup();
+            }
+            catch (err) {
+                // 자동 설치 실패는 하드 에러로 throw — 사용자에게 명확한 가이드 전달
+                throw err;
+            }
+        }
         // Clean up previous process
         if (this.process) {
             this.process.kill();
@@ -60,10 +91,10 @@ export class HwpBridge {
         }
     }
     async start() {
-        const pythonExe = this.findPython();
+        const { exe: pythonExe, preArgs } = this.findPython();
         const scriptPath = path.join(this.getPythonScriptDir(), 'hwp_service.py');
-        console.error(`[HWP MCP Bridge] Starting Python: ${pythonExe} ${scriptPath}`);
-        this.process = spawn(pythonExe, [scriptPath], {
+        console.error(`[HWP MCP Bridge] Starting Python: ${pythonExe} ${preArgs.join(' ')} ${scriptPath}`.trim());
+        this.process = spawn(pythonExe, [...preArgs, scriptPath], {
             stdio: ['pipe', 'pipe', 'pipe'],
             env: { ...process.env, PYTHONUNBUFFERED: '1' },
         });
@@ -218,6 +249,168 @@ export class HwpBridge {
             });
         });
     }
+    // ── v0.7.4.7: 세션 최초 호출 시 1회 사전 자동 설치 ──
+    getSentinelPath() {
+        return path.join(os.homedir(), '.hwp_studio_state', 'deps_installed.flag');
+    }
+    async firstRunSetup() {
+        // Opt-out: 사용자가 수동 제어를 원하면 HWP_SKIP_AUTO_INSTALL=1
+        if (process.env.HWP_SKIP_AUTO_INSTALL === '1') {
+            console.error('[HWP Bridge] HWP_SKIP_AUTO_INSTALL=1 — first-run auto-install 스킵');
+            return;
+        }
+        // 이전에 이미 성공적으로 설치된 적이 있으면 skip
+        const sentinelPath = this.getSentinelPath();
+        if (fs.existsSync(sentinelPath)) {
+            return;
+        }
+        console.error('[HWP Bridge] First-run: 의존성 상태 확인 중...');
+        let prereq;
+        try {
+            prereq = await this.checkPrerequisites();
+        }
+        catch (err) {
+            console.error(`[HWP Bridge] First-run checkPrerequisites 실패: ${err.message}`);
+            return; // non-fatal — 실제 spawn 시 에러가 더 명확함
+        }
+        // Python 이 없으면 auto-install 불가 — 사용자가 먼저 Python 3.13 설치해야 함
+        if (!prereq.python.found) {
+            console.error('[HWP Bridge] Python 미설치 — auto-install 스킵. 사용자가 먼저 Python 3.13 설치 필요.');
+            return;
+        }
+        const pyhwpxMissing = !prereq.pyhwpx.found;
+        const coreDepsMissing = prereq.deps ? !prereq.deps.allCoreReady : false;
+        const needsInstall = pyhwpxMissing || coreDepsMissing;
+        if (!needsInstall) {
+            // 이미 설치 상태가 정상 — sentinel 기록 후 skip
+            this.writeSentinel(sentinelPath, {
+                mode: 'already_ready',
+                python_version: prereq.python.version,
+            });
+            return;
+        }
+        const missingList = [];
+        if (pyhwpxMissing)
+            missingList.push('pyhwpx');
+        if (prereq.deps?.missingCore)
+            missingList.push(...prereq.deps.missingCore);
+        console.error(`[HWP Bridge] First-run: 미설치 의존성 감지 [${missingList.join(', ')}] — core_only 자동 설치 시작 (~2-5분)...`);
+        const result = await this.installDeps({ mode: 'core_only', timeoutMs: 600000 });
+        if (result.ok) {
+            console.error(`[HWP Bridge] First-run auto-install 완료 (${result.durationSeconds}s)`);
+            this.writeSentinel(sentinelPath, {
+                mode: 'core_only',
+                duration_seconds: result.durationSeconds,
+                python_version: prereq.python.version,
+                installed: result.installed,
+            });
+        }
+        else {
+            console.error(`[HWP Bridge] First-run auto-install 실패: ${result.error}`);
+            // Sentinel 기록 안 함 — 다음 세션에서 재시도
+            throw new Error(`HWP Studio 첫 실행 의존성 자동 설치 실패.\n` +
+                `에러: ${result.error}\n\n` +
+                `해결 방법:\n` +
+                `  1. 수동 설치: py -3.13 -m pip install -r mcp-server/python/requirements.txt\n` +
+                `  2. Python 3.13 LTS 설치 확인: https://www.python.org/downloads/release/python-3130/\n` +
+                `  3. 프록시 환경 확인 (pip 가 PyPI 접근 가능해야 함)\n` +
+                `  4. 자동 설치를 완전히 스킵하려면 HWP_SKIP_AUTO_INSTALL=1 환경변수 설정\n\n` +
+                `stderr 요약: ${(result.stderr || '').slice(-1000)}`);
+        }
+    }
+    writeSentinel(sentinelPath, data) {
+        try {
+            fs.mkdirSync(path.dirname(sentinelPath), { recursive: true });
+            fs.writeFileSync(sentinelPath, JSON.stringify({
+                timestamp: new Date().toISOString(),
+                version: '0.7.4.7',
+                ...data,
+            }, null, 2), 'utf8');
+        }
+        catch (err) {
+            console.error(`[HWP Bridge] Sentinel 기록 실패: ${err.message}`);
+        }
+    }
+    // ── v0.7.4.6: 의존성 자동 설치 ──
+    async installDeps(opts = {}) {
+        const { exe: pythonExe, preArgs } = this.findPython();
+        const scriptDir = this.getPythonScriptDir();
+        const reqPath = path.join(scriptDir, 'requirements.txt');
+        const startedAt = Date.now();
+        const mode = opts.mode ?? 'all';
+        // paddlepaddle 다운로드가 ~500MB 이므로 기본 20분 timeout
+        const timeout = opts.timeoutMs ?? 1200000;
+        let args;
+        let installed = [];
+        if (mode === 'core_only') {
+            // paddlepaddle/paddleocr 제외, 버전 고정 (requirements.txt 와 동일)
+            installed = [
+                // v0.7.4.9: Python 3.13 호환성 위해 일부 strict pin 해제 (>= 로 변경)
+                'pyhwpx==1.7.2', 'pywin32==308', 'PyMuPDF==1.24.11',
+                'openpyxl==3.1.5', 'python-docx==1.1.2',
+                'pdfplumber>=0.11.4', 'Pillow>=10.4.0',
+                'opencv-python-headless>=4.10.0.84', 'numpy>=1.26.4',
+            ];
+            args = [...preArgs, '-m', 'pip', 'install', ...installed];
+        }
+        else {
+            if (!fs.existsSync(reqPath)) {
+                return {
+                    ok: false,
+                    command: '',
+                    stdout: '',
+                    stderr: '',
+                    durationSeconds: 0,
+                    error: `requirements.txt not found: ${reqPath}`,
+                };
+            }
+            args = [...preArgs, '-m', 'pip', 'install', '-r', reqPath];
+            installed = ['(from requirements.txt)'];
+        }
+        const command = `${pythonExe} ${args.join(' ')}`;
+        try {
+            const { stdout, stderr } = await execFileAsync(pythonExe, args, {
+                timeout,
+                maxBuffer: 20 * 1024 * 1024, // pip 출력이 클 수 있음
+            });
+            const durationSeconds = Math.round((Date.now() - startedAt) / 1000);
+            // 설치 후 재검증
+            const verify = await this.checkPrerequisites();
+            // v0.7.4.7: 수동 설치 성공 시 sentinel 도 기록 → 다음 ensureRunning() 에서 auto-install 스킵
+            if (verify.pyhwpx.found && (mode === 'all' || (verify.deps && verify.deps.allCoreReady))) {
+                this.writeSentinel(this.getSentinelPath(), {
+                    mode,
+                    duration_seconds: durationSeconds,
+                    python_version: verify.python.version,
+                    trigger: 'manual_install_deps',
+                });
+            }
+            return {
+                ok: true,
+                command,
+                stdout: stdout.slice(-8000), // 출력 끝부분만 (시작 부분은 download 진행 상황이라 덜 유용)
+                stderr: stderr.slice(-4000),
+                durationSeconds,
+                installed,
+                verified: verify.deps,
+            };
+        }
+        catch (err) {
+            const e = err;
+            const durationSeconds = Math.round((Date.now() - startedAt) / 1000);
+            const isTimeout = e.code === 'ETIMEDOUT' || (e.message ?? '').includes('timed out');
+            return {
+                ok: false,
+                command,
+                stdout: (e.stdout ?? '').slice(-8000),
+                stderr: (e.stderr ?? '').slice(-4000),
+                durationSeconds,
+                error: isTimeout
+                    ? `pip install 이 ${Math.round(timeout / 60000)}분 이내에 완료되지 않았습니다. 프록시 환경 또는 패키지 크기(특히 paddlepaddle ~500MB) 때문일 수 있습니다. 더 긴 timeoutMs 로 재시도하거나 수동으로 설치하세요.`
+                    : (e.message ?? String(err)),
+            };
+        }
+    }
     async shutdown() {
         if (!this.process)
             return;
@@ -253,46 +446,97 @@ export class HwpBridge {
             result.os.error = 'HWP MCP는 Windows 전용입니다. 한글(HWP)은 Windows COM API를 사용합니다.';
             return result;
         }
-        const pythonExe = this.findPython();
-        // 1) Python 체크 — 경로 + 버전 + Microsoft Store 감지
+        const { exe: pythonExe, preArgs } = this.findPython();
+        // 1) Python 체크 — 경로 + 버전 + Microsoft Store 감지 + 3.14 hang 경고
         try {
-            const { stdout } = await execFileAsync(pythonExe, ['-c', 'import sys; print(sys.version.split()[0]); print(sys.executable)'], { timeout: 5000 });
+            const { stdout } = await execFileAsync(pythonExe, [...preArgs, '-c', 'import sys; print(sys.version.split()[0]); print(sys.executable)'], { timeout: 10000 });
             const lines = stdout.trim().split(/\r?\n/);
             const ver = lines[0];
             const exePath = lines[1] || '';
             const isStorePython = exePath.includes('WindowsApps');
+            // v0.7.4.5: Python 3.14+ 에서 pywin32 gen_py 최초 import 가 수 시간 hang 하는 이슈
+            const majorMinor = ver.split('.').slice(0, 2).join('.');
+            const isUnstablePython = majorMinor === '3.14' || parseFloat(majorMinor) >= 3.15;
+            let pythonGuide;
+            if (isStorePython) {
+                pythonGuide = `Microsoft Store Python 감지 (${exePath}). pyhwpx가 인식되지 않을 수 있습니다.\n→ python.org에서 Python 3.13 LTS 재설치를 권장합니다: https://www.python.org/downloads/`;
+            }
+            else if (isUnstablePython) {
+                pythonGuide = `⚠️ Python ${ver} 감지 — pywin32 gen_py 캐시 최초 생성이 수 시간 hang 할 수 있습니다 (알려진 이슈).\n→ Python 3.13 LTS 권장: https://www.python.org/downloads/release/python-3130/\n→ 또는 PYTHON_PATH 환경변수로 3.13 경로 명시`;
+            }
             result.python = {
                 found: true,
                 version: ver,
                 path: exePath,
-                guide: isStorePython
-                    ? `Microsoft Store Python 감지 (${exePath}). pyhwpx가 인식되지 않을 수 있습니다.\n→ python.org에서 재설치를 권장합니다: https://www.python.org/downloads/`
-                    : undefined,
+                guide: pythonGuide,
             };
         }
         catch {
             result.python = {
                 found: false,
-                guide: 'Python 3.8+ 설치 필요\n→ https://www.python.org/downloads/ 에서 설치\n→ 설치 시 "Add Python to PATH" 반드시 체크\n→ Microsoft Store 버전이 아닌 python.org 공식 버전 권장\n→ 설치 후 터미널 재시작',
+                guide: 'Python 3.13 LTS 설치 필요\n→ https://www.python.org/downloads/release/python-3130/ 에서 설치\n→ 설치 시 "Add Python to PATH" 반드시 체크\n→ Microsoft Store 버전이 아닌 python.org 공식 버전 권장\n→ 설치 후 터미널 재시작\n→ 또는 PYTHON_PATH 환경변수로 Python 3.13 경로 직접 지정',
             };
             return result;
         }
-        // 2) pyhwpx 체크
+        // 2) pyhwpx 체크 (v0.7.4.5: timeout 30s 로 확장, timeout 과 ImportError 구분)
         try {
-            const { stdout } = await execFileAsync(pythonExe, ['-c', 'import pyhwpx; print(getattr(pyhwpx, "__version__", "installed"))'], { timeout: 5000 });
+            const { stdout } = await execFileAsync(pythonExe, [...preArgs, '-c', 'import pyhwpx; print(getattr(pyhwpx, "__version__", "installed"))'], { timeout: 30000 });
             result.pyhwpx = { found: true, version: stdout.trim() };
         }
-        catch {
+        catch (err) {
+            const errMsg = err.message || '';
+            const isTimeout = errMsg.includes('ETIMEDOUT') || errMsg.includes('timed out') || errMsg.includes('timeout');
             result.pyhwpx = {
                 found: false,
-                guide: `pyhwpx 패키지 설치 필요\n→ 감지된 Python: ${result.python.path || pythonExe}\n→ 터미널에서 실행: pip install pyhwpx pywin32`,
+                guide: isTimeout
+                    ? `⚠️ pyhwpx import 가 30초 이상 걸렸습니다 — Python ${result.python.version || '?'} 에서 pywin32 gen_py 최초 생성 hang 이슈일 수 있습니다.\n→ Python 3.13 LTS 다운그레이드 권장\n→ 또는 별도 터미널에서 python -c "import pyhwpx" 를 끝까지 대기 후 재시도`
+                    : `pyhwpx 패키지 설치 필요\n→ 감지된 Python: ${result.python.path || pythonExe}\n→ 터미널에서 실행: pip install pyhwpx pywin32`,
             };
             return result;
+        }
+        // 2.5) v0.7.4.6: 확장 의존성 체크 (find_spec 기반 — 실제 import 안 함, 빠름)
+        try {
+            const depsScript = 'import json,importlib.util as iu;' +
+                "print(json.dumps({n:iu.find_spec(m) is not None for n,m in [" +
+                "('pdfplumber','pdfplumber')," +
+                "('Pillow','PIL')," +
+                "('opencv','cv2')," +
+                "('numpy','numpy')," +
+                "('PyMuPDF','fitz')," +
+                "('paddlepaddle','paddle')," +
+                "('paddleocr','paddleocr')" +
+                "]}))";
+            const { stdout } = await execFileAsync(pythonExe, [...preArgs, '-c', depsScript], { timeout: 10000 });
+            const d = JSON.parse(stdout.trim());
+            const core = {
+                pdfplumber: d.pdfplumber,
+                Pillow: d.Pillow,
+                opencv: d.opencv,
+                numpy: d.numpy,
+                PyMuPDF: d.PyMuPDF,
+            };
+            const ocr = {
+                paddlepaddle: d.paddlepaddle,
+                paddleocr: d.paddleocr,
+            };
+            const missingCore = Object.entries(core).filter(([, v]) => !v).map(([k]) => k);
+            const missingOcr = Object.entries(ocr).filter(([, v]) => !v).map(([k]) => k);
+            result.deps = {
+                core,
+                ocr,
+                missingCore,
+                missingOcr,
+                allCoreReady: missingCore.length === 0,
+                allOcrReady: missingOcr.length === 0,
+            };
+        }
+        catch {
+            // 의존성 체크 실패는 non-fatal — pyhwpx 자체는 작동할 수 있음
         }
         // 3) 한글(HWP) 설치 체크 — COM Dispatch 대신 파일 존재 + pyhwpx import 확인
         // (COM Dispatch는 빈 한글 문서를 열어버리는 부작용이 있으므로 제거)
         try {
-            const { stdout } = await execFileAsync(pythonExe, ['-c',
+            const { stdout } = await execFileAsync(pythonExe, [...preArgs, '-c',
                 'import os; paths = [r"C:\\Program Files\\Hancom", r"C:\\Program Files (x86)\\Hancom"]; ' +
                     'found = any(os.path.isdir(p) for p in paths); ' +
                     'print("installed" if found else "not_found")'

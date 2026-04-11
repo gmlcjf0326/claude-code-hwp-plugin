@@ -116,6 +116,21 @@ export function registerDocumentTools(server, bridge) {
                     items.push('⚠️ 한글(HWP)이 실행되지 않았습니다. 문서 작업 전 한글을 먼저 실행하세요.');
                 }
             }
+            // v0.7.4.6: 확장 의존성 상태
+            if (prereq.deps) {
+                if (prereq.deps.allCoreReady) {
+                    items.push('✅ PDF Clone core deps (pdfplumber/Pillow/opencv/numpy/PyMuPDF) 모두 설치됨');
+                }
+                else {
+                    items.push(`⚠️ PDF Clone core deps 일부 미설치: ${prereq.deps.missingCore.join(', ')}\n   → hwp_install_deps({mode:"core_only"}) 로 자동 설치`);
+                }
+                if (prereq.deps.allOcrReady) {
+                    items.push('✅ PDF Clone OCR deps (paddlepaddle/paddleocr) 설치됨 — 스캔 PDF 지원');
+                }
+                else {
+                    items.push(`ℹ️ PDF Clone OCR deps 미설치 (optional): ${prereq.deps.missingOcr.join(', ')}\n   → 스캔 PDF 사용 시 hwp_install_deps({mode:"all"}) 호출`);
+                }
+            }
             const allReady = prereq.ok && prereq.hwpRunning;
             return { content: [{ type: 'text', text: JSON.stringify({
                             status: allReady ? 'ready' : prereq.ok ? 'hwp_not_running' : 'not_ready',
@@ -126,7 +141,51 @@ export function registerDocumentTools(server, bridge) {
                                     : '아래 항목을 설치한 후 다시 시도하세요.',
                             details: prereq,
                             summary: items.join('\n'),
+                            // v0.7.4.6: 편의 힌트
+                            auto_install_available: !prereq.ok || (prereq.deps && (!prereq.deps.allCoreReady || !prereq.deps.allOcrReady))
+                                ? 'hwp_install_deps 도구로 자동 설치 가능 (mode:"all"=전체, "core_only"=OCR 제외 빠른 설치)'
+                                : undefined,
                         }) }] };
+        }
+        catch (err) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+        }
+    });
+    // ── v0.7.4.6/v0.7.4.7: 의존성 자동 설치 도구 ──
+    server.tool('hwp_install_deps', 'Python 의존성을 자동 설치합니다. (v0.7.4.6 신규, v0.7.4.7 확장) mcp-server/python/requirements.txt 기준 pip install. mode="all" (기본): pyhwpx+pywin32+PyMuPDF+pdfplumber+Pillow+opencv+numpy+paddlepaddle+paddleocr 전체 설치 (~700MB, 최대 20분). mode="core_only": paddlepaddle/paddleocr 제외 — native PDF clone 만 작동. force=true: sentinel 무시하고 재설치. v0.7.4.7 부터는 첫 HWP 도구 호출 시 자동으로 core_only 설치가 사전 실행되므로, 사용자가 이 도구를 명시 호출할 필요는 OCR 추가(mode:"all")나 재설치 시에만.', {
+        mode: z.enum(['all', 'core_only']).optional().describe('"all" (기본): 전체 설치. "core_only": OCR 엔진 제외 빠른 설치'),
+        timeout_minutes: z.number().int().min(1).max(60).optional().describe('pip install 타임아웃 분 단위 (기본 20, 최대 60)'),
+        force: z.boolean().optional().describe('sentinel flag 를 무시하고 재설치 (기본 false)'),
+    }, async ({ mode, timeout_minutes, force }) => {
+        try {
+            // v0.7.4.7: force=true 면 sentinel 삭제 — 다음 ensureRunning() 에서 auto-install 재실행
+            if (force) {
+                try {
+                    const os = await import('node:os');
+                    const sentinelPath = path.join(os.homedir(), '.hwp_studio_state', 'deps_installed.flag');
+                    if (fs.existsSync(sentinelPath))
+                        fs.unlinkSync(sentinelPath);
+                }
+                catch { }
+            }
+            const result = await bridge.installDeps({
+                mode: mode ?? 'all',
+                timeoutMs: timeout_minutes ? timeout_minutes * 60000 : undefined,
+            });
+            return { content: [{ type: 'text', text: JSON.stringify({
+                            status: result.ok ? 'ok' : 'error',
+                            mode: mode ?? 'all',
+                            command: result.command,
+                            duration_seconds: result.durationSeconds,
+                            installed: result.installed,
+                            verified_deps: result.verified,
+                            stdout_tail: result.stdout,
+                            stderr_tail: result.stderr,
+                            error: result.error,
+                            next_step: result.ok
+                                ? 'hwp_check_setup 으로 최종 확인 후 문서 작업 가능. paddleocr 은 최초 OCR 호출 시 ~150MB 한글 모델이 ~/.paddleocr 에 자동 다운로드됩니다.'
+                                : 'pip install 실패 — stderr_tail 확인 후 수동 설치: py -3.13 -m pip install -r mcp-server/python/requirements.txt',
+                        }) }], isError: !result.ok };
         }
         catch (err) {
             return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };

@@ -8,9 +8,52 @@ import os from 'node:os';
 const HWP_EXTENSIONS = new Set(['.hwp', '.hwpx']);
 const ANALYSIS_TIMEOUT = 60000;
 export function registerCompositeTools(server, bridge) {
+    // ===== v0.7.5.4 P0-2: runAutoFixLoop NO-OP 전환 =====
+    // v0.7.4.0 의 auto_fix loop 은 apply_style_profile({target: 'all'}) 로 전체 문서 서식을
+    // 덮어쓰는 부작용이 있었음 (공무원 양식의 셀별 서식 손실). v0.7.5.4 부터는 validate 만
+    // 수행하고 개별 수정은 Claude host 가 직접 set_paragraph_style 호출로 처리하도록 위임.
+    //
+    // 기존 호출자 (form_workflow / autopilot) 는 동일한 시그니처를 기대하므로 wrapper 유지.
+    // iterations: 0 을 반환해서 "아무것도 안 했음" 명시.
+    async function runAutoFixLoop(opts) {
+        // validate 만 수행 — 전체 override 는 하지 않음
+        let score = 100;
+        const recommendedFixes = [];
+        try {
+            const params = { file_path: opts.outputPath };
+            if (opts.styleProfile)
+                params.expected_profile = opts.styleProfile;
+            const r = await bridge.send('validate_consistency', params, ANALYSIS_TIMEOUT);
+            if (r.success && r.data) {
+                const d = r.data;
+                if (typeof d.consistency_score === 'number')
+                    score = d.consistency_score;
+                // 발견된 deviations 를 recommended_fixes 로 반환 (Claude host 가 개별 수정)
+                if (Array.isArray(d.format_deviations)) {
+                    for (const dev of d.format_deviations) {
+                        recommendedFixes.push({
+                            field: dev.field,
+                            expected: dev.expected,
+                            actual: dev.actual,
+                            suggestion: 'set_paragraph_style 또는 set_char_shape 로 개별 수정',
+                        });
+                    }
+                }
+            }
+        }
+        catch { }
+        return {
+            iterations: 0,
+            score_before: score,
+            score_after: score,
+            log: [],
+            stopped_reason: score >= opts.threshold ? 'already_passed' : 'no_auto_fix_v0754',
+            recommended_fixes: recommendedFixes,
+        };
+    }
     // ── 진단 도구 (개발용) ──
     server.tool('hwp_inspect_com_object', '[개발용] pyhwpx COM 객체의 실제 속성 목록을 덤프합니다. HCharShape/HParaShape 등의 정확한 속성명을 확인할 때 사용.', {
-        object: z.enum(['HCharShape', 'HParaShape', 'HFindReplace']).optional().describe('조사할 COM 객체 (기본: HCharShape)'),
+        object: z.enum(['HCharShape', 'HParaShape', 'HFindReplace', 'HSecDef', 'HPageDef']).optional().describe('조사할 COM 객체 (기본: HCharShape)'),
     }, async ({ object: objName }) => {
         try {
             await bridge.ensureRunning();
@@ -876,6 +919,883 @@ export function registerCompositeTools(server, bridge) {
             return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
         }
     });
+    // ===== v0.7.5.4 P2-1: Form Attachment Workflow Orchestrator (read-only default) =====
+    // hwp_form_workflow — 양식 파일 첨부 → 학습 → 계획 → 미리보기 → (명시) 채우기 → (명시) 검증
+    // v0.7.5.4 변경:
+    //   - phase='all' 은 learn→plan→preview 에서 stop (이전: auto_fix 까지 자동 실행)
+    //   - auto_fix 는 완전 opt-in, 기본값은 no-op (runAutoFixLoop 이 P0-2 에서 이미 무력화됨)
+    //   - 원본 양식 절대 덮어쓰지 않음 (save_as 로 새 경로 저장만)
+    server.tool('hwp_form_workflow', '양식 파일 첨부 워크플로우. v0.7.5.4 read-only 기본: phase="all" 은 learn→plan→preview 에서 정지 (fill 은 사용자 명시 호출 필요). phase 별: learn(학습)→plan(계획)→preview(미리보기)→fill(명시)→verify(명시)→rollback(원본 복원). auto_fix 는 v0.7.5.4 부터 no-op (원본 서식 보호). table_cell_overrides/field_overrides 로 Claude host 가 직접 제어.', {
+        phase: z.enum(['learn', 'plan', 'preview', 'fill', 'verify', 'auto_fix', 'all', 'rollback']).describe('실행할 단계. "all" 은 read-only (learn→plan→preview 만)'),
+        form_file: z.string().optional().describe('양식 HWP/HWPX 파일 (learn 또는 all 첫 호출 시 필수)'),
+        user_request: z.string().optional().describe('사용자 요청 (plan 단계에서 estimate_workload 입력)'),
+        reference_file: z.string().optional().describe('참고 자료 (Excel/CSV/JSON/PDF/DOCX/HTML)'),
+        session_id: z.string().optional().describe('세션 ID (없으면 자동 생성)'),
+        output_path: z.string().optional().describe('저장 경로 (생략 시 form_file 옆에 _filled 접미사)'),
+        field_overrides: z.record(z.string(), z.string()).optional().describe('필드명→값 직접 지정 (auto_map 결과 덮어쓰기)'),
+        table_cell_overrides: z.array(z.object({
+            table_index: z.number().int().min(0),
+            cells: z.array(z.object({
+                tab: z.number().int().min(0).optional(),
+                label: z.string().optional(),
+                text: z.string(),
+            })),
+        })).optional().describe('표 셀 직접 지정 (auto_map 결과 덮어쓰기)'),
+        confirm_fill: z.boolean().optional().describe('fill 단계 진행 확인 (사용자 승인 완료)'),
+        auto_fix_enabled: z.boolean().optional().describe('v0.7.5.4: auto_fix 활성화 여부 (기본 false). true 여도 P0-2 runAutoFixLoop no-op 이므로 validate 만 수행.'),
+        auto_fix_threshold: z.number().min(0).max(100).optional().describe('auto_fix 점수 임계 (기본 85, auto_fix_enabled=true 일 때만 의미)'),
+        auto_fix_max_iterations: z.number().int().min(1).max(5).optional().describe('auto_fix 최대 반복 (기본 2, auto_fix_enabled=true 일 때만 의미)'),
+    }, async (args) => {
+        const sid = safeId(args.session_id || `form_${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}`);
+        const sessionPath = path.join(STATE_DIR, `${sid}.json`);
+        const snapshotPath = path.join(STATE_DIR, `${sid}.snapshot.bin`);
+        if (!fs.existsSync(STATE_DIR))
+            fs.mkdirSync(STATE_DIR, { recursive: true });
+        const loadCheckpoint = () => {
+            if (!fs.existsSync(sessionPath))
+                return {};
+            try {
+                return JSON.parse(fs.readFileSync(sessionPath, 'utf8'));
+            }
+            catch {
+                return {};
+            }
+        };
+        const saveCheckpoint = (extra) => {
+            const existing = loadCheckpoint();
+            const merged = {
+                ...existing,
+                ...extra,
+                session_id: sid,
+                workflow: 'form_workflow',
+                last_saved: new Date().toISOString(),
+            };
+            fs.writeFileSync(sessionPath, JSON.stringify(merged, null, 2), 'utf8');
+            return merged;
+        };
+        try {
+            await bridge.ensureRunning();
+            const cp = loadCheckpoint();
+            const formFile = args.form_file ?? cp.form_file;
+            const outputPath = args.output_path
+                ?? cp.output_path
+                ?? (formFile ? formFile.replace(/(\.hwpx?)$/i, '_filled$1') : undefined);
+            // ─── Phase 1: LEARN ───
+            const runLearn = async () => {
+                if (!formFile)
+                    throw new Error('form_file required for learn phase');
+                // v0.7.4.9 S2-NEW-2 Fix: 이전 문서 (특히 hwp_pdf_clone 의 FileNew 결과) 를 명시 close
+                // → cursor state 정리. 실패해도 무시 (no document to close).
+                try {
+                    await bridge.send('close_document', {}, 5000);
+                }
+                catch { }
+                const openR = await bridge.send('open_document', { file_path: formFile }, ANALYSIS_TIMEOUT);
+                if (!openR.success)
+                    throw new Error(`open_document failed: ${openR.error}`);
+                let formDetect = null;
+                try {
+                    const r = await bridge.send('form_detect', {}, ANALYSIS_TIMEOUT);
+                    if (r.success)
+                        formDetect = r.data;
+                }
+                catch { }
+                let structure = null;
+                try {
+                    const r = await bridge.send('extract_template_structure', { file_path: formFile }, ANALYSIS_TIMEOUT);
+                    if (r.success)
+                        structure = r.data;
+                }
+                catch { }
+                let patterns = null;
+                try {
+                    const r = await bridge.send('analyze_writing_patterns', { file_path: formFile }, ANALYSIS_TIMEOUT);
+                    if (r.success)
+                        patterns = r.data;
+                }
+                catch { }
+                // Enumerate tables and map cells
+                let tablesInfo = [];
+                let fieldsInfo = [];
+                try {
+                    const r = await bridge.send('analyze_document', { file_path: formFile }, ANALYSIS_TIMEOUT);
+                    if (r.success && r.data) {
+                        const d = r.data;
+                        tablesInfo = Array.isArray(d.tables) ? d.tables : [];
+                        fieldsInfo = Array.isArray(d.fields) ? d.fields : [];
+                    }
+                }
+                catch { }
+                const tableMaps = [];
+                for (let i = 0; i < tablesInfo.length; i++) {
+                    try {
+                        const m = await bridge.send('map_table_cells', { table_index: i }, ANALYSIS_TIMEOUT);
+                        if (m.success && m.data) {
+                            tableMaps.push({ table_index: i, ...m.data });
+                        }
+                    }
+                    catch { }
+                }
+                return saveCheckpoint({
+                    phase: 'learn',
+                    form_file: formFile,
+                    output_path: outputPath,
+                    form_detect: formDetect,
+                    template_structure: structure,
+                    writing_patterns: patterns,
+                    tables_info: tablesInfo,
+                    fields_info: fieldsInfo,
+                    table_maps: tableMaps,
+                });
+            };
+            // ─── Phase 2: PLAN ───
+            const runPlan = async () => {
+                const learned = (cp.phase === 'learn' || cp.table_maps) ? cp : await runLearn();
+                let estimate = {};
+                try {
+                    const estParams = {
+                        user_request: args.user_request || '양식 채우기',
+                    };
+                    if (formFile)
+                        estParams.file_path = formFile;
+                    if (args.reference_file)
+                        estParams.reference_files = [args.reference_file];
+                    const r = await bridge.send('estimate_workload', estParams, ANALYSIS_TIMEOUT);
+                    if (r.success)
+                        estimate = r.data;
+                }
+                catch { }
+                // Heuristic: detect "label-shaped" cells (ends with colon or short Korean noun)
+                // v0.7.4.9 S3-NEW-1 Fix: Python hwp_analyzer.map_table_cells 는 "cell_map" 키로 반환하지만
+                // 이전 v0.7.4.8 은 "cells" 로 잘못 읽어서 suggested_fills 가 항상 0 이었음.
+                // 호환: cell_map 우선, 레거시 cells 도 fallback
+                const suggestedFills = [];
+                const tableMaps = learned.table_maps || [];
+                for (const tm of tableMaps) {
+                    const cells = tm.cell_map
+                        || tm.cells
+                        || [];
+                    for (const c of cells) {
+                        const txt = String(c.text || '').trim();
+                        if (txt && txt.length <= 20 && /[:：]$|^[가-힣]{2,8}$/.test(txt)) {
+                            suggestedFills.push({
+                                table_index: tm.table_index,
+                                label: txt,
+                                tab: c.tab,
+                                suggested_value: '',
+                            });
+                        }
+                    }
+                }
+                return saveCheckpoint({
+                    phase: 'plan',
+                    estimate,
+                    suggested_fills: suggestedFills,
+                    status: 'awaiting_preview',
+                });
+            };
+            // ─── Phase 3: PREVIEW ───
+            const runPreview = () => {
+                return saveCheckpoint({
+                    phase: 'preview',
+                    status: 'awaiting_confirm',
+                    preview: {
+                        form_file: cp.form_file,
+                        output_path: cp.output_path,
+                        form_detect: cp.form_detect,
+                        suggested_fills: cp.suggested_fills,
+                        estimate: cp.estimate,
+                        instructions: 'Claude host: 사용자 확인 후 phase=fill, confirm_fill=true, field_overrides/table_cell_overrides 를 포함해 재호출',
+                    },
+                });
+            };
+            // ─── Phase 4: FILL ───
+            const runFill = async () => {
+                if (!args.confirm_fill) {
+                    return saveCheckpoint({ phase: 'fill', status: 'denied', reason: 'confirm_fill=false' });
+                }
+                if (!formFile)
+                    throw new Error('form_file missing in checkpoint');
+                if (!outputPath)
+                    throw new Error('output_path missing');
+                // Snapshot pre-fill state for rollback (항상 원본 form_file 을 백업)
+                if (fs.existsSync(formFile)) {
+                    try {
+                        fs.copyFileSync(formFile, snapshotPath);
+                    }
+                    catch { }
+                }
+                // Ensure document is open
+                const openR = await bridge.send('open_document', { file_path: formFile }, ANALYSIS_TIMEOUT);
+                if (!openR.success)
+                    throw new Error(`open_document failed: ${openR.error}`);
+                const fillResults = [];
+                // 4a) reference auto-map (reference_file 제공 시)
+                let refMappings = null;
+                if (args.reference_file) {
+                    try {
+                        const refR = await bridge.send('read_reference', { file_path: args.reference_file }, ANALYSIS_TIMEOUT);
+                        if (refR.success && refR.data) {
+                            const refData = refR.data;
+                            // Extract headers and first data row (tolerant of different schemas)
+                            let headers = [];
+                            let row = [];
+                            // v0.7.4.8 Fix C3: hwp_structured (.hwp/.hwpx) 우선 지원 — tables[0] 의 headers/data 사용
+                            if (refData.format === 'hwp_structured' && Array.isArray(refData.tables)) {
+                                const tables = refData.tables;
+                                if (tables.length > 0) {
+                                    const firstTable = tables[0];
+                                    headers = firstTable.headers || [];
+                                    const dataRows = firstTable.data;
+                                    if (Array.isArray(dataRows) && dataRows.length > 0) {
+                                        row = dataRows[0].map(String);
+                                    }
+                                }
+                            }
+                            if (headers.length === 0 && Array.isArray(refData.headers)) {
+                                headers = refData.headers;
+                                const dataRows = refData.data;
+                                if (Array.isArray(dataRows) && dataRows.length > 0) {
+                                    const first = dataRows[0];
+                                    row = Array.isArray(first) ? first.map(String) : Object.values(first).map(String);
+                                }
+                            }
+                            else if (headers.length === 0 && Array.isArray(refData.sheets) && refData.sheets.length > 0) {
+                                const sheet0 = refData.sheets[0];
+                                headers = sheet0.headers || [];
+                                const dataRows = sheet0.data;
+                                if (Array.isArray(dataRows) && dataRows.length > 0) {
+                                    row = dataRows[0].map(String);
+                                }
+                            }
+                            const tableMaps = cp.table_maps || [];
+                            // v0.7.4.8 Fix B4: 모든 테이블 순회 (기존: firstTableIdx 만)
+                            // 각 테이블 별로 auto_map 호출 후 결과를 flatten 해 refMappings 배열로
+                            if (headers.length > 0 && tableMaps.length > 0) {
+                                const allMappings = [];
+                                const perTableResults = [];
+                                for (const tm of tableMaps) {
+                                    const tblIdx = tm.table_index ?? 0;
+                                    try {
+                                        const m = await bridge.send('auto_map_reference', { table_index: tblIdx, ref_headers: headers, ref_row: row }, ANALYSIS_TIMEOUT);
+                                        if (m.success && m.data) {
+                                            const mData = m.data;
+                                            const tblMappings = mData.mappings || [];
+                                            for (const mp of tblMappings) {
+                                                allMappings.push({ ...mp, table_index: tblIdx });
+                                            }
+                                            perTableResults.push({
+                                                table_index: tblIdx,
+                                                total_matched: mData.total_matched || 0,
+                                                unmapped: mData.unmapped || [],
+                                            });
+                                        }
+                                    }
+                                    catch (e) {
+                                        perTableResults.push({
+                                            table_index: tblIdx,
+                                            error: e.message,
+                                        });
+                                    }
+                                }
+                                if (allMappings.length > 0) {
+                                    refMappings = {
+                                        mappings: allMappings,
+                                        per_table: perTableResults,
+                                        total_matched: allMappings.length,
+                                    };
+                                }
+                            }
+                        }
+                    }
+                    catch { }
+                }
+                // 4b) Apply table_cell_overrides (Claude host 의 권위 있는 값)
+                if (args.table_cell_overrides) {
+                    for (const t of args.table_cell_overrides) {
+                        try {
+                            const r = await bridge.send('smart_fill', {
+                                table_index: t.table_index,
+                                cells: t.cells.map(c => ({ tab: c.tab, label: c.label, text: c.text })),
+                            }, ANALYSIS_TIMEOUT);
+                            fillResults.push({ type: 'table_cell_overrides', table_index: t.table_index, ok: r.success, data: r.data, error: r.error });
+                        }
+                        catch (e) {
+                            fillResults.push({ type: 'table_cell_overrides', table_index: t.table_index, ok: false, error: e.message });
+                        }
+                    }
+                }
+                // 4c) Apply ref auto-map (overrides 로 채워지지 않은 셀만)
+                // v0.7.4.8 Fix B4: refMappings.mappings 가 여러 table 의 mapping 을 병합한 배열 (각 항목에 table_index 포함)
+                if (refMappings && Array.isArray(refMappings.mappings)) {
+                    const overrideTabs = new Set((args.table_cell_overrides ?? [])
+                        .flatMap(t => t.cells
+                        .filter(c => c.tab !== undefined)
+                        .map(c => `${t.table_index}:${c.tab}`)));
+                    // Group by table_index → 각 테이블별로 smart_fill 호출
+                    const byTable = new Map();
+                    for (const mp of refMappings.mappings) {
+                        const tIdx = mp.table_index ?? 0;
+                        const key = `${tIdx}:${mp.tab}`;
+                        if (overrideTabs.has(key))
+                            continue;
+                        if (!byTable.has(tIdx))
+                            byTable.set(tIdx, []);
+                        byTable.get(tIdx).push({ tab: mp.tab, text: mp.text });
+                    }
+                    for (const [tIdx, cells] of byTable) {
+                        if (cells.length === 0)
+                            continue;
+                        try {
+                            const r = await bridge.send('smart_fill', { table_index: tIdx, cells }, ANALYSIS_TIMEOUT);
+                            fillResults.push({ type: 'ref_auto_map', table_index: tIdx, ok: r.success, cells: cells.length, data: r.data, error: r.error });
+                        }
+                        catch (e) {
+                            fillResults.push({ type: 'ref_auto_map', table_index: tIdx, ok: false, error: e.message });
+                        }
+                    }
+                }
+                // 4d) Apply field_overrides
+                if (args.field_overrides && Object.keys(args.field_overrides).length > 0) {
+                    try {
+                        const r = await bridge.send('fill_fields', { fields: args.field_overrides }, ANALYSIS_TIMEOUT);
+                        fillResults.push({ type: 'field_overrides', ok: r.success, count: Object.keys(args.field_overrides).length, data: r.data, error: r.error });
+                    }
+                    catch (e) {
+                        fillResults.push({ type: 'field_overrides', ok: false, error: e.message });
+                    }
+                }
+                // Save to output_path
+                const saveFmt = outputPath.toLowerCase().endsWith('.hwpx') ? 'HWPX' : 'HWP';
+                const saveR = await bridge.send('save_as', { path: outputPath, format: saveFmt }, ANALYSIS_TIMEOUT);
+                // v0.7.4.8 Fix B5: save 성공 시 runVerify 자동 호출 — 5단계 cross-check
+                // (이전: runVerify 는 phase="verify" 명시 호출 시에만 작동)
+                let autoVerify = null;
+                if (saveR.success) {
+                    try {
+                        const verifyResult = await runVerify();
+                        autoVerify = verifyResult.verify || null;
+                    }
+                    catch (e) {
+                        autoVerify = { error: e.message };
+                    }
+                }
+                return saveCheckpoint({
+                    phase: 'fill',
+                    status: saveR.success ? 'filled' : 'fill_failed',
+                    fill_results: fillResults,
+                    ref_mappings: refMappings,
+                    save_result: saveR.data,
+                    save_error: saveR.error,
+                    output_path: outputPath,
+                    rollback_snapshot: snapshotPath,
+                    // v0.7.4.8: auto-verify 결과
+                    auto_verify: autoVerify,
+                });
+            };
+            // ─── Phase 5: VERIFY ───
+            const runVerify = async () => {
+                if (!outputPath || !fs.existsSync(outputPath)) {
+                    throw new Error('output file not saved yet — run phase=fill first');
+                }
+                const stat = fs.statSync(outputPath);
+                const minBytes = outputPath.toLowerCase().endsWith('.hwpx') ? 19000 : 24000;
+                const sizeOk = stat.size >= minBytes;
+                let wcData = null;
+                try {
+                    const r = await bridge.send('word_count', {}, ANALYSIS_TIMEOUT);
+                    if (r.success && r.data)
+                        wcData = r.data;
+                }
+                catch { }
+                let textOk = false;
+                let textPreview = '';
+                try {
+                    const r = await bridge.send('get_document_text', { file_path: outputPath, max_chars: 5000 }, ANALYSIS_TIMEOUT);
+                    if (r.success && r.data) {
+                        const d = r.data;
+                        const txt = d.text || d.full_text || '';
+                        textOk = txt.length > 100;
+                        textPreview = txt.slice(0, 300);
+                    }
+                }
+                catch { }
+                let consistencyScore = null;
+                try {
+                    const params = { file_path: outputPath };
+                    if (cp.writing_patterns)
+                        params.expected_profile = cp.writing_patterns;
+                    const r = await bridge.send('validate_consistency', params, ANALYSIS_TIMEOUT);
+                    if (r.success && r.data) {
+                        const d = r.data;
+                        if (typeof d.consistency_score === 'number')
+                            consistencyScore = d.consistency_score;
+                    }
+                }
+                catch { }
+                let privacy = null;
+                try {
+                    const r = await bridge.send('privacy_scan', { file_path: outputPath }, ANALYSIS_TIMEOUT);
+                    if (r.success && r.data)
+                        privacy = r.data;
+                }
+                catch { }
+                const crossCheckPassed = sizeOk && textOk && consistencyScore !== null && consistencyScore >= 50;
+                // v0.7.5.4 P4-2: 5단계 검증 자동 병합 (TEST_CHECKLIST Phase 19)
+                let verify5Stage = null;
+                try {
+                    const r = await bridge.send('verify_5stage', {
+                        file_path: outputPath,
+                        expected_text_snippet: textPreview.slice(0, 100),
+                        run_layout: false,
+                    }, ANALYSIS_TIMEOUT);
+                    if (r.success && r.data)
+                        verify5Stage = r.data;
+                }
+                catch { }
+                return saveCheckpoint({
+                    phase: 'verify',
+                    verify: {
+                        file_size: stat.size,
+                        min_required: minBytes,
+                        file_size_ok: sizeOk,
+                        word_count: wcData,
+                        text_ok: textOk,
+                        text_preview: textPreview,
+                        consistency_score: consistencyScore,
+                        privacy,
+                        cross_check_passed: crossCheckPassed,
+                        // v0.7.5.4 P4-2: 5단계 검증 결과 병합
+                        verify_5stage: verify5Stage,
+                        overall_pass: verify5Stage?.overall_pass ?? crossCheckPassed,
+                    },
+                });
+            };
+            // ─── Phase 6: AUTO_FIX ───
+            const runAutoFixPhase = async () => {
+                if (!outputPath)
+                    throw new Error('output_path missing');
+                const saveFmt = outputPath.toLowerCase().endsWith('.hwpx') ? 'HWPX' : 'HWP';
+                const loopResult = await runAutoFixLoop({
+                    outputPath,
+                    styleProfile: cp.writing_patterns,
+                    threshold: args.auto_fix_threshold ?? 85,
+                    maxIter: Math.min(args.auto_fix_max_iterations ?? 2, 5),
+                    saveFmt,
+                });
+                return saveCheckpoint({
+                    phase: 'auto_fix',
+                    auto_fix: loopResult,
+                });
+            };
+            // ─── Rollback ───
+            const runRollback = () => {
+                if (!formFile)
+                    throw new Error('form_file missing');
+                if (!fs.existsSync(snapshotPath))
+                    throw new Error('no rollback snapshot — fill phase 를 먼저 실행해야 합니다');
+                fs.copyFileSync(snapshotPath, formFile);
+                return saveCheckpoint({
+                    phase: 'rollback',
+                    status: 'restored',
+                    restored_from: snapshotPath,
+                    restored_to: formFile,
+                });
+            };
+            // ─── Dispatcher ───
+            let result;
+            if (args.phase === 'learn')
+                result = await runLearn();
+            else if (args.phase === 'plan')
+                result = await runPlan();
+            else if (args.phase === 'preview')
+                result = runPreview();
+            else if (args.phase === 'fill')
+                result = await runFill();
+            else if (args.phase === 'verify')
+                result = await runVerify();
+            else if (args.phase === 'auto_fix')
+                result = await runAutoFixPhase();
+            else if (args.phase === 'rollback')
+                result = runRollback();
+            else if (args.phase === 'all') {
+                // learn → plan → preview 자동. fill 은 confirm 필요하므로 제외.
+                await runLearn();
+                await runPlan();
+                result = runPreview();
+            }
+            else {
+                throw new Error(`unknown phase: ${args.phase}`);
+            }
+            return { content: [{ type: 'text', text: JSON.stringify({ ok: true, session_id: sid, ...result }) }] };
+        }
+        catch (err) {
+            saveCheckpoint({ phase: args.phase, status: 'failed', error: err.message });
+            return { content: [{ type: 'text', text: JSON.stringify({ error: err.message, session_id: sid }) }], isError: true };
+        }
+    });
+    // ===== v0.7.5.4 P3-4: 공무원 양식 원스톱 자동 작성 =====
+    // 사업계획서/공문/보고서 양식 첨부 시 한 번에 detect → snapshot → delete guide → fill → save → verify
+    // 원본 양식 절대 보존 (read-only). 사용자 최종 목표: 공무원 사무업무 자동화.
+    server.tool('hwp_korean_business_fill', '공무원 양식 원스톱 자동 작성. (v0.7.5.4 신규) 양식 파일 + 본문 채우기 맵만 주면 자동으로: (1) 문서 타입 감지 + 공무원 표준 프리셋 선택, (2) 원본 서식 스냅샷 캐시, (3) 작성요령 박스 정리 (scope=both), (4) 표 셀 + 본문 일괄 삽입, (5) 새 경로 저장 (원본 절대 보존), (6) 5단계 검증. 사업계획서/공문/보고서 자동화의 권장 진입점.', {
+        form_file: z.string().describe('양식 HWP/HWPX 파일 절대 경로'),
+        output_path: z.string().describe('저장할 새 파일 경로 (원본과 달라야 함)'),
+        body_fills: z.array(z.object({
+            heading: z.string().describe('소제목 텍스트 (예: "(1) 산업의 특성")'),
+            body_text: z.string().describe('삽입할 본문'),
+        })).optional().describe('본문 삽입 맵 (heading → body_text)'),
+        table_cell_overrides: z.array(z.object({
+            table_index: z.number().int().min(0),
+            cells: z.array(z.object({
+                tab: z.number().int().min(0),
+                text: z.string(),
+            })),
+        })).optional().describe('표 셀 직접 지정'),
+        doc_type_hint: z.enum(['business_plan', 'official_document', 'report', 'form', 'general']).optional().describe('문서 타입 힌트 (생략 시 자동 감지)'),
+        delete_guides: z.boolean().optional().describe('작성요령 자동 삭제 (기본 true)'),
+        run_verify: z.boolean().optional().describe('5단계 검증 실행 (기본 true)'),
+    }, async (args) => {
+        const startTime = Date.now();
+        const log = [];
+        const pushLog = (step, data) => log.push({ step, elapsed_ms: Date.now() - startTime, ...data });
+        try {
+            // 경로 검증
+            const formPath = path.resolve(args.form_file);
+            const outPath = path.resolve(args.output_path);
+            if (formPath === outPath) {
+                return { content: [{ type: 'text', text: JSON.stringify({ error: 'output_path 는 form_file 과 달라야 합니다 (원본 보호).' }) }], isError: true };
+            }
+            if (!fs.existsSync(formPath)) {
+                return { content: [{ type: 'text', text: JSON.stringify({ error: `양식 파일이 없습니다: ${formPath}` }) }], isError: true };
+            }
+            const originalMtime = fs.statSync(formPath).mtime.getTime();
+            const originalSize = fs.statSync(formPath).size;
+            await bridge.ensureRunning();
+            // Step 1: Open form
+            const openR = await bridge.send('open_document', { file_path: formPath }, ANALYSIS_TIMEOUT);
+            pushLog('open_document', { ok: openR.success, pages: openR.data?.pages });
+            if (!openR.success)
+                throw new Error(`open failed: ${openR.error}`);
+            // Step 2: Detect document type — hint 있으면 type_override 로 프리셋 강제 (v0.7.9 fix)
+            let docType = args.doc_type_hint || 'general';
+            let preset = null;
+            try {
+                const detectParams = {};
+                if (args.doc_type_hint)
+                    detectParams.type_override = args.doc_type_hint;
+                const r = await bridge.send('detect_document_type', detectParams, ANALYSIS_TIMEOUT);
+                if (r.success && r.data) {
+                    const d = r.data;
+                    if (!args.doc_type_hint)
+                        docType = d.type || 'general';
+                    preset = d.recommended_preset || null;
+                    pushLog('detect_document_type', { type: docType, confidence: d.confidence });
+                }
+            }
+            catch (e) {
+                pushLog('detect_document_type', { error: e.message });
+            }
+            // Step 3: Snapshot template style (optional, 실패해도 continue)
+            try {
+                const r = await bridge.send('snapshot_template_style', {}, ANALYSIS_TIMEOUT);
+                if (r.success && r.data) {
+                    pushLog('snapshot_template_style', { snapshot_id: r.data.snapshot_id });
+                }
+            }
+            catch (e) {
+                pushLog('snapshot_template_style', { error: e.message });
+            }
+            // Step 4: Extract + Delete guide text (v0.7.7: extract_first)
+            const deleteGuides = args.delete_guides ?? true;
+            let extractedGuides = [];
+            if (deleteGuides) {
+                try {
+                    const r = await bridge.send('delete_guide_text', { scope: 'both', extract_first: true }, ANALYSIS_TIMEOUT);
+                    if (r.success && r.data) {
+                        const d = r.data;
+                        extractedGuides = d.extracted_guides || [];
+                        pushLog('delete_guide_text', { ...d, extracted_guide_count: extractedGuides.length });
+                    }
+                }
+                catch (e) {
+                    pushLog('delete_guide_text', { error: e.message });
+                }
+            }
+            // Step 5: Fill table cells (if provided)
+            // fill_by_tab 을 각 table 별로 반복 호출 (composite 내부 분할)
+            const tableFillResults = [];
+            if (args.table_cell_overrides && args.table_cell_overrides.length > 0) {
+                for (const tbl of args.table_cell_overrides) {
+                    try {
+                        const r = await bridge.send('fill_by_tab', {
+                            table_index: tbl.table_index,
+                            cells: tbl.cells,
+                        }, 120000);
+                        if (r.success && r.data) {
+                            tableFillResults.push({ table_index: tbl.table_index, ...r.data });
+                        }
+                        else {
+                            tableFillResults.push({ table_index: tbl.table_index, error: r.error });
+                        }
+                    }
+                    catch (e) {
+                        tableFillResults.push({ table_index: tbl.table_index, error: e.message });
+                    }
+                }
+                pushLog('fill_by_tab_batch', { tables_processed: tableFillResults.length });
+            }
+            const tableFillResult = tableFillResults.length > 0 ? { tables: tableFillResults } : null;
+            // Step 6: Insert body after each heading
+            const bodyResults = [];
+            if (args.body_fills && args.body_fills.length > 0) {
+                // v0.7.9: 양식 서식 우선 — preset body_style 전달하지 않음
+                // insert_body_after_heading 이 양식 heading에서 직접 서식 상속
+                // (자간, 장평, 글꼴, 줄간격 등 양식 원본 100% 유지)
+                for (const fill of args.body_fills) {
+                    try {
+                        const params = {
+                            heading: fill.heading,
+                            body_text: fill.body_text,
+                        };
+                        const r = await bridge.send('insert_body_after_heading', params, ANALYSIS_TIMEOUT);
+                        if (r.success && r.data) {
+                            const d = r.data;
+                            bodyResults.push({ heading: fill.heading, status: d.status, total_matches: d.total_matches });
+                        }
+                        else {
+                            bodyResults.push({ heading: fill.heading, status: 'error', error: r.error });
+                        }
+                    }
+                    catch (e) {
+                        bodyResults.push({ heading: fill.heading, status: 'error', error: e.message });
+                    }
+                }
+                pushLog('insert_body_after_heading_batch', { count: bodyResults.length, success: bodyResults.filter(r => r.status === 'ok').length });
+            }
+            // Step 7: Save as (새 경로, 원본 절대 보존)
+            const saveFmt = outPath.toLowerCase().endsWith('.hwpx') ? 'HWPX' : 'HWP';
+            const saveR = await bridge.send('save_as', { path: outPath, format: saveFmt }, ANALYSIS_TIMEOUT);
+            pushLog('save_as', { ok: saveR.success, path: outPath });
+            if (!saveR.success)
+                throw new Error(`save failed: ${saveR.error}`);
+            // Step 8: 원본 mtime 검증 (원본 보존 확인)
+            const postMtime = fs.statSync(formPath).mtime.getTime();
+            const postSize = fs.statSync(formPath).size;
+            const originalPreserved = (originalMtime === postMtime) && (originalSize === postSize);
+            pushLog('original_preservation_check', {
+                preserved: originalPreserved,
+                original_mtime: originalMtime,
+                post_mtime: postMtime,
+                original_size: originalSize,
+                post_size: postSize,
+            });
+            // Step 9: 5단계 검증 (if enabled)
+            let verify5Stage = null;
+            if (args.run_verify !== false) {
+                try {
+                    const snippet = args.body_fills?.[0]?.body_text?.slice(0, 50) || '';
+                    const r = await bridge.send('verify_5stage', {
+                        file_path: outPath,
+                        expected_text_snippet: snippet,
+                        run_layout: false,
+                    }, ANALYSIS_TIMEOUT);
+                    if (r.success && r.data)
+                        verify5Stage = r.data;
+                    pushLog('verify_5stage', { overall_pass: verify5Stage?.overall_pass, passed_stages: verify5Stage?.passed_stages });
+                }
+                catch (e) {
+                    pushLog('verify_5stage', { error: e.message });
+                }
+            }
+            return {
+                content: [{
+                        type: 'text',
+                        text: JSON.stringify({
+                            status: 'ok',
+                            form_file: formPath,
+                            output_path: outPath,
+                            doc_type: docType,
+                            preset_used: preset ? (preset.description || docType) : 'none',
+                            original_preserved: originalPreserved,
+                            extracted_guides: extractedGuides.length > 0 ? extractedGuides : undefined,
+                            table_fill: tableFillResult,
+                            body_fills: bodyResults,
+                            verify_5stage: verify5Stage,
+                            overall_pass: verify5Stage?.overall_pass ?? null,
+                            total_duration_ms: Date.now() - startTime,
+                            log,
+                        }),
+                    }],
+            };
+        }
+        catch (err) {
+            return {
+                content: [{ type: 'text', text: JSON.stringify({
+                            error: err.message,
+                            log,
+                        }) }],
+                isError: true,
+            };
+        }
+    });
+    // ─── v0.7.9 — 사업계획서 자동분석 (prepare 단계) ───────────────────────
+    server.tool('hwp_business_plan_prepare', '★ 사업계획서 양식을 분석하여 AI 자동 작성 컨텍스트를 생성합니다 (v0.7.9). 양식 파일(+선택적 참고자료)을 입력하면: (1) 문서 타입 감지, (2) 양식 구조 추출, (3) 작성요령 파싱, (4) 참고자료 읽기+섹션 매핑, (5) 섹션별 AI 컨텍스트 반환. 이 결과로 AI가 body_fills 를 생성한 후 hwp_korean_business_fill 로 실제 삽입합니다.', {
+        form_file: z.string().describe('양식 HWP/HWPX 파일 절대 경로'),
+        reference_files: z.array(z.string()).optional().describe('참고자료 파일 경로 목록 (PDF/HWP/Excel/DOCX)'),
+    }, async (args) => {
+        const startTime = Date.now();
+        const log = [];
+        const pushLog = (step, data) => log.push({ step, elapsed_ms: Date.now() - startTime, ...data });
+        try {
+            const formPath = path.resolve(args.form_file);
+            if (!fs.existsSync(formPath)) {
+                return { content: [{ type: 'text', text: JSON.stringify({ error: `양식 파일 없음: ${formPath}` }) }], isError: true };
+            }
+            await bridge.ensureRunning();
+            // Step 1: Open form
+            const openR = await bridge.send('open_document', { file_path: formPath }, ANALYSIS_TIMEOUT);
+            pushLog('open_document', { ok: openR.success, pages: openR.data?.pages });
+            if (!openR.success)
+                throw new Error(`open failed: ${openR.error}`);
+            // Step 2: Detect document type
+            let docType = 'general';
+            let preset = null;
+            try {
+                const r = await bridge.send('detect_document_type', {}, ANALYSIS_TIMEOUT);
+                if (r.success && r.data) {
+                    const d = r.data;
+                    docType = d.type || 'general';
+                    preset = d.recommended_preset || null;
+                    pushLog('detect_document_type', { type: docType, confidence: d.confidence });
+                }
+            }
+            catch (e) {
+                pushLog('detect_document_type', { error: e.message });
+            }
+            // Step 3: Extract template structure
+            let templateSections = [];
+            try {
+                const r = await bridge.send('extract_template_structure', { file_path: formPath }, ANALYSIS_TIMEOUT);
+                if (r.success && r.data) {
+                    const d = r.data;
+                    templateSections = d.sections || [];
+                    pushLog('extract_template_structure', { sections: templateSections.length });
+                }
+            }
+            catch (e) {
+                pushLog('extract_template_structure', { error: e.message });
+            }
+            // Step 4: Snapshot template style
+            let snapshotId = '';
+            try {
+                const r = await bridge.send('snapshot_template_style', {}, ANALYSIS_TIMEOUT);
+                if (r.success && r.data)
+                    snapshotId = String(r.data.snapshot_id || '');
+                pushLog('snapshot_template_style', { snapshot_id: snapshotId });
+            }
+            catch (e) {
+                pushLog('snapshot_template_style', { error: e.message });
+            }
+            // Step 5: Extract guide text (before deletion)
+            let guideConstraints = [];
+            try {
+                const r = await bridge.send('extract_guide_text', {}, ANALYSIS_TIMEOUT);
+                if (r.success && r.data) {
+                    guideConstraints = r.data.guides || [];
+                    pushLog('extract_guide_text', { count: guideConstraints.length });
+                }
+            }
+            catch (e) {
+                pushLog('extract_guide_text', { error: e.message });
+            }
+            // Step 6: Read reference files (if provided)
+            let refData = {};
+            if (args.reference_files && args.reference_files.length > 0) {
+                const allTexts = [];
+                const allTables = [];
+                for (const refFile of args.reference_files) {
+                    try {
+                        const r = await bridge.send('read_reference', { file_path: path.resolve(refFile) }, ANALYSIS_TIMEOUT);
+                        if (r.success && r.data) {
+                            const d = r.data;
+                            if (d.full_text)
+                                allTexts.push(String(d.full_text));
+                            else if (d.text)
+                                allTexts.push(String(d.text));
+                            if (d.tables)
+                                allTables.push(...d.tables);
+                        }
+                    }
+                    catch (e) {
+                        pushLog('read_reference', { file: refFile, error: e.message });
+                    }
+                }
+                refData = { full_text: allTexts.join('\n\n---\n\n'), tables: allTables };
+                pushLog('read_references', { files: args.reference_files.length, total_chars: allTexts.join('').length, tables: allTables.length });
+            }
+            // Step 7: Map reference to sections
+            let sectionMappings = [];
+            try {
+                const r = await bridge.send('map_reference_to_sections', {
+                    reference_data: refData,
+                    template_sections: templateSections,
+                    guide_constraints: guideConstraints,
+                }, ANALYSIS_TIMEOUT);
+                if (r.success && r.data) {
+                    const d = r.data;
+                    sectionMappings = d.section_mappings || [];
+                    pushLog('map_reference_to_sections', { total: d.total_sections, with_data: d.sections_with_data });
+                }
+            }
+            catch (e) {
+                pushLog('map_reference_to_sections', { error: e.message });
+            }
+            // Step 8: Build section contexts
+            let contexts = [];
+            try {
+                const r = await bridge.send('build_section_context', {
+                    section_mappings: sectionMappings,
+                    template_style: snapshotId ? { snapshot_id: snapshotId } : {},
+                }, ANALYSIS_TIMEOUT);
+                if (r.success && r.data) {
+                    const d = r.data;
+                    contexts = d.contexts || [];
+                    pushLog('build_section_context', { total: d.total, with_ref: d.sections_with_reference, total_chars: d.total_suggested_chars });
+                }
+            }
+            catch (e) {
+                pushLog('build_section_context', { error: e.message });
+            }
+            // Close document (prepare 단계 완료, 실제 삽입은 korean_business_fill 에서)
+            try {
+                await bridge.send('close_document', {}, 10000);
+            }
+            catch (_) { /* ignore */ }
+            return {
+                content: [{
+                        type: 'text',
+                        text: JSON.stringify({
+                            status: 'ok',
+                            form_file: formPath,
+                            doc_type: docType,
+                            preset: preset ? { description: preset.description } : null,
+                            template_sections: templateSections.length,
+                            guide_constraints: guideConstraints,
+                            section_contexts: contexts,
+                            total_duration_ms: Date.now() - startTime,
+                            log,
+                            hint: 'section_contexts 의 각 항목으로 body_fills 를 생성한 후 hwp_korean_business_fill 의 body_fills 파라미터로 전달하세요. heading 은 fuzzy matching 지원됩니다.',
+                        }),
+                    }],
+            };
+        }
+        catch (err) {
+            return {
+                content: [{ type: 'text', text: JSON.stringify({ error: err.message, log }) }],
+                isError: true,
+            };
+        }
+    });
     // v0.7.2.1 신규: 중첩 표 셀 텍스트 직접 편집 (재귀 path)
     server.tool('hwp_xml_edit_nested_cell', 'HWPX 중첩 표(표 안의 표)의 특정 셀 텍스트를 재귀 경로로 편집합니다. (v0.7.2.1 신규) path 배열로 중첩 깊이 표현 — 예: [{tableIndex:0,row:0,col:0},{tableIndex:0,row:1,col:1}]은 "0번 표 (0,0) 셀 안의 0번 nested 표 (1,1) 셀". v0.7.0 hwp_xml_edit_table_cell의 다단계 확장. linesegarray 셀 내부만 자동 삭제, charPrIDRef 보존.', {
         file_path: z.string().describe('수정할 HWPX 파일 경로'),
@@ -983,13 +1903,19 @@ export function registerCompositeTools(server, bridge) {
     const CONFIG_PATH = path.join(os.homedir(), '.hwp_studio_config.json');
     const STATE_DIR = path.join(os.homedir(), '.hwp_studio_state');
     const TEMPLATE_DIR = path.join(os.homedir(), '.hwp_studio_templates');
+    // v0.7.4.8 Part 4: 볼륨 가이드 정책 — 권장 임계값 + 경고 기준
+    // 🟢 최적 1-3개 / 총 60KB, 🟡 적정 ≤5개 / 150KB, 🟠 주의 >5개 / >150KB, 🔴 최대 10개 / 500KB
     const DEFAULT_POLICY = {
-        max_reference_files: 5,
-        max_total_size_mb: 10,
+        max_reference_files: 10, // v0.7.4.8: 5 → 10 (기존 허용, 최대값)
+        max_total_size_mb: 5, // v0.7.4.8: 10 → 5 (기본 엄격하게 — 권장 상한 150KB 기준 여유)
         max_tokens_input_percent: 80,
-        allowed_formats: ['xlsx', 'csv', 'json', 'pdf', 'docx', 'txt', 'html', 'xml', 'pptx'],
+        allowed_formats: ['xlsx', 'csv', 'json', 'pdf', 'docx', 'txt', 'html', 'xml', 'pptx', 'hwp', 'hwpx'],
         prefer_summary: true,
         summary_threshold_mb: 3,
+        // v0.7.4.8 신규: 권장 임계값 (경고 발생 기준)
+        recommend_threshold_kb: 150, // 이 값 초과 시 warning 반환 (focus degradation 시작)
+        optimal_threshold_kb: 60, // 이 값 이하면 최적 (LLM focus 최상)
+        optimal_file_count: 3, // 이 값 이하면 최적 파일 수
     };
     function readConfig() {
         try {
@@ -1014,6 +1940,10 @@ export function registerCompositeTools(server, bridge) {
             allowed_formats: z.array(z.string()).optional(),
             prefer_summary: z.boolean().optional(),
             summary_threshold_mb: z.number().positive().optional(),
+            // v0.7.4.8 신규 필드
+            recommend_threshold_kb: z.number().positive().optional().describe('v0.7.4.8: 이 값 초과 시 warning (기본 150KB)'),
+            optimal_threshold_kb: z.number().positive().optional().describe('v0.7.4.8: 이 값 이하면 최적 (기본 60KB)'),
+            optimal_file_count: z.number().int().positive().optional().describe('v0.7.4.8: 이 값 이하면 최적 파일 수 (기본 3)'),
         }).optional().describe('set 모드 시 부분 업데이트할 정책 필드'),
     }, async ({ mode, policy }) => {
         try {
@@ -1104,6 +2034,14 @@ export function registerCompositeTools(server, bridge) {
             if (mode === 'delete') {
                 if (fs.existsSync(filePath))
                     fs.unlinkSync(filePath);
+                // v0.7.4.1: form_workflow 가 남긴 snapshot 바이너리도 함께 정리
+                const snapshotPath = path.join(STATE_DIR, `${safeId(session_id)}.snapshot.bin`);
+                if (fs.existsSync(snapshotPath)) {
+                    try {
+                        fs.unlinkSync(snapshotPath);
+                    }
+                    catch { }
+                }
                 return { content: [{ type: 'text', text: JSON.stringify({ ok: true, mode, session_id, deleted: true }) }] };
             }
             if (mode === 'cancel') {
@@ -1451,16 +2389,149 @@ export function registerCompositeTools(server, bridge) {
             return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
         }
     });
+    // ===== v0.7.4.0: LLM Plan Wrapper =====
+    // hwp_autopilot_plan — autopilot 파이프라인 실행 전 구조화된 계획을 반환.
+    // LLM 은 직접 호출하지 않음 — estimate_workload + extract_template_structure + analyze_writing_patterns 를
+    // 조합해 skeleton(섹션/테이블/스타일/추정치)을 session_state 에 저장.
+    // Claude host 가 sections[].content 를 채운 뒤 동일 session_id 로 hwp_autopilot_create 호출.
+    server.tool('hwp_autopilot_plan', '문서 자동 생성을 위한 구조화된 계획을 반환합니다. (v0.7.4.0 신규) estimate_workload + extract_template_structure + analyze_writing_patterns 를 조합해 sections[]/tables[]/style_profile skeleton 을 만들고 ~/.hwp_studio_state/{session_id}.json 에 저장. 이 도구는 LLM 을 호출하지 않습니다 — Claude host 가 반환된 plan.sections[].content 를 채운 뒤 동일 session_id 로 hwp_autopilot_create(plan_session_id=...) 를 호출해 실행합니다.', {
+        user_request: z.string().describe('사용자 요청 (예: "AI 스타트업 사업계획서 10섹션, A4, 격식체")'),
+        template_path: z.string().optional().describe('양식 파일 .hwp/.hwpx (있으면 sections/style_profile 자동 추출)'),
+        template_id: z.string().optional().describe('hwp_template_library 등록 ID (template_path 대신)'),
+        target_pages: z.number().int().min(1).max(200).optional().describe('목표 페이지 수 (없으면 estimate 에서 유추)'),
+        target_sections: z.number().int().min(1).max(50).optional().describe('목표 섹션 수 (없으면 template/estimate 에서 유추)'),
+        target_tables: z.number().int().min(0).max(30).optional().describe('목표 표 개수 (기본 0)'),
+        reference_files: z.array(z.string()).optional().describe('참고 자료 경로 (estimate_workload 입력)'),
+        output_path: z.string().optional().describe('최종 저장 경로 — autopilot_create 에 그대로 전달됨'),
+        session_id: z.string().optional().describe('세션 ID (생략 시 자동 생성)'),
+    }, async (args) => {
+        const sid = safeId(args.session_id || `plan_${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}`);
+        const sessionPath = path.join(STATE_DIR, `${sid}.json`);
+        if (!fs.existsSync(STATE_DIR))
+            fs.mkdirSync(STATE_DIR, { recursive: true });
+        try {
+            // Resolve template_id → file path
+            let resolvedTemplate = args.template_path;
+            if (!resolvedTemplate && args.template_id) {
+                const tid = safeId(args.template_id);
+                const tplFile = path.join(TEMPLATE_DIR, 'files', `${tid}.hwpx`);
+                if (fs.existsSync(tplFile))
+                    resolvedTemplate = tplFile;
+            }
+            await bridge.ensureRunning();
+            // Phase 1: estimate_workload (template 없이도 작동)
+            let estimate = {};
+            try {
+                const estParams = { user_request: args.user_request };
+                if (resolvedTemplate)
+                    estParams.file_path = resolvedTemplate;
+                if (args.reference_files)
+                    estParams.reference_files = args.reference_files;
+                const r = await bridge.send('estimate_workload', estParams, ANALYSIS_TIMEOUT);
+                if (r.success && r.data)
+                    estimate = r.data;
+            }
+            catch { }
+            // Phase 2: template structure + writing patterns (template 있을 때만)
+            let templateStructure = null;
+            let writingPatterns = null;
+            if (resolvedTemplate) {
+                try {
+                    const r = await bridge.send('extract_template_structure', { file_path: resolvedTemplate }, ANALYSIS_TIMEOUT);
+                    if (r.success && r.data)
+                        templateStructure = r.data;
+                }
+                catch { }
+                try {
+                    const r = await bridge.send('analyze_writing_patterns', { file_path: resolvedTemplate }, ANALYSIS_TIMEOUT);
+                    if (r.success && r.data)
+                        writingPatterns = r.data;
+                }
+                catch { }
+            }
+            // Phase 3: derive section skeleton
+            const tplSections = templateStructure?.sections || [];
+            const targetSec = args.target_sections
+                ?? (tplSections.length > 0 ? tplSections.length : (typeof estimate.sections_estimate === 'number' ? estimate.sections_estimate : 5));
+            const targetTbl = args.target_tables
+                ?? (typeof estimate.tables_estimate === 'number' ? estimate.tables_estimate : 0);
+            const targetPgs = args.target_pages
+                ?? (typeof estimate.pages_estimate === 'number' ? estimate.pages_estimate : 10);
+            // Build sections[] — template 있으면 title 재사용, 없으면 placeholder
+            const sectionsSkel = tplSections.length > 0
+                ? tplSections.slice(0, targetSec).map((s, i) => ({
+                    id: `sec_${i + 1}`,
+                    title: String(s.title || `섹션 ${i + 1}`),
+                    outline_level: typeof s.level === 'number' ? s.level : 1,
+                    content: '',
+                    target_chars: Math.round((targetPgs * 1100) / Math.max(1, targetSec)),
+                }))
+                : Array.from({ length: targetSec }, (_unused, i) => ({
+                    id: `sec_${i + 1}`,
+                    title: `섹션 ${i + 1}`,
+                    outline_level: 1,
+                    content: '',
+                    target_chars: Math.round((targetPgs * 1100) / Math.max(1, targetSec)),
+                }));
+            // Build tables[] skeleton (Claude host 가 data[]를 채움)
+            const tablesSkel = Array.from({ length: targetTbl }, (_unused, i) => ({
+                id: `tbl_${i + 1}`,
+                caption: '',
+                suggested_headers: [],
+                rows_hint: 5,
+                cols_hint: 3,
+                data: [],
+            }));
+            // Phase 4: extract style_profile from writing patterns
+            const styleProfileOut = writingPatterns ? {
+                body_style: writingPatterns.body_style,
+                title_styles: writingPatterns.title_styles,
+                table_styles: writingPatterns.table_styles,
+                page_setup: writingPatterns.page_setup,
+                numbering_pattern: writingPatterns.numbering_pattern,
+            } : null;
+            // Persist plan — hwp_autopilot_create 가 plan_session_id 로 hydrate
+            const planObject = {
+                plan_version: '0.7.4.0',
+                session_id: sid,
+                user_request: args.user_request,
+                template_path: resolvedTemplate || null,
+                output_path: args.output_path || null,
+                target_pages: targetPgs,
+                target_sections: targetSec,
+                target_tables: targetTbl,
+                sections: sectionsSkel,
+                tables: tablesSkel,
+                style_profile: styleProfileOut,
+                estimate,
+                template_structure: templateStructure,
+                next_action: {
+                    tool: 'hwp_autopilot_create',
+                    required_fill: ['sections[].content', 'tables[].data', 'tables[].caption'],
+                    guidance: 'plan.sections 와 plan.tables 에 콘텐츠를 채운 후 동일 session_id 또는 plan_session_id 로 hwp_autopilot_create 호출',
+                },
+                created_at: new Date().toISOString(),
+                status: 'awaiting_content',
+            };
+            fs.writeFileSync(sessionPath, JSON.stringify(planObject, null, 2), 'utf8');
+            return { content: [{ type: 'text', text: JSON.stringify({
+                            ok: true, mode: 'plan', plan: planObject,
+                        }) }] };
+        }
+        catch (err) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+        }
+    });
     // ===== v0.7.2.4: End-to-End Autopilot =====
     // hwp_autopilot_create — 12-step pipeline orchestrator (사용자 핵심 니즈)
     // 콘텐츠 생성은 호출자(LLM)가 미리 sections[]에 담아 전달.
-    server.tool('hwp_autopilot_create', '문서 자동 생성 12단계 파이프라인. (v0.7.2.4 신규) sections[]/tables[]를 받아 template 기반으로 작성→스타일→TOC→검증→저장→PDF→layout 검증까지 일괄 실행. mode=plan은 estimate만 반환, mode=execute는 실제 파이프 실행. 각 step마다 session_state 자동 save + cancel 체크.', {
-        output_path: z.string().describe('생성할 .hwp/.hwpx 절대 경로'),
+    server.tool('hwp_autopilot_create', '문서 자동 생성 12단계 파이프라인. (v0.7.2.4 / v0.7.4.0 / v0.7.5.4) sections[]/tables[]를 받아 template 기반으로 작성→스타일→TOC→검증→저장→PDF→layout 검증. v0.7.5.4: auto_fix 기본값 false + preserve_template_style 기본값 true (원본 템플릿 서식 보존). mode=plan은 estimate만, mode=execute는 실제 파이프. 각 step 마다 session_state 자동 save + cancel 체크.', {
+        output_path: z.string().optional().describe('생성할 .hwp/.hwpx 절대 경로 (plan_session_id 사용 시 생략 가능)'),
         sections: z.array(z.object({
             title: z.string(),
             content: z.string(),
             outline_level: z.number().int().min(1).max(7).optional(),
-        })).describe('미리 생성된 섹션 콘텐츠 (호출자가 LLM으로 작성)'),
+        })).optional().describe('미리 생성된 섹션 콘텐츠 (호출자가 LLM으로 작성). plan_session_id 사용 시 생략 가능.'),
         template_path: z.string().optional().describe('템플릿 .hwpx 경로 (없으면 빈 문서로 시작)'),
         template_id: z.string().optional().describe('hwp_template_library 등록 ID (template_path 대신)'),
         tables: z.array(z.object({
@@ -1473,6 +2544,13 @@ export function registerCompositeTools(server, bridge) {
         mode: z.enum(['plan', 'execute']).optional().describe('plan=estimate만, execute=실제 실행 (기본 execute)'),
         session_id: z.string().optional().describe('재개할 세션 (생략 시 자동 생성)'),
         prompt: z.string().optional().describe('원본 사용자 프롬프트 (메타데이터)'),
+        // v0.7.5.4 P2-2: auto_fix 기본값 false (원본 서식 override 방지)
+        auto_fix: z.boolean().optional().describe('v0.7.5.4: 기본 false. validate_consistency 점수 < threshold 여도 자동 override 안 함. true 여도 runAutoFixLoop 가 P0-2 에서 no-op 전환됨 (validate 만 수행).'),
+        auto_fix_threshold: z.number().min(0).max(100).optional().describe('auto_fix 트리거 점수 (기본 85, auto_fix=true 일 때만 의미)'),
+        auto_fix_max_iterations: z.number().int().min(1).max(5).optional().describe('auto_fix 최대 반복 횟수 (기본 2, 안전 한도 5)'),
+        // v0.7.5.4 P2-2: 원본 템플릿 서식 보존 (기본 true)
+        preserve_template_style: z.boolean().optional().describe('v0.7.5.4: 원본 템플릿의 서식 (heading/body/cell) 을 변경하지 않음. true 시 style_profile override 무시. 공무원 양식 작업 시 권장 (기본 true).'),
+        plan_session_id: z.string().optional().describe('hwp_autopilot_plan 이 만든 plan session_id. 지정 시 sections/tables/style_profile/output_path/template_path 를 해당 세션에서 자동 로드 (개별 인자 우선)'),
     }, async (args) => {
         const startTime = Date.now();
         const mode = args.mode || 'execute';
@@ -1482,8 +2560,69 @@ export function registerCompositeTools(server, bridge) {
         const sessionPath = path.join(STATE_DIR, `${sid}.json`);
         if (!fs.existsSync(STATE_DIR))
             fs.mkdirSync(STATE_DIR, { recursive: true });
-        const sectionTitles = args.sections.map(s => s.title);
-        const totalSteps = 8 + args.sections.length + (args.tables?.length || 0);
+        // v0.7.5.4 P2-2: auto_fix 기본값 false (원본 서식 override 방지)
+        // preserve_template_style=true (기본) 면 style_profile 무시 + auto_fix 강제 off
+        const preserveTemplateStyle = args['preserve_template_style'] ?? true;
+        const autoFix = preserveTemplateStyle ? false : (args.auto_fix ?? false);
+        const autoFixThreshold = args.auto_fix_threshold ?? 85;
+        const autoFixMaxIter = Math.min(args.auto_fix_max_iterations ?? 2, 5);
+        // v0.7.4.0: plan_session_id hydration — hwp_autopilot_plan 세션에서 sections/tables/style_profile/output_path/template_path 자동 로드
+        // NOTE: Zod schema field names have snake_case but we already replaced args.sections→sections etc.
+        // Read directly from the args object via bracket notation to avoid self-reference.
+        const rawArgs = args;
+        let hSections = rawArgs['sections'];
+        let hTables = rawArgs['tables'];
+        let hStyleProfile = rawArgs['style_profile'];
+        let hOutputPath = rawArgs['output_path'];
+        let hTemplatePath = rawArgs['template_path'];
+        const templateId = rawArgs['template_id'];
+        if (args.plan_session_id) {
+            try {
+                const planPath = path.join(STATE_DIR, `${safeId(args.plan_session_id)}.json`);
+                if (fs.existsSync(planPath)) {
+                    const plan = JSON.parse(fs.readFileSync(planPath, 'utf8'));
+                    if ((!hSections || hSections.length === 0) && Array.isArray(plan.sections)) {
+                        hSections = plan.sections
+                            .filter((s) => typeof s.content === 'string' && s.content.trim().length > 0)
+                            .map((s) => ({
+                            title: String(s.title || ''),
+                            content: String(s.content || ''),
+                            outline_level: typeof s.outline_level === 'number' ? s.outline_level : undefined,
+                        }));
+                    }
+                    if ((!hTables || hTables.length === 0) && Array.isArray(plan.tables)) {
+                        hTables = plan.tables
+                            .filter((t) => Array.isArray(t.data) && t.data.length > 0)
+                            .map((t) => ({ caption: t.caption, data: t.data }));
+                    }
+                    if (!hStyleProfile && plan.style_profile)
+                        hStyleProfile = plan.style_profile;
+                    if (!hOutputPath && plan.output_path)
+                        hOutputPath = String(plan.output_path);
+                    if (!hTemplatePath && plan.template_path)
+                        hTemplatePath = String(plan.template_path);
+                }
+            }
+            catch { }
+        }
+        if (!hSections || hSections.length === 0) {
+            return { content: [{ type: 'text', text: JSON.stringify({
+                            error: 'sections 가 비어있습니다. sections[]를 직접 전달하거나 plan_session_id 로 hwp_autopilot_plan 결과를 참조하세요.',
+                        }) }], isError: true };
+        }
+        if (!hOutputPath) {
+            return { content: [{ type: 'text', text: JSON.stringify({
+                            error: 'output_path 가 비어있습니다. 직접 전달하거나 plan_session_id 에 포함시켜 주세요.',
+                        }) }], isError: true };
+        }
+        // Non-null re-bind so body code can reuse familiar names
+        const sections = hSections;
+        const tables = hTables;
+        const styleProfile = hStyleProfile;
+        const outputPath = hOutputPath;
+        const templatePath = hTemplatePath;
+        const sectionTitles = sections.map(s => s.title);
+        const totalSteps = 8 + sections.length + (tables?.length || 0);
         let stepsDone = 0;
         const stepLog = [];
         const saveSession = (extra = {}) => {
@@ -1497,7 +2636,7 @@ export function registerCompositeTools(server, bridge) {
             const merged = {
                 ...existing,
                 session_id: sid,
-                current_doc: args.output_path,
+                current_doc: outputPath,
                 sections_total: sectionTitles,
                 progress_percent: Math.round((stepsDone / totalSteps) * 100),
                 last_saved: new Date().toISOString(),
@@ -1526,10 +2665,10 @@ export function registerCompositeTools(server, bridge) {
             // STEP 1: estimate (plan/execute 공통) — v0.7.2.5: Python contract에 맞춘 user_request 전달
             let estimate = {};
             try {
-                const userRequest = args.prompt || `${args.sections.length}개 섹션 자동 생성`;
+                const userRequest = args.prompt || `${sections.length}개 섹션 자동 생성`;
                 const estParams = { user_request: userRequest };
-                if (args.template_path)
-                    estParams.file_path = args.template_path;
+                if (templatePath)
+                    estParams.file_path = templatePath;
                 const r = await bridge.send('estimate_workload', estParams, ANALYSIS_TIMEOUT);
                 if (r.success)
                     estimate = r.data;
@@ -1542,7 +2681,7 @@ export function registerCompositeTools(server, bridge) {
                 return { content: [{ type: 'text', text: JSON.stringify({
                                 ok: true, mode: 'plan', session_id: sid, estimate,
                                 steps_total: totalSteps, sections: sectionTitles,
-                                tables: args.tables?.length || 0,
+                                tables: tables?.length || 0,
                                 requires_approval: estSeconds > threshold,
                             }) }] };
             }
@@ -1554,14 +2693,14 @@ export function registerCompositeTools(server, bridge) {
                             }) }] };
             }
             // STEP 2: 문서 생성 또는 템플릿 열기
-            if (args.template_path) {
-                const r = await bridge.send('open_document', { file_path: args.template_path }, ANALYSIS_TIMEOUT);
+            if (templatePath) {
+                const r = await bridge.send('open_document', { file_path: templatePath }, ANALYSIS_TIMEOUT);
                 recordStep('open_template', r.success, r.error);
                 if (!r.success)
                     throw new Error(`open_template failed: ${r.error}`);
             }
-            else if (args.template_id) {
-                const safeTid = safeId(args.template_id);
+            else if (templateId) {
+                const safeTid = safeId(templateId);
                 const tplFile = path.join(TEMPLATE_DIR, 'files', `${safeTid}.hwpx`);
                 if (!fs.existsSync(tplFile))
                     throw new Error(`template file not found: ${safeTid}`);
@@ -1581,7 +2720,7 @@ export function registerCompositeTools(server, bridge) {
                 throw new Error('cancelled');
             // STEP 3..N: 섹션 작성 루프 (v0.7.2.9: 본문 길이 cross-check)
             let lastBodyChars = 0;
-            for (const section of args.sections) {
+            for (const section of sections) {
                 if (isCancelled())
                     throw new Error('cancelled');
                 const headingR = await bridge.send('insert_heading', {
@@ -1624,11 +2763,11 @@ export function registerCompositeTools(server, bridge) {
                 });
             }
             // STEP: 표 삽입
-            if (args.tables) {
-                for (let i = 0; i < args.tables.length; i++) {
+            if (tables) {
+                for (let i = 0; i < tables.length; i++) {
                     if (isCancelled())
                         throw new Error('cancelled');
-                    const t = args.tables[i];
+                    const t = tables[i];
                     const r = await bridge.send('table_create_from_data', {
                         data: t.data,
                         caption: t.caption,
@@ -1637,12 +2776,12 @@ export function registerCompositeTools(server, bridge) {
                 }
             }
             // STEP: 스타일 프로파일 적용
-            if (args.style_profile) {
-                const r = await bridge.send('apply_style_profile', { profile: args.style_profile }, ANALYSIS_TIMEOUT);
+            if (styleProfile) {
+                const r = await bridge.send('apply_style_profile', { profile: styleProfile }, ANALYSIS_TIMEOUT);
                 recordStep('apply_style_profile', r.success, r.error);
             }
             // STEP: TOC — v0.7.2.9: outline_level 있는 섹션이 1개 이상일 때만 호출
-            const hasOutline = args.sections.some(s => typeof s.outline_level === 'number' && s.outline_level >= 1);
+            const hasOutline = sections.some(s => typeof s.outline_level === 'number' && s.outline_level >= 1);
             if (hasOutline) {
                 try {
                     const r = await bridge.send('generate_toc', {}, ANALYSIS_TIMEOUT);
@@ -1658,8 +2797,8 @@ export function registerCompositeTools(server, bridge) {
             if (isCancelled())
                 throw new Error('cancelled');
             // STEP: 저장 (v0.7.2.7: save_document는 현재경로만 저장 → 새 문서는 save_as 필수)
-            const saveFmt = args.output_path.toLowerCase().endsWith('.hwpx') ? 'HWPX' : 'HWP';
-            const saveR = await bridge.send('save_as', { path: args.output_path, format: saveFmt }, ANALYSIS_TIMEOUT);
+            const saveFmt = outputPath.toLowerCase().endsWith('.hwpx') ? 'HWPX' : 'HWP';
+            const saveR = await bridge.send('save_as', { path: outputPath, format: saveFmt }, ANALYSIS_TIMEOUT);
             recordStep('save_as', saveR.success, saveR.error);
             if (!saveR.success)
                 throw new Error(`save_as failed: ${saveR.error}`);
@@ -1667,8 +2806,8 @@ export function registerCompositeTools(server, bridge) {
             // 이전 22KB 는 짧은 본문(150자)에서 false positive. body_verified 가 이미 본문 존재를 증명.
             // 하한선은 19KB (빈 HWPX ~18KB + 마진 1KB). body_verified 가 모두 true 면 size 미달이어도 pass.
             try {
-                const stat = fs.statSync(args.output_path);
-                const minBytes = args.output_path.toLowerCase().endsWith('.hwpx') ? 19000 : 24000;
+                const stat = fs.statSync(outputPath);
+                const minBytes = outputPath.toLowerCase().endsWith('.hwpx') ? 19000 : 24000;
                 const sizeOk = stat.size >= minBytes;
                 const allSectionsVerified = stepLog
                     .filter(s => String(s.name).startsWith('section:'))
@@ -1690,16 +2829,45 @@ export function registerCompositeTools(server, bridge) {
                     throw e;
                 recordStep('file_size_check', false, e.message);
             }
-            // STEP: validate_consistency, score < 85면 review_and_edit auto_fix (placeholder)
+            // STEP: validate_consistency + auto_fix loop (v0.7.4.0 — 실구현)
+            // runAutoFixLoop 이 내부적으로 validate 를 수행하고, score < threshold 면
+            // apply_style_profile → save_as → word_count cross-check → re-validate 를 반복.
+            // autoFix=false 면 threshold=0 으로 넘겨 단순 validate 만 수행.
             let score = 100;
+            let scoreBefore = null;
+            let autoFixIterations = 0;
+            let autoFixLog = [];
+            let autoFixStopped = 'skipped';
             try {
-                const r = await bridge.send('validate_consistency', { file_path: args.output_path }, ANALYSIS_TIMEOUT);
-                if (r.success && r.data) {
-                    const d = r.data;
-                    // v0.7.2.5: Python 실제 키는 consistency_score
-                    score = typeof d.consistency_score === 'number' ? d.consistency_score : 100;
+                const loopResult = await runAutoFixLoop({
+                    outputPath,
+                    styleProfile: autoFix ? styleProfile : undefined,
+                    threshold: autoFix ? autoFixThreshold : 0,
+                    maxIter: autoFixMaxIter,
+                    saveFmt,
+                    isCancelled,
+                    onIteration: (entry) => {
+                        saveSession({ auto_fix_last_iteration: entry });
+                    },
+                });
+                scoreBefore = loopResult.score_before;
+                score = loopResult.score_after;
+                autoFixIterations = loopResult.iterations;
+                autoFixLog = loopResult.log;
+                autoFixStopped = loopResult.stopped_reason;
+                recordStep('validate_consistency', true, { score, score_before: scoreBefore });
+                if (autoFixIterations > 0) {
+                    const loopOk = autoFixStopped === 'threshold_reached'
+                        || autoFixStopped === 'max_iterations'
+                        || autoFixStopped === 'plateau';
+                    recordStep(`auto_fix:${autoFixIterations}`, loopOk, {
+                        iterations: autoFixIterations,
+                        stopped_reason: autoFixStopped,
+                        score_before: scoreBefore,
+                        score_after: score,
+                    });
                 }
-                recordStep('validate_consistency', r.success, { score });
+                saveSession({ auto_fix_log: autoFixLog });
             }
             catch (e) {
                 recordStep('validate_consistency', false, e.message);
@@ -1707,7 +2875,7 @@ export function registerCompositeTools(server, bridge) {
             // STEP: PDF — v0.7.2.5: export_pdf → export_format(format:PDF)
             let pdf_path = null;
             if (exportPdf) {
-                const pdfTarget = args.output_path.replace(/\.(hwp|hwpx)$/i, '.pdf');
+                const pdfTarget = outputPath.replace(/\.(hwp|hwpx)$/i, '.pdf');
                 const r = await bridge.send('export_format', { path: pdfTarget, format: 'PDF' }, ANALYSIS_TIMEOUT);
                 recordStep('export_format', r.success, r.error);
                 if (r.success)
@@ -1715,7 +2883,7 @@ export function registerCompositeTools(server, bridge) {
             }
             // STEP: verify_layout
             try {
-                const r = await bridge.send('verify_layout', { file_path: args.output_path }, ANALYSIS_TIMEOUT);
+                const r = await bridge.send('verify_layout', { file_path: outputPath }, ANALYSIS_TIMEOUT);
                 recordStep('verify_layout', r.success, r.error);
             }
             catch (e) {
@@ -1727,8 +2895,13 @@ export function registerCompositeTools(server, bridge) {
             });
             return { content: [{ type: 'text', text: JSON.stringify({
                             ok: true, status: 'completed', session_id: sid,
-                            saved_path: args.output_path, pdf_path,
-                            score, steps_done: stepsDone, steps_total: totalSteps,
+                            saved_path: outputPath, pdf_path,
+                            score,
+                            score_before: scoreBefore,
+                            auto_fix_iterations: autoFixIterations,
+                            auto_fix_log: autoFixLog,
+                            auto_fix_stopped_reason: autoFixStopped,
+                            steps_done: stepsDone, steps_total: totalSteps,
                             duration_seconds: Math.round((Date.now() - startTime) / 1000),
                             step_log: stepLog,
                             estimate,
@@ -1745,6 +2918,82 @@ export function registerCompositeTools(server, bridge) {
                             step_log: stepLog,
                             duration_seconds: Math.round((Date.now() - startTime) / 1000),
                         }) }], isError: !cancelled };
+        }
+    });
+    // ===== v0.7.4.2: PDF OCR → HWP Clone =====
+    // PDF (native 선택 텍스트 또는 스캔 한국어) → 편집 가능한 HWP/HWPX 복원.
+    // v0.7.4.2: native PDF only (pdfplumber + PyMuPDF get_text dict → 순차 단락)
+    // v0.7.4.3: + PaddleOCR 스캔 지원, 전처리, 제목 감지, hybrid per-page dispatch
+    // v0.7.4.4: + 표/이미지 재구성, fidelity scoring, column 감지 경고
+    const PDF_CLONE_TIMEOUT = 600000; // 10분 — OCR 페이지 수에 따라 가변
+    server.tool('hwp_pdf_clone', 'PDF (native 또는 스캔 한국어) 를 편집 가능한 HWP/HWPX 로 복원합니다. (v0.7.4.4) native PDF 는 PyMuPDF get_text("dict") 로 bbox + 폰트 직접 추출, 스캔 PDF 는 PaddleOCR (lang=korean, ~150MB 모델 최초 자동 다운로드) + opencv 전처리 (deskew + denoise + threshold). hybrid PDF 는 페이지별 자동 dispatch. 제목 감지, 표 재구성 (pdfplumber find_tables), 이미지 임베딩 (page.get_images + extract_image), 2-column 감지 경고, 4-component fidelity score (text/page/layout/structure). 출력은 원본과 시각적으로 유사한 클론 (픽셀 단위 일치 아님).', {
+        pdf_path: z.string().describe('원본 PDF 경로 (절대 또는 상대)'),
+        output_path: z.string().describe('출력 HWP/HWPX 경로 (.hwp 또는 .hwpx, 확장자에 따라 형식 결정)'),
+        options: z.object({
+            ocr_engine: z.enum(['paddle', 'none', 'auto']).optional()
+                .describe('"auto"(기본): native PDF 는 OCR 미사용, 스캔 PDF 만 PaddleOCR (v0.7.4.3+). "none": 강제 native 만. "paddle": 강제 OCR.'),
+            preserve_images: z.boolean().optional()
+                .describe('PDF 내 이미지를 추출해 HWP 에 삽입 (기본 true, v0.7.4.4 부터 유효)'),
+            detect_tables: z.boolean().optional()
+                .describe('표 구조 자동 감지 + table_create_from_data 호출 (기본 true, v0.7.4.4 부터 유효)'),
+            max_pages: z.number().int().min(0).optional()
+                .describe('처리할 최대 페이지 수 (0 = 전체, 기본 0). 큰 PDF 테스트 시 1-3 권장'),
+            preprocess: z.boolean().optional()
+                .describe('스캔 이미지 전처리 (deskew + denoise + threshold). 기본 true, v0.7.4.3 부터 유효'),
+            min_native_chars_per_page: z.number().int().min(0).optional()
+                .describe('native PDF 로 분류하는 페이지당 최소 글자수 (기본 30)'),
+            page_setup_from_pdf: z.boolean().optional()
+                .describe('PDF 첫 페이지의 가로/세로 mm 를 HWP 용지 설정에 적용 (기본 true)'),
+            lang: z.string().optional().describe('OCR 언어 (기본 "korean", v0.7.4.3 부터 유효)'),
+        }).optional().describe('PDF clone 옵션'),
+    }, async ({ pdf_path, output_path, options }) => {
+        const pdfResolved = path.resolve(pdf_path);
+        const outResolved = path.resolve(output_path);
+        if (!fs.existsSync(pdfResolved)) {
+            return { content: [{ type: 'text', text: JSON.stringify({
+                            error: `PDF 파일을 찾을 수 없습니다: ${pdfResolved}`,
+                        }) }], isError: true };
+        }
+        const outExt = path.extname(outResolved).toLowerCase();
+        if (outExt !== '.hwp' && outExt !== '.hwpx') {
+            return { content: [{ type: 'text', text: JSON.stringify({
+                            error: 'output_path 는 .hwp 또는 .hwpx 확장자여야 합니다.',
+                        }) }], isError: true };
+        }
+        const outDir = path.dirname(outResolved);
+        if (!fs.existsSync(outDir)) {
+            return { content: [{ type: 'text', text: JSON.stringify({
+                            error: `출력 디렉토리가 존재하지 않습니다: ${outDir}`,
+                        }) }], isError: true };
+        }
+        try {
+            await bridge.ensureRunning();
+            const startedAt = Date.now();
+            const response = await bridge.send('clone_pdf_to_hwp', {
+                pdf_path: pdfResolved,
+                output_path: outResolved,
+                options: options ?? {},
+            }, PDF_CLONE_TIMEOUT);
+            if (!response.success) {
+                return { content: [{ type: 'text', text: JSON.stringify({
+                                error: response.error,
+                            }) }], isError: true };
+            }
+            const data = (response.data || {});
+            // Success → 현재 문서를 새 출력으로 갱신 (hwp_save_document / hwp_export_pdf 체이닝 가능)
+            if ((data.status === 'ok' || data.status === 'partial') && fs.existsSync(outResolved)) {
+                bridge.setCurrentDocument(outResolved);
+                bridge.setCachedAnalysis(null);
+            }
+            return { content: [{ type: 'text', text: JSON.stringify({
+                            ...data,
+                            elapsed_seconds: Math.round((Date.now() - startedAt) / 1000),
+                        }) }] };
+        }
+        catch (err) {
+            return { content: [{ type: 'text', text: JSON.stringify({
+                            error: err.message,
+                        }) }], isError: true };
         }
     });
 }

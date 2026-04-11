@@ -186,3 +186,157 @@ LABEL_ALIASES = {
     "납기": ["납품일", "완료일", "인도일"],
     "하자보증기간": ["보증기간", "하자보수기간"],
 }
+
+
+# ── v0.7.5.4 P3-2: 공무원 양식 표준 프리셋 ──
+# 한국 공공기관 사업계획서/공문/보고서의 de-facto 표준 서식.
+# hwp_insert_body_after_heading / hwp_autopilot_create 의 default fallback 으로 사용.
+#
+# 단위 참고:
+# - font_size: pt (10.0 = 10pt)
+# - line_spacing: % (160 = 160%)
+# - left_margin, indent: pt (set_paragraph_style 이 내부에서 *100 HWP 단위 변환)
+# - indent 양수는 pyhwpx silent fail (R2/R8) 이슈로 0 권장, hanging indent 필요 시 사용자 명시
+
+KOREAN_BUSINESS_DEFAULTS = {
+    # 사업계획서 (R&D 과제, 용역 제안서, 창업계획서 등)
+    "business_plan": {
+        "body": {
+            "char": {
+                "font_name": "맑은 고딕",
+                "font_name_latin": "Malgun Gothic",
+                "font_size": 10.0,
+                "bold": False,
+                "italic": False,
+                "color": [0, 0, 0],
+            },
+            "para": {
+                "align": "left",          # 좌측 정렬 (사업계획서 표준)
+                "line_spacing": 160,       # 160% (가독성)
+                "left_margin": 0,
+                "indent": 10,             # 첫줄 들여쓰기 10pt
+                "space_before": 0,
+                "space_after": 3,         # 문단 뒤 간격 3pt
+            },
+        },
+        "heading": {
+            "1": {"font_size": 14.0, "bold": True, "align": "left"},
+            "2": {"font_size": 12.0, "bold": True, "align": "left"},
+            "3": {"font_size": 11.0, "bold": False, "align": "left"},
+            "4": {"font_size": 10.5, "bold": False, "align": "left"},
+        },
+        "description": "사업계획서 — 맑은 고딕 10pt, 양쪽 맞춤, 줄간 160%",
+    },
+    # 공문서 (기관 대내외 공문, 시행 문서)
+    "official_document": {
+        "body": {
+            "char": {
+                "font_name": "HY헤드라인M",
+                "font_name_latin": "Times New Roman",
+                "font_size": 15.0,           # 공문 표준 15pt
+                "bold": False,
+                "italic": False,
+                "color": [0, 0, 0],
+            },
+            "para": {
+                "align": "left",               # 공문은 왼쪽 정렬
+                "line_spacing": 160,
+                "left_margin": 0,
+                "indent": 0,
+                "space_before": 0,
+                "space_after": 0,
+            },
+        },
+        "heading": {
+            "1": {"font_size": 22.0, "bold": True, "align": "center"},  # 기관명/제목
+            "2": {"font_size": 16.0, "bold": True, "align": "center"},
+            "3": {"font_size": 15.0, "bold": False, "align": "left"},
+        },
+        "description": "공문서 — HY헤드라인M 15pt, 왼쪽 정렬 (행정안전부 표준)",
+    },
+    # 일반 보고서 (업무 보고, 회의 결과 등)
+    "report": {
+        "body": {
+            "char": {
+                "font_name": "맑은 고딕",
+                "font_name_latin": "Malgun Gothic",
+                "font_size": 11.0,
+                "bold": False,
+                "italic": False,
+                "color": [0, 0, 0],
+            },
+            "para": {
+                "align": "justify",
+                "line_spacing": 160,
+                "left_margin": 0,
+                "indent": 0,
+                "space_before": 0,
+                "space_after": 0,
+            },
+        },
+        "heading": {
+            "1": {"font_size": 15.0, "bold": True, "align": "left"},
+            "2": {"font_size": 13.0, "bold": True, "align": "left"},
+            "3": {"font_size": 11.0, "bold": False, "align": "left"},
+        },
+        "description": "보고서 — 맑은 고딕 11pt, 양쪽 맞춤",
+    },
+    # 양식 (label-value 표 중심, 본문 거의 없음)
+    "form": {
+        "body": {
+            "char": {
+                "font_name": "맑은 고딕",
+                "font_name_latin": "Malgun Gothic",
+                "font_size": 10.0,
+                "bold": False,
+                "italic": False,
+                "color": [0, 0, 0],
+            },
+            "para": {
+                "align": "left",
+                "line_spacing": 160,
+                "left_margin": 0,
+                "indent": 0,
+                "space_before": 0,
+                "space_after": 0,
+            },
+        },
+        "description": "양식 — 맑은 고딕 10pt, 왼쪽 정렬 (표 중심 문서)",
+    },
+    # 일반 문서 (fallback)
+    "general": {
+        "body": {
+            "char": {
+                "font_name": "맑은 고딕",
+                "font_name_latin": "Malgun Gothic",
+                "font_size": 10.0,
+                "bold": False,
+                "italic": False,
+                "color": [0, 0, 0],
+            },
+            "para": {
+                "align": "justify",
+                "line_spacing": 160,
+                "left_margin": 0,
+                "indent": 0,
+                "space_before": 0,
+                "space_after": 0,
+            },
+        },
+        "description": "일반 문서 — 맑은 고딕 10pt (fallback)",
+    },
+}
+
+
+def get_korean_business_default(doc_type: str = "general") -> dict:
+    """공무원 양식 표준 프리셋 조회.
+
+    Args:
+        doc_type: business_plan | official_document | report | form | general
+
+    Returns:
+        {"body": {"char": {...}, "para": {...}}, "heading": {...}, "description": "..."}
+        매칭 실패 시 general 반환.
+    """
+    return KOREAN_BUSINESS_DEFAULTS.get(doc_type, KOREAN_BUSINESS_DEFAULTS["general"])
+

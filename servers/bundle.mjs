@@ -35959,6 +35959,7 @@ var StdioServerTransport = class {
 import { spawn, execFile } from "node:child_process";
 import path from "node:path";
 import fs from "node:fs";
+import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 var __filename = fileURLToPath(import.meta.url);
@@ -35978,20 +35979,44 @@ var HwpBridge = class {
   lastAnalysis = null;
   lastError = null;
   startTime = Date.now();
+  // v0.7.4.7: 세션 내 1회만 first-run auto-install 시도
+  firstRunCompleted = false;
   getPythonScriptDir() {
     const npmPath = path.resolve(__dirname, "../python");
     if (fs.existsSync(path.join(npmPath, "hwp_service.py")))
       return npmPath;
     return path.resolve(__dirname, "../../python");
   }
+  /**
+   * v0.7.4.5: Python 실행 파일 탐색.
+   * - PYTHON_PATH 환경변수가 있으면 그것 사용 (사용자 override)
+   * - Windows: py launcher 로 Python 3.13 LTS 우선 (pywin32 + 3.14 gen_py 호환성 이슈 회피)
+   * - POSIX: 기본 python3
+   *
+   * 반환 형식: { exe, preArgs } — spawn(exe, [...preArgs, ...args])
+   */
   findPython() {
-    return process.env.PYTHON_PATH || "python";
+    if (process.env.PYTHON_PATH) {
+      return { exe: process.env.PYTHON_PATH, preArgs: [] };
+    }
+    if (process.platform === "win32") {
+      return { exe: "py", preArgs: ["-3.13"] };
+    }
+    return { exe: "python3", preArgs: [] };
   }
   async ensureRunning() {
     if (this.process && this.pythonRunning)
       return;
     if (this.startPromise)
       return this.startPromise;
+    if (!this.firstRunCompleted) {
+      this.firstRunCompleted = true;
+      try {
+        await this.firstRunSetup();
+      } catch (err) {
+        throw err;
+      }
+    }
     if (this.process) {
       this.process.kill();
       this.process = null;
@@ -36009,10 +36034,10 @@ var HwpBridge = class {
     }
   }
   async start() {
-    const pythonExe = this.findPython();
+    const { exe: pythonExe, preArgs } = this.findPython();
     const scriptPath = path.join(this.getPythonScriptDir(), "hwp_service.py");
-    console.error(`[HWP MCP Bridge] Starting Python: ${pythonExe} ${scriptPath}`);
-    this.process = spawn(pythonExe, [scriptPath], {
+    console.error(`[HWP MCP Bridge] Starting Python: ${pythonExe} ${preArgs.join(" ")} ${scriptPath}`.trim());
+    this.process = spawn(pythonExe, [...preArgs, scriptPath], {
       stdio: ["pipe", "pipe", "pipe"],
       env: { ...process.env, PYTHONUNBUFFERED: "1" }
     });
@@ -36149,6 +36174,161 @@ var HwpBridge = class {
       });
     });
   }
+  // ── v0.7.4.7: 세션 최초 호출 시 1회 사전 자동 설치 ──
+  getSentinelPath() {
+    return path.join(os.homedir(), ".hwp_studio_state", "deps_installed.flag");
+  }
+  async firstRunSetup() {
+    if (process.env.HWP_SKIP_AUTO_INSTALL === "1") {
+      console.error("[HWP Bridge] HWP_SKIP_AUTO_INSTALL=1 \u2014 first-run auto-install \uC2A4\uD0B5");
+      return;
+    }
+    const sentinelPath = this.getSentinelPath();
+    if (fs.existsSync(sentinelPath)) {
+      return;
+    }
+    console.error("[HWP Bridge] First-run: \uC758\uC874\uC131 \uC0C1\uD0DC \uD655\uC778 \uC911...");
+    let prereq;
+    try {
+      prereq = await this.checkPrerequisites();
+    } catch (err) {
+      console.error(`[HWP Bridge] First-run checkPrerequisites \uC2E4\uD328: ${err.message}`);
+      return;
+    }
+    if (!prereq.python.found) {
+      console.error("[HWP Bridge] Python \uBBF8\uC124\uCE58 \u2014 auto-install \uC2A4\uD0B5. \uC0AC\uC6A9\uC790\uAC00 \uBA3C\uC800 Python 3.13 \uC124\uCE58 \uD544\uC694.");
+      return;
+    }
+    const pyhwpxMissing = !prereq.pyhwpx.found;
+    const coreDepsMissing = prereq.deps ? !prereq.deps.allCoreReady : false;
+    const needsInstall = pyhwpxMissing || coreDepsMissing;
+    if (!needsInstall) {
+      this.writeSentinel(sentinelPath, {
+        mode: "already_ready",
+        python_version: prereq.python.version
+      });
+      return;
+    }
+    const missingList = [];
+    if (pyhwpxMissing)
+      missingList.push("pyhwpx");
+    if (prereq.deps?.missingCore)
+      missingList.push(...prereq.deps.missingCore);
+    console.error(`[HWP Bridge] First-run: \uBBF8\uC124\uCE58 \uC758\uC874\uC131 \uAC10\uC9C0 [${missingList.join(", ")}] \u2014 core_only \uC790\uB3D9 \uC124\uCE58 \uC2DC\uC791 (~2-5\uBD84)...`);
+    const result = await this.installDeps({ mode: "core_only", timeoutMs: 6e5 });
+    if (result.ok) {
+      console.error(`[HWP Bridge] First-run auto-install \uC644\uB8CC (${result.durationSeconds}s)`);
+      this.writeSentinel(sentinelPath, {
+        mode: "core_only",
+        duration_seconds: result.durationSeconds,
+        python_version: prereq.python.version,
+        installed: result.installed
+      });
+    } else {
+      console.error(`[HWP Bridge] First-run auto-install \uC2E4\uD328: ${result.error}`);
+      throw new Error(`HWP Studio \uCCAB \uC2E4\uD589 \uC758\uC874\uC131 \uC790\uB3D9 \uC124\uCE58 \uC2E4\uD328.
+\uC5D0\uB7EC: ${result.error}
+
+\uD574\uACB0 \uBC29\uBC95:
+  1. \uC218\uB3D9 \uC124\uCE58: py -3.13 -m pip install -r mcp-server/python/requirements.txt
+  2. Python 3.13 LTS \uC124\uCE58 \uD655\uC778: https://www.python.org/downloads/release/python-3130/
+  3. \uD504\uB85D\uC2DC \uD658\uACBD \uD655\uC778 (pip \uAC00 PyPI \uC811\uADFC \uAC00\uB2A5\uD574\uC57C \uD568)
+  4. \uC790\uB3D9 \uC124\uCE58\uB97C \uC644\uC804\uD788 \uC2A4\uD0B5\uD558\uB824\uBA74 HWP_SKIP_AUTO_INSTALL=1 \uD658\uACBD\uBCC0\uC218 \uC124\uC815
+
+stderr \uC694\uC57D: ${(result.stderr || "").slice(-1e3)}`);
+    }
+  }
+  writeSentinel(sentinelPath, data) {
+    try {
+      fs.mkdirSync(path.dirname(sentinelPath), { recursive: true });
+      fs.writeFileSync(sentinelPath, JSON.stringify({
+        timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+        version: "0.7.4.7",
+        ...data
+      }, null, 2), "utf8");
+    } catch (err) {
+      console.error(`[HWP Bridge] Sentinel \uAE30\uB85D \uC2E4\uD328: ${err.message}`);
+    }
+  }
+  // ── v0.7.4.6: 의존성 자동 설치 ──
+  async installDeps(opts = {}) {
+    const { exe: pythonExe, preArgs } = this.findPython();
+    const scriptDir = this.getPythonScriptDir();
+    const reqPath = path.join(scriptDir, "requirements.txt");
+    const startedAt = Date.now();
+    const mode = opts.mode ?? "all";
+    const timeout = opts.timeoutMs ?? 12e5;
+    let args;
+    let installed = [];
+    if (mode === "core_only") {
+      installed = [
+        // v0.7.4.9: Python 3.13 호환성 위해 일부 strict pin 해제 (>= 로 변경)
+        "pyhwpx==1.7.2",
+        "pywin32==308",
+        "PyMuPDF==1.24.11",
+        "openpyxl==3.1.5",
+        "python-docx==1.1.2",
+        "pdfplumber>=0.11.4",
+        "Pillow>=10.4.0",
+        "opencv-python-headless>=4.10.0.84",
+        "numpy>=1.26.4"
+      ];
+      args = [...preArgs, "-m", "pip", "install", ...installed];
+    } else {
+      if (!fs.existsSync(reqPath)) {
+        return {
+          ok: false,
+          command: "",
+          stdout: "",
+          stderr: "",
+          durationSeconds: 0,
+          error: `requirements.txt not found: ${reqPath}`
+        };
+      }
+      args = [...preArgs, "-m", "pip", "install", "-r", reqPath];
+      installed = ["(from requirements.txt)"];
+    }
+    const command = `${pythonExe} ${args.join(" ")}`;
+    try {
+      const { stdout, stderr } = await execFileAsync(pythonExe, args, {
+        timeout,
+        maxBuffer: 20 * 1024 * 1024
+        // pip 출력이 클 수 있음
+      });
+      const durationSeconds = Math.round((Date.now() - startedAt) / 1e3);
+      const verify = await this.checkPrerequisites();
+      if (verify.pyhwpx.found && (mode === "all" || verify.deps && verify.deps.allCoreReady)) {
+        this.writeSentinel(this.getSentinelPath(), {
+          mode,
+          duration_seconds: durationSeconds,
+          python_version: verify.python.version,
+          trigger: "manual_install_deps"
+        });
+      }
+      return {
+        ok: true,
+        command,
+        stdout: stdout.slice(-8e3),
+        // 출력 끝부분만 (시작 부분은 download 진행 상황이라 덜 유용)
+        stderr: stderr.slice(-4e3),
+        durationSeconds,
+        installed,
+        verified: verify.deps
+      };
+    } catch (err) {
+      const e = err;
+      const durationSeconds = Math.round((Date.now() - startedAt) / 1e3);
+      const isTimeout = e.code === "ETIMEDOUT" || (e.message ?? "").includes("timed out");
+      return {
+        ok: false,
+        command,
+        stdout: (e.stdout ?? "").slice(-8e3),
+        stderr: (e.stderr ?? "").slice(-4e3),
+        durationSeconds,
+        error: isTimeout ? `pip install \uC774 ${Math.round(timeout / 6e4)}\uBD84 \uC774\uB0B4\uC5D0 \uC644\uB8CC\uB418\uC9C0 \uC54A\uC558\uC2B5\uB2C8\uB2E4. \uD504\uB85D\uC2DC \uD658\uACBD \uB610\uB294 \uD328\uD0A4\uC9C0 \uD06C\uAE30(\uD2B9\uD788 paddlepaddle ~500MB) \uB54C\uBB38\uC77C \uC218 \uC788\uC2B5\uB2C8\uB2E4. \uB354 \uAE34 timeoutMs \uB85C \uC7AC\uC2DC\uB3C4\uD558\uAC70\uB098 \uC218\uB3D9\uC73C\uB85C \uC124\uCE58\uD558\uC138\uC694.` : e.message ?? String(err)
+      };
+    }
+  }
   async shutdown() {
     if (!this.process)
       return;
@@ -36182,41 +36362,83 @@ var HwpBridge = class {
       result.os.error = "HWP MCP\uB294 Windows \uC804\uC6A9\uC785\uB2C8\uB2E4. \uD55C\uAE00(HWP)\uC740 Windows COM API\uB97C \uC0AC\uC6A9\uD569\uB2C8\uB2E4.";
       return result;
     }
-    const pythonExe = this.findPython();
+    const { exe: pythonExe, preArgs } = this.findPython();
     try {
-      const { stdout } = await execFileAsync(pythonExe, ["-c", "import sys; print(sys.version.split()[0]); print(sys.executable)"], { timeout: 5e3 });
+      const { stdout } = await execFileAsync(pythonExe, [...preArgs, "-c", "import sys; print(sys.version.split()[0]); print(sys.executable)"], { timeout: 1e4 });
       const lines = stdout.trim().split(/\r?\n/);
       const ver = lines[0];
       const exePath = lines[1] || "";
       const isStorePython = exePath.includes("WindowsApps");
+      const majorMinor = ver.split(".").slice(0, 2).join(".");
+      const isUnstablePython = majorMinor === "3.14" || parseFloat(majorMinor) >= 3.15;
+      let pythonGuide;
+      if (isStorePython) {
+        pythonGuide = `Microsoft Store Python \uAC10\uC9C0 (${exePath}). pyhwpx\uAC00 \uC778\uC2DD\uB418\uC9C0 \uC54A\uC744 \uC218 \uC788\uC2B5\uB2C8\uB2E4.
+\u2192 python.org\uC5D0\uC11C Python 3.13 LTS \uC7AC\uC124\uCE58\uB97C \uAD8C\uC7A5\uD569\uB2C8\uB2E4: https://www.python.org/downloads/`;
+      } else if (isUnstablePython) {
+        pythonGuide = `\u26A0\uFE0F Python ${ver} \uAC10\uC9C0 \u2014 pywin32 gen_py \uCE90\uC2DC \uCD5C\uCD08 \uC0DD\uC131\uC774 \uC218 \uC2DC\uAC04 hang \uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4 (\uC54C\uB824\uC9C4 \uC774\uC288).
+\u2192 Python 3.13 LTS \uAD8C\uC7A5: https://www.python.org/downloads/release/python-3130/
+\u2192 \uB610\uB294 PYTHON_PATH \uD658\uACBD\uBCC0\uC218\uB85C 3.13 \uACBD\uB85C \uBA85\uC2DC`;
+      }
       result.python = {
         found: true,
         version: ver,
         path: exePath,
-        guide: isStorePython ? `Microsoft Store Python \uAC10\uC9C0 (${exePath}). pyhwpx\uAC00 \uC778\uC2DD\uB418\uC9C0 \uC54A\uC744 \uC218 \uC788\uC2B5\uB2C8\uB2E4.
-\u2192 python.org\uC5D0\uC11C \uC7AC\uC124\uCE58\uB97C \uAD8C\uC7A5\uD569\uB2C8\uB2E4: https://www.python.org/downloads/` : void 0
+        guide: pythonGuide
       };
     } catch {
       result.python = {
         found: false,
-        guide: 'Python 3.8+ \uC124\uCE58 \uD544\uC694\n\u2192 https://www.python.org/downloads/ \uC5D0\uC11C \uC124\uCE58\n\u2192 \uC124\uCE58 \uC2DC "Add Python to PATH" \uBC18\uB4DC\uC2DC \uCCB4\uD06C\n\u2192 Microsoft Store \uBC84\uC804\uC774 \uC544\uB2CC python.org \uACF5\uC2DD \uBC84\uC804 \uAD8C\uC7A5\n\u2192 \uC124\uCE58 \uD6C4 \uD130\uBBF8\uB110 \uC7AC\uC2DC\uC791'
+        guide: 'Python 3.13 LTS \uC124\uCE58 \uD544\uC694\n\u2192 https://www.python.org/downloads/release/python-3130/ \uC5D0\uC11C \uC124\uCE58\n\u2192 \uC124\uCE58 \uC2DC "Add Python to PATH" \uBC18\uB4DC\uC2DC \uCCB4\uD06C\n\u2192 Microsoft Store \uBC84\uC804\uC774 \uC544\uB2CC python.org \uACF5\uC2DD \uBC84\uC804 \uAD8C\uC7A5\n\u2192 \uC124\uCE58 \uD6C4 \uD130\uBBF8\uB110 \uC7AC\uC2DC\uC791\n\u2192 \uB610\uB294 PYTHON_PATH \uD658\uACBD\uBCC0\uC218\uB85C Python 3.13 \uACBD\uB85C \uC9C1\uC811 \uC9C0\uC815'
       };
       return result;
     }
     try {
-      const { stdout } = await execFileAsync(pythonExe, ["-c", 'import pyhwpx; print(getattr(pyhwpx, "__version__", "installed"))'], { timeout: 5e3 });
+      const { stdout } = await execFileAsync(pythonExe, [...preArgs, "-c", 'import pyhwpx; print(getattr(pyhwpx, "__version__", "installed"))'], { timeout: 3e4 });
       result.pyhwpx = { found: true, version: stdout.trim() };
-    } catch {
+    } catch (err) {
+      const errMsg = err.message || "";
+      const isTimeout = errMsg.includes("ETIMEDOUT") || errMsg.includes("timed out") || errMsg.includes("timeout");
       result.pyhwpx = {
         found: false,
-        guide: `pyhwpx \uD328\uD0A4\uC9C0 \uC124\uCE58 \uD544\uC694
+        guide: isTimeout ? `\u26A0\uFE0F pyhwpx import \uAC00 30\uCD08 \uC774\uC0C1 \uAC78\uB838\uC2B5\uB2C8\uB2E4 \u2014 Python ${result.python.version || "?"} \uC5D0\uC11C pywin32 gen_py \uCD5C\uCD08 \uC0DD\uC131 hang \uC774\uC288\uC77C \uC218 \uC788\uC2B5\uB2C8\uB2E4.
+\u2192 Python 3.13 LTS \uB2E4\uC6B4\uADF8\uB808\uC774\uB4DC \uAD8C\uC7A5
+\u2192 \uB610\uB294 \uBCC4\uB3C4 \uD130\uBBF8\uB110\uC5D0\uC11C python -c "import pyhwpx" \uB97C \uB05D\uAE4C\uC9C0 \uB300\uAE30 \uD6C4 \uC7AC\uC2DC\uB3C4` : `pyhwpx \uD328\uD0A4\uC9C0 \uC124\uCE58 \uD544\uC694
 \u2192 \uAC10\uC9C0\uB41C Python: ${result.python.path || pythonExe}
 \u2192 \uD130\uBBF8\uB110\uC5D0\uC11C \uC2E4\uD589: pip install pyhwpx pywin32`
       };
       return result;
     }
     try {
+      const depsScript = "import json,importlib.util as iu;print(json.dumps({n:iu.find_spec(m) is not None for n,m in [('pdfplumber','pdfplumber'),('Pillow','PIL'),('opencv','cv2'),('numpy','numpy'),('PyMuPDF','fitz'),('paddlepaddle','paddle'),('paddleocr','paddleocr')]}))";
+      const { stdout } = await execFileAsync(pythonExe, [...preArgs, "-c", depsScript], { timeout: 1e4 });
+      const d = JSON.parse(stdout.trim());
+      const core = {
+        pdfplumber: d.pdfplumber,
+        Pillow: d.Pillow,
+        opencv: d.opencv,
+        numpy: d.numpy,
+        PyMuPDF: d.PyMuPDF
+      };
+      const ocr = {
+        paddlepaddle: d.paddlepaddle,
+        paddleocr: d.paddleocr
+      };
+      const missingCore = Object.entries(core).filter(([, v]) => !v).map(([k]) => k);
+      const missingOcr = Object.entries(ocr).filter(([, v]) => !v).map(([k]) => k);
+      result.deps = {
+        core,
+        ocr,
+        missingCore,
+        missingOcr,
+        allCoreReady: missingCore.length === 0,
+        allOcrReady: missingOcr.length === 0
+      };
+    } catch {
+    }
+    try {
       const { stdout } = await execFileAsync(pythonExe, [
+        ...preArgs,
         "-c",
         'import os; paths = [r"C:\\Program Files\\Hancom", r"C:\\Program Files (x86)\\Hancom"]; found = any(os.path.isdir(p) for p in paths); print("installed" if found else "not_found")'
       ], { timeout: 5e3 });
@@ -36381,13 +36603,64 @@ function registerDocumentTools(server2, bridge2) {
           items.push("\u26A0\uFE0F \uD55C\uAE00(HWP)\uC774 \uC2E4\uD589\uB418\uC9C0 \uC54A\uC558\uC2B5\uB2C8\uB2E4. \uBB38\uC11C \uC791\uC5C5 \uC804 \uD55C\uAE00\uC744 \uBA3C\uC800 \uC2E4\uD589\uD558\uC138\uC694.");
         }
       }
+      if (prereq.deps) {
+        if (prereq.deps.allCoreReady) {
+          items.push("\u2705 PDF Clone core deps (pdfplumber/Pillow/opencv/numpy/PyMuPDF) \uBAA8\uB450 \uC124\uCE58\uB428");
+        } else {
+          items.push(`\u26A0\uFE0F PDF Clone core deps \uC77C\uBD80 \uBBF8\uC124\uCE58: ${prereq.deps.missingCore.join(", ")}
+   \u2192 hwp_install_deps({mode:"core_only"}) \uB85C \uC790\uB3D9 \uC124\uCE58`);
+        }
+        if (prereq.deps.allOcrReady) {
+          items.push("\u2705 PDF Clone OCR deps (paddlepaddle/paddleocr) \uC124\uCE58\uB428 \u2014 \uC2A4\uCE94 PDF \uC9C0\uC6D0");
+        } else {
+          items.push(`\u2139\uFE0F PDF Clone OCR deps \uBBF8\uC124\uCE58 (optional): ${prereq.deps.missingOcr.join(", ")}
+   \u2192 \uC2A4\uCE94 PDF \uC0AC\uC6A9 \uC2DC hwp_install_deps({mode:"all"}) \uD638\uCD9C`);
+        }
+      }
       const allReady = prereq.ok && prereq.hwpRunning;
       return { content: [{ type: "text", text: JSON.stringify({
         status: allReady ? "ready" : prereq.ok ? "hwp_not_running" : "not_ready",
         message: allReady ? "\uBAA8\uB4E0 \uC694\uAD6C\uC0AC\uD56D\uC774 \uCDA9\uC871\uB418\uC5C8\uC2B5\uB2C8\uB2E4. HWP \uB3C4\uAD6C\uB97C \uC0AC\uC6A9\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4." : prereq.ok ? "\uD55C\uAE00(HWP) \uD504\uB85C\uADF8\uB7A8\uC744 \uC2E4\uD589\uD55C \uD6C4 \uB2E4\uC2DC \uC2DC\uB3C4\uD558\uC138\uC694." : "\uC544\uB798 \uD56D\uBAA9\uC744 \uC124\uCE58\uD55C \uD6C4 \uB2E4\uC2DC \uC2DC\uB3C4\uD558\uC138\uC694.",
         details: prereq,
-        summary: items.join("\n")
+        summary: items.join("\n"),
+        // v0.7.4.6: 편의 힌트
+        auto_install_available: !prereq.ok || prereq.deps && (!prereq.deps.allCoreReady || !prereq.deps.allOcrReady) ? 'hwp_install_deps \uB3C4\uAD6C\uB85C \uC790\uB3D9 \uC124\uCE58 \uAC00\uB2A5 (mode:"all"=\uC804\uCCB4, "core_only"=OCR \uC81C\uC678 \uBE60\uB978 \uC124\uCE58)' : void 0
       }) }] };
+    } catch (err) {
+      return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }], isError: true };
+    }
+  });
+  server2.tool("hwp_install_deps", 'Python \uC758\uC874\uC131\uC744 \uC790\uB3D9 \uC124\uCE58\uD569\uB2C8\uB2E4. (v0.7.4.6 \uC2E0\uADDC, v0.7.4.7 \uD655\uC7A5) mcp-server/python/requirements.txt \uAE30\uC900 pip install. mode="all" (\uAE30\uBCF8): pyhwpx+pywin32+PyMuPDF+pdfplumber+Pillow+opencv+numpy+paddlepaddle+paddleocr \uC804\uCCB4 \uC124\uCE58 (~700MB, \uCD5C\uB300 20\uBD84). mode="core_only": paddlepaddle/paddleocr \uC81C\uC678 \u2014 native PDF clone \uB9CC \uC791\uB3D9. force=true: sentinel \uBB34\uC2DC\uD558\uACE0 \uC7AC\uC124\uCE58. v0.7.4.7 \uBD80\uD130\uB294 \uCCAB HWP \uB3C4\uAD6C \uD638\uCD9C \uC2DC \uC790\uB3D9\uC73C\uB85C core_only \uC124\uCE58\uAC00 \uC0AC\uC804 \uC2E4\uD589\uB418\uBBC0\uB85C, \uC0AC\uC6A9\uC790\uAC00 \uC774 \uB3C4\uAD6C\uB97C \uBA85\uC2DC \uD638\uCD9C\uD560 \uD544\uC694\uB294 OCR \uCD94\uAC00(mode:"all")\uB098 \uC7AC\uC124\uCE58 \uC2DC\uC5D0\uB9CC.', {
+    mode: external_exports.enum(["all", "core_only"]).optional().describe('"all" (\uAE30\uBCF8): \uC804\uCCB4 \uC124\uCE58. "core_only": OCR \uC5D4\uC9C4 \uC81C\uC678 \uBE60\uB978 \uC124\uCE58'),
+    timeout_minutes: external_exports.number().int().min(1).max(60).optional().describe("pip install \uD0C0\uC784\uC544\uC6C3 \uBD84 \uB2E8\uC704 (\uAE30\uBCF8 20, \uCD5C\uB300 60)"),
+    force: external_exports.boolean().optional().describe("sentinel flag \uB97C \uBB34\uC2DC\uD558\uACE0 \uC7AC\uC124\uCE58 (\uAE30\uBCF8 false)")
+  }, async ({ mode, timeout_minutes, force }) => {
+    try {
+      if (force) {
+        try {
+          const os3 = await import("node:os");
+          const sentinelPath = path2.join(os3.homedir(), ".hwp_studio_state", "deps_installed.flag");
+          if (fs2.existsSync(sentinelPath))
+            fs2.unlinkSync(sentinelPath);
+        } catch {
+        }
+      }
+      const result = await bridge2.installDeps({
+        mode: mode ?? "all",
+        timeoutMs: timeout_minutes ? timeout_minutes * 6e4 : void 0
+      });
+      return { content: [{ type: "text", text: JSON.stringify({
+        status: result.ok ? "ok" : "error",
+        mode: mode ?? "all",
+        command: result.command,
+        duration_seconds: result.durationSeconds,
+        installed: result.installed,
+        verified_deps: result.verified,
+        stdout_tail: result.stdout,
+        stderr_tail: result.stderr,
+        error: result.error,
+        next_step: result.ok ? "hwp_check_setup \uC73C\uB85C \uCD5C\uC885 \uD655\uC778 \uD6C4 \uBB38\uC11C \uC791\uC5C5 \uAC00\uB2A5. paddleocr \uC740 \uCD5C\uCD08 OCR \uD638\uCD9C \uC2DC ~150MB \uD55C\uAE00 \uBAA8\uB378\uC774 ~/.paddleocr \uC5D0 \uC790\uB3D9 \uB2E4\uC6B4\uB85C\uB4DC\uB429\uB2C8\uB2E4." : "pip install \uC2E4\uD328 \u2014 stderr_tail \uD655\uC778 \uD6C4 \uC218\uB3D9 \uC124\uCE58: py -3.13 -m pip install -r mcp-server/python/requirements.txt"
+      }) }], isError: !result.ok };
     } catch (err) {
       return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }], isError: true };
     }
@@ -36543,10 +36816,6 @@ async function ensureAnalysis(bridge2, filePath) {
     const ext = path3.extname(resolved).toLowerCase();
     if (!HWP_EXTENSIONS2.has(ext)) {
       throw new Error("HWP \uB610\uB294 HWPX \uD30C\uC77C\uB9CC \uC9C0\uC6D0\uD569\uB2C8\uB2E4.");
-    }
-    try {
-      await bridge2.send("save_document", {});
-    } catch {
     }
     const response2 = await bridge2.send("analyze_document", { file_path: resolved }, ANALYSIS_TIMEOUT);
     if (!response2.success)
@@ -36912,6 +37181,55 @@ function registerAnalysisTools(server2, bridge2, toolset2 = "standard") {
       try {
         await bridge2.ensureRunning();
         const r = await bridge2.send("form_detect", {}, ANALYSIS_TIMEOUT);
+        if (!r.success)
+          return { content: [{ type: "text", text: JSON.stringify({ error: r.error }) }], isError: true };
+        return { content: [{ type: "text", text: JSON.stringify(r.data) }] };
+      } catch (err) {
+        return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }], isError: true };
+      }
+    });
+    server2.tool("hwp_detect_document_type", "\uBB38\uC11C \uD0C0\uC785\uC744 \uC790\uB3D9 \uAC10\uC9C0\uD574\uC11C \uACF5\uBB34\uC6D0 \uC591\uC2DD \uD45C\uC900 \uC11C\uC2DD \uD504\uB9AC\uC14B\uC744 \uCD94\uCC9C\uD569\uB2C8\uB2E4. (v0.7.5.4 \uC2E0\uADDC) \uD0C0\uC785: business_plan(\uC0AC\uC5C5\uACC4\uD68D\uC11C) / official_document(\uACF5\uBB38) / form(\uC591\uC2DD) / report(\uBCF4\uACE0\uC11C) / general(\uC77C\uBC18). \uACB0\uACFC\uC758 recommended_preset \uC744 hwp_insert_body_after_heading \uC758 body_style \uC5D0 \uC804\uB2EC\uD558\uBA74 \uD45C\uC900 \uC11C\uC2DD\uC774 \uC790\uB3D9 \uC801\uC6A9\uB429\uB2C8\uB2E4. \uC0AC\uC5C5\uACC4\uD68D\uC11C / \uACF5\uBB38 \uC791\uC5C5 \uC804 \uAC00\uC7A5 \uBA3C\uC800 \uD638\uCD9C\uD558\uC138\uC694.", {}, async () => {
+      if (!bridge2.getCurrentDocument())
+        return { content: [{ type: "text", text: JSON.stringify({ error: "\uC5F4\uB9B0 \uBB38\uC11C\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4. hwp_open_document \uB85C \uC591\uC2DD \uD30C\uC77C\uC744 \uBA3C\uC800 \uC5EC\uC138\uC694." }) }], isError: true };
+      try {
+        await bridge2.ensureRunning();
+        const r = await bridge2.send("detect_document_type", {}, ANALYSIS_TIMEOUT);
+        if (!r.success)
+          return { content: [{ type: "text", text: JSON.stringify({ error: r.error }) }], isError: true };
+        return { content: [{ type: "text", text: JSON.stringify(r.data) }] };
+      } catch (err) {
+        return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }], isError: true };
+      }
+    });
+    server2.tool("hwp_snapshot_template_style", "\uC591\uC2DD \uC6D0\uBCF8\uC758 \uC11C\uC2DD \uD504\uB85C\uD30C\uC77C\uC744 \uC2A4\uB0C5\uC0F7\uC73C\uB85C \uCE90\uC2DC\uD569\uB2C8\uB2E4. (v0.7.5.4 \uC2E0\uADDC) body_default + heading_samples (\uB808\uBCA8\uBCC4) + table_cell_samples \uB97C JSON \uC73C\uB85C ~/.hwp_studio_state/snap_XXX.json \uC5D0 \uC800\uC7A5. \uC591\uC2DD \uCCA8\uBD80 \uD6C4 \uD55C \uBC88 \uD638\uCD9C\uD558\uBA74 \uC774\uD6C4 insert_body_after_heading \uD638\uCD9C \uC2DC \uC774 \uC2A4\uB0C5\uC0F7 \uCC38\uC870\uB85C \uC77C\uAD00\uB41C \uC11C\uC2DD \uC801\uC6A9 \uAC00\uB2A5. \uACF5\uBB34\uC6D0 \uC591\uC2DD \uC791\uC5C5\uC758 \uCCAB \uB2E8\uACC4.", {}, async () => {
+      if (!bridge2.getCurrentDocument())
+        return { content: [{ type: "text", text: JSON.stringify({ error: "\uC5F4\uB9B0 \uBB38\uC11C\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4." }) }], isError: true };
+      try {
+        await bridge2.ensureRunning();
+        const r = await bridge2.send("snapshot_template_style", {}, ANALYSIS_TIMEOUT);
+        if (!r.success)
+          return { content: [{ type: "text", text: JSON.stringify({ error: r.error }) }], isError: true };
+        return { content: [{ type: "text", text: JSON.stringify(r.data) }] };
+      } catch (err) {
+        return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }], isError: true };
+      }
+    });
+    server2.tool("hwp_verify_5stage", "\uBB38\uC11C\uB97C TEST_CHECKLIST Phase 19 \uC758 5\uB2E8\uACC4 \uAC80\uC99D \uAE30\uC900\uC73C\uB85C \uD3C9\uAC00\uD569\uB2C8\uB2E4. (v0.7.5.4 \uC2E0\uADDC) Stage 1 step_log (\uD638\uCD9C\uC790 \uBCF4\uC7A5), 2 body_verified (chars \u2265 expected\xD70.5), 3 file_size (22KB/28KB \uD558\uD55C), 4 text cross-check (snippet 90%+ \uB9E4\uCE6D), 5 layout PNG (opt-in). overall_pass \uB294 stage 1-4 \uBAA8\uB450 PASS \uC2DC true. \uC2E0\uADDC \uBB38\uC11C \uC791\uC131 \uD6C4 \uC790\uB3D9 \uAC80\uC99D\uC5D0 \uC0AC\uC6A9.", {
+      file_path: external_exports.string().describe("\uAC80\uC99D\uD560 HWP/HWPX \uD30C\uC77C \uC808\uB300 \uACBD\uB85C"),
+      expected_chars: external_exports.number().int().optional().describe("\uC608\uC0C1 \uBCF8\uBB38 \uAE00\uC790\uC218 (stage 2 \uD310\uC815 \uAE30\uC900, \uC5C6\uC73C\uBA74 chars > 0 \uB9CC \uD655\uC778)"),
+      expected_text_snippet: external_exports.string().optional().describe("\uBCF8\uBB38\uC5D0 \uD3EC\uD568\uB3FC\uC57C \uD560 \uD14D\uC2A4\uD2B8 \uC0D8\uD50C (stage 4 \uD310\uC815)"),
+      run_layout: external_exports.boolean().optional().describe("stage 5 layout PNG \uC0DD\uC131 \uC2E4\uD589 (\uAE30\uBCF8 false, \uC2DC\uAC04 \uC624\uB798 \uAC78\uB9BC)")
+    }, async ({ file_path, expected_chars, expected_text_snippet, run_layout }) => {
+      try {
+        await bridge2.ensureRunning();
+        const params = { file_path };
+        if (expected_chars !== void 0)
+          params.expected_chars = expected_chars;
+        if (expected_text_snippet !== void 0)
+          params.expected_text_snippet = expected_text_snippet;
+        if (run_layout !== void 0)
+          params.run_layout = run_layout;
+        const r = await bridge2.send("verify_5stage", params, 6e4);
         if (!r.success)
           return { content: [{ type: "text", text: JSON.stringify({ error: r.error }) }], isError: true };
         return { content: [{ type: "text", text: JSON.stringify(r.data) }] };
@@ -37369,11 +37687,51 @@ function registerEditingTools(server2, bridge2, toolset2 = "standard") {
       }
       try {
         await bridge2.ensureRunning();
-        await bridge2.send("save_document", {});
         const params = { find, append_text };
         if (color)
           params.color = color;
         const response = await bridge2.send("find_and_append", params);
+        if (!response.success) {
+          return { content: [{ type: "text", text: JSON.stringify({ error: response.error }) }], isError: true };
+        }
+        bridge2.setCachedAnalysis(null);
+        return { content: [{ type: "text", text: JSON.stringify(response.data) }] };
+      } catch (err) {
+        return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }], isError: true };
+      }
+    });
+    server2.tool("hwp_insert_body_after_heading", "\uC18C\uC81C\uBAA9 \uC544\uB798\uC5D0 \uBCF8\uBB38 \uB2E8\uB77D\uC744 \uC0BD\uC785\uD569\uB2C8\uB2E4. find_and_append \uC640 \uB2EC\uB9AC (1) \uBAA9\uCC28(TOC) \uD56D\uBAA9 \uC790\uB3D9 skip, (2) \uC0C8 \uBB38\uB2E8 \uBD84\uB9AC (BreakPara), (3) \uBCF8\uBB38 \uC2A4\uD0C0\uC77C \uC790\uB3D9 \uB9AC\uC14B (heading \uC2A4\uD0C0\uC77C \uC0C1\uC18D \uBC29\uC9C0). \uC591\uC2DD \uCC44\uC6B0\uAE30\xB7\uC0AC\uC5C5\uACC4\uD68D\uC11C \uC791\uC131 \uB4F1\uC5D0 \uAD8C\uC7A5.", {
+      heading: external_exports.string().describe("\uCC3E\uC744 \uC18C\uC81C\uBAA9 \uD14D\uC2A4\uD2B8 (\uC608: '(1) \uC0B0\uC5C5\uC758 \uD2B9\uC131')"),
+      body_text: external_exports.string().describe("\uC0BD\uC785\uD560 \uBCF8\uBB38. \uC904\uBC14\uAFC8\uC740 \\n \uC73C\uB85C \uD45C\uC2DC\uD558\uBA74 BreakPara \uB85C \uCC98\uB9AC\uB428."),
+      body_style: external_exports.object({
+        char: external_exports.object({
+          font_name: external_exports.string().optional(),
+          font_size: external_exports.number().positive().optional(),
+          bold: external_exports.boolean().optional(),
+          italic: external_exports.boolean().optional(),
+          color: external_exports.array(external_exports.number().int().min(0).max(255)).length(3).optional()
+        }).optional().describe("\uAE00\uC790 \uC11C\uC2DD override"),
+        para: external_exports.object({
+          align: external_exports.enum(["left", "center", "right", "justify"]).optional(),
+          line_spacing: external_exports.number().optional(),
+          indent: external_exports.number().optional(),
+          left_margin: external_exports.number().optional(),
+          space_before: external_exports.number().optional()
+        }).optional().describe("\uBB38\uB2E8 \uC11C\uC2DD override")
+      }).optional().describe("\uBCF8\uBB38 \uC2A4\uD0C0\uC77C override (\uC0DD\uB7B5 \uC2DC \uB9D1\uC740 \uACE0\uB515 10pt \uBCF8\uBB38 \uAE30\uBCF8\uAC12)"),
+      skip_toc: external_exports.boolean().optional().describe("TOC \uD56D\uBAA9 skip (\uAE30\uBCF8 true)"),
+      occurrence: external_exports.number().int().optional().describe("\uD2B9\uC815 N\uBC88\uC9F8 match \uC120\uD0DD (-1=auto, \uAE30\uBCF8 -1)")
+    }, async ({ heading, body_text, body_style, skip_toc, occurrence }) => {
+      try {
+        await bridge2.ensureRunning();
+        const params = { heading, body_text };
+        if (body_style)
+          params.body_style = body_style;
+        if (skip_toc !== void 0)
+          params.skip_toc = skip_toc;
+        if (occurrence !== void 0)
+          params.occurrence = occurrence;
+        const response = await bridge2.send("insert_body_after_heading", params);
         if (!response.success) {
           return { content: [{ type: "text", text: JSON.stringify({ error: response.error }) }], isError: true };
         }
@@ -38207,9 +38565,25 @@ function registerEditingTools(server2, bridge2, toolset2 = "standard") {
         return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }], isError: true };
       }
     });
-    server2.tool("hwp_delete_guide_text", "\uC591\uC2DD\uC758 \uC791\uC131\uC694\uB839/\uAC00\uC774\uB4DC \uD14D\uC2A4\uD2B8(< \uC791\uC131\uC694\uB839 >, \u203B \uC548\uB0B4\uBB38 \uB4F1)\uB97C \uC790\uB3D9 \uC0AD\uC81C\uD569\uB2C8\uB2E4. \uACF5\uACF5\uAE30\uAD00 \uC591\uC2DD \uC791\uC131 \uD6C4 \uC81C\uCD9C \uC804\uC5D0 \uC0AC\uC6A9.", {
-      patterns: external_exports.array(external_exports.string()).optional().describe("\uC0AD\uC81C\uD560 \uD14D\uC2A4\uD2B8 \uD328\uD134 \uBAA9\uB85D (\uAE30\uBCF8: < \uC791\uC131\uC694\uB839 >)")
-    }, async ({ patterns }) => {
+    server2.tool("hwp_extract_guide_text", "\uC591\uC2DD\uC758 \uC791\uC131\uC694\uB839 \uBC15\uC2A4 \uB0B4\uC6A9\uC744 \uAD6C\uC870\uD654 \uCD94\uCD9C\uD569\uB2C8\uB2E4 (v0.7.7 \uC2E0\uADDC). \uC0AD\uC81C \uC804\uC5D0 \uD638\uCD9C\uD558\uC5EC \uAC01 \uC139\uC158\uBCC4 \uC694\uAD6C\uC0AC\uD56D(\uD398\uC774\uC9C0 \uC81C\uD55C, \uD544\uC218 \uAE30\uC7AC, \uD615\uC2DD \uC694\uAD6C)\uC744 \uBCF4\uC874. \uACB0\uACFC\uB97C AI \uCF58\uD150\uCE20 \uC0DD\uC131 \uCEE8\uD14D\uC2A4\uD2B8\uB85C \uD65C\uC6A9.", {}, async () => {
+      if (!bridge2.getCurrentDocument())
+        return { content: [{ type: "text", text: JSON.stringify({ error: "\uC5F4\uB9B0 \uBB38\uC11C\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4." }) }], isError: true };
+      try {
+        await bridge2.ensureRunning();
+        const r = await bridge2.send("extract_guide_text", {}, FILL_TIMEOUT);
+        if (!r.success)
+          return { content: [{ type: "text", text: JSON.stringify({ error: r.error }) }], isError: true };
+        return { content: [{ type: "text", text: JSON.stringify(r.data) }] };
+      } catch (err) {
+        return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }], isError: true };
+      }
+    });
+    server2.tool("hwp_delete_guide_text", '\uC591\uC2DD\uC758 \uC791\uC131\uC694\uB839/\uAC00\uC774\uB4DC \uD14D\uC2A4\uD2B8\uB97C \uC790\uB3D9 \uC0AD\uC81C\uD569\uB2C8\uB2E4. v0.7.5.4 \uC5C5\uADF8\uB808\uC774\uB4DC: scope="text"(\uAE30\uC874 \uD14D\uC2A4\uD2B8 \uB9AC\uD130\uB7F4), "table"(\uC791\uC131\uC694\uB839 \uBC15\uC2A4 \uD45C \uC804\uCCB4 \uC0AD\uC81C), "both"(\uB458 \uB2E4). \uACF5\uACF5\uAE30\uAD00 \uC591\uC2DD \uC791\uC131 \uD6C4 \uC81C\uCD9C \uC804\uC5D0 \uC0AC\uC6A9. \uAE30\uBCF8 scope="both" \uAD8C\uC7A5. v0.7.7: extract_first=true \uB85C \uC0AD\uC81C \uC804 \uC791\uC131\uC694\uB839 \uB0B4\uC6A9 \uC790\uB3D9 \uCD94\uCD9C.', {
+      patterns: external_exports.array(external_exports.string()).optional().describe("\uC0AD\uC81C\uD560 \uD14D\uC2A4\uD2B8 \uD328\uD134 \uBAA9\uB85D (\uAE30\uBCF8: <\uC791\uC131\uC694\uB839>, <\uC720\uC758\uC0AC\uD56D> \uD655\uC7A5)"),
+      table_keywords: external_exports.array(external_exports.string()).optional().describe("\uC791\uC131\uC694\uB839 \uD45C \uAC10\uC9C0 \uD0A4\uC6CC\uB4DC (\uAE30\uBCF8: \uC791\uC131\uC694\uB839/\uC720\uC758\uC0AC\uD56D/\uCC38\uACE0/\uC8FC\uC758\uC0AC\uD56D)"),
+      scope: external_exports.enum(["text", "table", "both"]).optional().describe("\uC0AD\uC81C \uBC94\uC704 (\uAE30\uBCF8 text, \uC591\uC2DD \uC815\uB9AC\uB294 both \uAD8C\uC7A5)"),
+      extract_first: external_exports.boolean().optional().describe("\uC0AD\uC81C \uC804 \uC791\uC131\uC694\uB839 \uB0B4\uC6A9 \uCD94\uCD9C (v0.7.7 \uC2E0\uADDC, \uAE30\uBCF8 false)")
+    }, async ({ patterns, table_keywords, scope, extract_first }) => {
       if (!bridge2.getCurrentDocument())
         return { content: [{ type: "text", text: JSON.stringify({ error: "\uC5F4\uB9B0 \uBB38\uC11C\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4." }) }], isError: true };
       try {
@@ -38217,6 +38591,12 @@ function registerEditingTools(server2, bridge2, toolset2 = "standard") {
         const params = {};
         if (patterns)
           params.patterns = patterns;
+        if (table_keywords)
+          params.table_keywords = table_keywords;
+        if (scope)
+          params.scope = scope;
+        if (extract_first !== void 0)
+          params.extract_first = extract_first;
         const r = await bridge2.send("delete_guide_text", params, FILL_TIMEOUT);
         if (!r.success)
           return { content: [{ type: "text", text: JSON.stringify({ error: r.error }) }], isError: true };
@@ -38297,12 +38677,46 @@ function registerEditingTools(server2, bridge2, toolset2 = "standard") {
 // servers/tools/composite-tools.js
 import path6 from "node:path";
 import fs5 from "node:fs";
-import os from "node:os";
+import os2 from "node:os";
 var HWP_EXTENSIONS3 = /* @__PURE__ */ new Set([".hwp", ".hwpx"]);
 var ANALYSIS_TIMEOUT2 = 6e4;
 function registerCompositeTools(server2, bridge2) {
+  async function runAutoFixLoop(opts) {
+    let score = 100;
+    const recommendedFixes = [];
+    try {
+      const params = { file_path: opts.outputPath };
+      if (opts.styleProfile)
+        params.expected_profile = opts.styleProfile;
+      const r = await bridge2.send("validate_consistency", params, ANALYSIS_TIMEOUT2);
+      if (r.success && r.data) {
+        const d = r.data;
+        if (typeof d.consistency_score === "number")
+          score = d.consistency_score;
+        if (Array.isArray(d.format_deviations)) {
+          for (const dev of d.format_deviations) {
+            recommendedFixes.push({
+              field: dev.field,
+              expected: dev.expected,
+              actual: dev.actual,
+              suggestion: "set_paragraph_style \uB610\uB294 set_char_shape \uB85C \uAC1C\uBCC4 \uC218\uC815"
+            });
+          }
+        }
+      }
+    } catch {
+    }
+    return {
+      iterations: 0,
+      score_before: score,
+      score_after: score,
+      log: [],
+      stopped_reason: score >= opts.threshold ? "already_passed" : "no_auto_fix_v0754",
+      recommended_fixes: recommendedFixes
+    };
+  }
   server2.tool("hwp_inspect_com_object", "[\uAC1C\uBC1C\uC6A9] pyhwpx COM \uAC1D\uCCB4\uC758 \uC2E4\uC81C \uC18D\uC131 \uBAA9\uB85D\uC744 \uB364\uD504\uD569\uB2C8\uB2E4. HCharShape/HParaShape \uB4F1\uC758 \uC815\uD655\uD55C \uC18D\uC131\uBA85\uC744 \uD655\uC778\uD560 \uB54C \uC0AC\uC6A9.", {
-    object: external_exports.enum(["HCharShape", "HParaShape", "HFindReplace"]).optional().describe("\uC870\uC0AC\uD560 COM \uAC1D\uCCB4 (\uAE30\uBCF8: HCharShape)")
+    object: external_exports.enum(["HCharShape", "HParaShape", "HFindReplace", "HSecDef", "HPageDef"]).optional().describe("\uC870\uC0AC\uD560 COM \uAC1D\uCCB4 (\uAE30\uBCF8: HCharShape)")
   }, async ({ object: objName }) => {
     try {
       await bridge2.ensureRunning();
@@ -39117,6 +39531,785 @@ function registerCompositeTools(server2, bridge2) {
       return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }], isError: true };
     }
   });
+  server2.tool("hwp_form_workflow", '\uC591\uC2DD \uD30C\uC77C \uCCA8\uBD80 \uC6CC\uD06C\uD50C\uB85C\uC6B0. v0.7.5.4 read-only \uAE30\uBCF8: phase="all" \uC740 learn\u2192plan\u2192preview \uC5D0\uC11C \uC815\uC9C0 (fill \uC740 \uC0AC\uC6A9\uC790 \uBA85\uC2DC \uD638\uCD9C \uD544\uC694). phase \uBCC4: learn(\uD559\uC2B5)\u2192plan(\uACC4\uD68D)\u2192preview(\uBBF8\uB9AC\uBCF4\uAE30)\u2192fill(\uBA85\uC2DC)\u2192verify(\uBA85\uC2DC)\u2192rollback(\uC6D0\uBCF8 \uBCF5\uC6D0). auto_fix \uB294 v0.7.5.4 \uBD80\uD130 no-op (\uC6D0\uBCF8 \uC11C\uC2DD \uBCF4\uD638). table_cell_overrides/field_overrides \uB85C Claude host \uAC00 \uC9C1\uC811 \uC81C\uC5B4.', {
+    phase: external_exports.enum(["learn", "plan", "preview", "fill", "verify", "auto_fix", "all", "rollback"]).describe('\uC2E4\uD589\uD560 \uB2E8\uACC4. "all" \uC740 read-only (learn\u2192plan\u2192preview \uB9CC)'),
+    form_file: external_exports.string().optional().describe("\uC591\uC2DD HWP/HWPX \uD30C\uC77C (learn \uB610\uB294 all \uCCAB \uD638\uCD9C \uC2DC \uD544\uC218)"),
+    user_request: external_exports.string().optional().describe("\uC0AC\uC6A9\uC790 \uC694\uCCAD (plan \uB2E8\uACC4\uC5D0\uC11C estimate_workload \uC785\uB825)"),
+    reference_file: external_exports.string().optional().describe("\uCC38\uACE0 \uC790\uB8CC (Excel/CSV/JSON/PDF/DOCX/HTML)"),
+    session_id: external_exports.string().optional().describe("\uC138\uC158 ID (\uC5C6\uC73C\uBA74 \uC790\uB3D9 \uC0DD\uC131)"),
+    output_path: external_exports.string().optional().describe("\uC800\uC7A5 \uACBD\uB85C (\uC0DD\uB7B5 \uC2DC form_file \uC606\uC5D0 _filled \uC811\uBBF8\uC0AC)"),
+    field_overrides: external_exports.record(external_exports.string(), external_exports.string()).optional().describe("\uD544\uB4DC\uBA85\u2192\uAC12 \uC9C1\uC811 \uC9C0\uC815 (auto_map \uACB0\uACFC \uB36E\uC5B4\uC4F0\uAE30)"),
+    table_cell_overrides: external_exports.array(external_exports.object({
+      table_index: external_exports.number().int().min(0),
+      cells: external_exports.array(external_exports.object({
+        tab: external_exports.number().int().min(0).optional(),
+        label: external_exports.string().optional(),
+        text: external_exports.string()
+      }))
+    })).optional().describe("\uD45C \uC140 \uC9C1\uC811 \uC9C0\uC815 (auto_map \uACB0\uACFC \uB36E\uC5B4\uC4F0\uAE30)"),
+    confirm_fill: external_exports.boolean().optional().describe("fill \uB2E8\uACC4 \uC9C4\uD589 \uD655\uC778 (\uC0AC\uC6A9\uC790 \uC2B9\uC778 \uC644\uB8CC)"),
+    auto_fix_enabled: external_exports.boolean().optional().describe("v0.7.5.4: auto_fix \uD65C\uC131\uD654 \uC5EC\uBD80 (\uAE30\uBCF8 false). true \uC5EC\uB3C4 P0-2 runAutoFixLoop no-op \uC774\uBBC0\uB85C validate \uB9CC \uC218\uD589."),
+    auto_fix_threshold: external_exports.number().min(0).max(100).optional().describe("auto_fix \uC810\uC218 \uC784\uACC4 (\uAE30\uBCF8 85, auto_fix_enabled=true \uC77C \uB54C\uB9CC \uC758\uBBF8)"),
+    auto_fix_max_iterations: external_exports.number().int().min(1).max(5).optional().describe("auto_fix \uCD5C\uB300 \uBC18\uBCF5 (\uAE30\uBCF8 2, auto_fix_enabled=true \uC77C \uB54C\uB9CC \uC758\uBBF8)")
+  }, async (args) => {
+    const sid = safeId(args.session_id || `form_${(/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-").slice(0, 19)}`);
+    const sessionPath = path6.join(STATE_DIR, `${sid}.json`);
+    const snapshotPath = path6.join(STATE_DIR, `${sid}.snapshot.bin`);
+    if (!fs5.existsSync(STATE_DIR))
+      fs5.mkdirSync(STATE_DIR, { recursive: true });
+    const loadCheckpoint = () => {
+      if (!fs5.existsSync(sessionPath))
+        return {};
+      try {
+        return JSON.parse(fs5.readFileSync(sessionPath, "utf8"));
+      } catch {
+        return {};
+      }
+    };
+    const saveCheckpoint = (extra) => {
+      const existing = loadCheckpoint();
+      const merged = {
+        ...existing,
+        ...extra,
+        session_id: sid,
+        workflow: "form_workflow",
+        last_saved: (/* @__PURE__ */ new Date()).toISOString()
+      };
+      fs5.writeFileSync(sessionPath, JSON.stringify(merged, null, 2), "utf8");
+      return merged;
+    };
+    try {
+      await bridge2.ensureRunning();
+      const cp = loadCheckpoint();
+      const formFile = args.form_file ?? cp.form_file;
+      const outputPath = args.output_path ?? cp.output_path ?? (formFile ? formFile.replace(/(\.hwpx?)$/i, "_filled$1") : void 0);
+      const runLearn = async () => {
+        if (!formFile)
+          throw new Error("form_file required for learn phase");
+        try {
+          await bridge2.send("close_document", {}, 5e3);
+        } catch {
+        }
+        const openR = await bridge2.send("open_document", { file_path: formFile }, ANALYSIS_TIMEOUT2);
+        if (!openR.success)
+          throw new Error(`open_document failed: ${openR.error}`);
+        let formDetect = null;
+        try {
+          const r = await bridge2.send("form_detect", {}, ANALYSIS_TIMEOUT2);
+          if (r.success)
+            formDetect = r.data;
+        } catch {
+        }
+        let structure = null;
+        try {
+          const r = await bridge2.send("extract_template_structure", { file_path: formFile }, ANALYSIS_TIMEOUT2);
+          if (r.success)
+            structure = r.data;
+        } catch {
+        }
+        let patterns = null;
+        try {
+          const r = await bridge2.send("analyze_writing_patterns", { file_path: formFile }, ANALYSIS_TIMEOUT2);
+          if (r.success)
+            patterns = r.data;
+        } catch {
+        }
+        let tablesInfo = [];
+        let fieldsInfo = [];
+        try {
+          const r = await bridge2.send("analyze_document", { file_path: formFile }, ANALYSIS_TIMEOUT2);
+          if (r.success && r.data) {
+            const d = r.data;
+            tablesInfo = Array.isArray(d.tables) ? d.tables : [];
+            fieldsInfo = Array.isArray(d.fields) ? d.fields : [];
+          }
+        } catch {
+        }
+        const tableMaps = [];
+        for (let i = 0; i < tablesInfo.length; i++) {
+          try {
+            const m = await bridge2.send("map_table_cells", { table_index: i }, ANALYSIS_TIMEOUT2);
+            if (m.success && m.data) {
+              tableMaps.push({ table_index: i, ...m.data });
+            }
+          } catch {
+          }
+        }
+        return saveCheckpoint({
+          phase: "learn",
+          form_file: formFile,
+          output_path: outputPath,
+          form_detect: formDetect,
+          template_structure: structure,
+          writing_patterns: patterns,
+          tables_info: tablesInfo,
+          fields_info: fieldsInfo,
+          table_maps: tableMaps
+        });
+      };
+      const runPlan = async () => {
+        const learned = cp.phase === "learn" || cp.table_maps ? cp : await runLearn();
+        let estimate = {};
+        try {
+          const estParams = {
+            user_request: args.user_request || "\uC591\uC2DD \uCC44\uC6B0\uAE30"
+          };
+          if (formFile)
+            estParams.file_path = formFile;
+          if (args.reference_file)
+            estParams.reference_files = [args.reference_file];
+          const r = await bridge2.send("estimate_workload", estParams, ANALYSIS_TIMEOUT2);
+          if (r.success)
+            estimate = r.data;
+        } catch {
+        }
+        const suggestedFills = [];
+        const tableMaps = learned.table_maps || [];
+        for (const tm of tableMaps) {
+          const cells = tm.cell_map || tm.cells || [];
+          for (const c of cells) {
+            const txt = String(c.text || "").trim();
+            if (txt && txt.length <= 20 && /[:：]$|^[가-힣]{2,8}$/.test(txt)) {
+              suggestedFills.push({
+                table_index: tm.table_index,
+                label: txt,
+                tab: c.tab,
+                suggested_value: ""
+              });
+            }
+          }
+        }
+        return saveCheckpoint({
+          phase: "plan",
+          estimate,
+          suggested_fills: suggestedFills,
+          status: "awaiting_preview"
+        });
+      };
+      const runPreview = () => {
+        return saveCheckpoint({
+          phase: "preview",
+          status: "awaiting_confirm",
+          preview: {
+            form_file: cp.form_file,
+            output_path: cp.output_path,
+            form_detect: cp.form_detect,
+            suggested_fills: cp.suggested_fills,
+            estimate: cp.estimate,
+            instructions: "Claude host: \uC0AC\uC6A9\uC790 \uD655\uC778 \uD6C4 phase=fill, confirm_fill=true, field_overrides/table_cell_overrides \uB97C \uD3EC\uD568\uD574 \uC7AC\uD638\uCD9C"
+          }
+        });
+      };
+      const runFill = async () => {
+        if (!args.confirm_fill) {
+          return saveCheckpoint({ phase: "fill", status: "denied", reason: "confirm_fill=false" });
+        }
+        if (!formFile)
+          throw new Error("form_file missing in checkpoint");
+        if (!outputPath)
+          throw new Error("output_path missing");
+        if (fs5.existsSync(formFile)) {
+          try {
+            fs5.copyFileSync(formFile, snapshotPath);
+          } catch {
+          }
+        }
+        const openR = await bridge2.send("open_document", { file_path: formFile }, ANALYSIS_TIMEOUT2);
+        if (!openR.success)
+          throw new Error(`open_document failed: ${openR.error}`);
+        const fillResults = [];
+        let refMappings = null;
+        if (args.reference_file) {
+          try {
+            const refR = await bridge2.send("read_reference", { file_path: args.reference_file }, ANALYSIS_TIMEOUT2);
+            if (refR.success && refR.data) {
+              const refData = refR.data;
+              let headers = [];
+              let row = [];
+              if (refData.format === "hwp_structured" && Array.isArray(refData.tables)) {
+                const tables = refData.tables;
+                if (tables.length > 0) {
+                  const firstTable = tables[0];
+                  headers = firstTable.headers || [];
+                  const dataRows = firstTable.data;
+                  if (Array.isArray(dataRows) && dataRows.length > 0) {
+                    row = dataRows[0].map(String);
+                  }
+                }
+              }
+              if (headers.length === 0 && Array.isArray(refData.headers)) {
+                headers = refData.headers;
+                const dataRows = refData.data;
+                if (Array.isArray(dataRows) && dataRows.length > 0) {
+                  const first = dataRows[0];
+                  row = Array.isArray(first) ? first.map(String) : Object.values(first).map(String);
+                }
+              } else if (headers.length === 0 && Array.isArray(refData.sheets) && refData.sheets.length > 0) {
+                const sheet0 = refData.sheets[0];
+                headers = sheet0.headers || [];
+                const dataRows = sheet0.data;
+                if (Array.isArray(dataRows) && dataRows.length > 0) {
+                  row = dataRows[0].map(String);
+                }
+              }
+              const tableMaps = cp.table_maps || [];
+              if (headers.length > 0 && tableMaps.length > 0) {
+                const allMappings = [];
+                const perTableResults = [];
+                for (const tm of tableMaps) {
+                  const tblIdx = tm.table_index ?? 0;
+                  try {
+                    const m = await bridge2.send("auto_map_reference", { table_index: tblIdx, ref_headers: headers, ref_row: row }, ANALYSIS_TIMEOUT2);
+                    if (m.success && m.data) {
+                      const mData = m.data;
+                      const tblMappings = mData.mappings || [];
+                      for (const mp of tblMappings) {
+                        allMappings.push({ ...mp, table_index: tblIdx });
+                      }
+                      perTableResults.push({
+                        table_index: tblIdx,
+                        total_matched: mData.total_matched || 0,
+                        unmapped: mData.unmapped || []
+                      });
+                    }
+                  } catch (e) {
+                    perTableResults.push({
+                      table_index: tblIdx,
+                      error: e.message
+                    });
+                  }
+                }
+                if (allMappings.length > 0) {
+                  refMappings = {
+                    mappings: allMappings,
+                    per_table: perTableResults,
+                    total_matched: allMappings.length
+                  };
+                }
+              }
+            }
+          } catch {
+          }
+        }
+        if (args.table_cell_overrides) {
+          for (const t of args.table_cell_overrides) {
+            try {
+              const r = await bridge2.send("smart_fill", {
+                table_index: t.table_index,
+                cells: t.cells.map((c) => ({ tab: c.tab, label: c.label, text: c.text }))
+              }, ANALYSIS_TIMEOUT2);
+              fillResults.push({ type: "table_cell_overrides", table_index: t.table_index, ok: r.success, data: r.data, error: r.error });
+            } catch (e) {
+              fillResults.push({ type: "table_cell_overrides", table_index: t.table_index, ok: false, error: e.message });
+            }
+          }
+        }
+        if (refMappings && Array.isArray(refMappings.mappings)) {
+          const overrideTabs = new Set((args.table_cell_overrides ?? []).flatMap((t) => t.cells.filter((c) => c.tab !== void 0).map((c) => `${t.table_index}:${c.tab}`)));
+          const byTable = /* @__PURE__ */ new Map();
+          for (const mp of refMappings.mappings) {
+            const tIdx = mp.table_index ?? 0;
+            const key = `${tIdx}:${mp.tab}`;
+            if (overrideTabs.has(key))
+              continue;
+            if (!byTable.has(tIdx))
+              byTable.set(tIdx, []);
+            byTable.get(tIdx).push({ tab: mp.tab, text: mp.text });
+          }
+          for (const [tIdx, cells] of byTable) {
+            if (cells.length === 0)
+              continue;
+            try {
+              const r = await bridge2.send("smart_fill", { table_index: tIdx, cells }, ANALYSIS_TIMEOUT2);
+              fillResults.push({ type: "ref_auto_map", table_index: tIdx, ok: r.success, cells: cells.length, data: r.data, error: r.error });
+            } catch (e) {
+              fillResults.push({ type: "ref_auto_map", table_index: tIdx, ok: false, error: e.message });
+            }
+          }
+        }
+        if (args.field_overrides && Object.keys(args.field_overrides).length > 0) {
+          try {
+            const r = await bridge2.send("fill_fields", { fields: args.field_overrides }, ANALYSIS_TIMEOUT2);
+            fillResults.push({ type: "field_overrides", ok: r.success, count: Object.keys(args.field_overrides).length, data: r.data, error: r.error });
+          } catch (e) {
+            fillResults.push({ type: "field_overrides", ok: false, error: e.message });
+          }
+        }
+        const saveFmt = outputPath.toLowerCase().endsWith(".hwpx") ? "HWPX" : "HWP";
+        const saveR = await bridge2.send("save_as", { path: outputPath, format: saveFmt }, ANALYSIS_TIMEOUT2);
+        let autoVerify = null;
+        if (saveR.success) {
+          try {
+            const verifyResult = await runVerify();
+            autoVerify = verifyResult.verify || null;
+          } catch (e) {
+            autoVerify = { error: e.message };
+          }
+        }
+        return saveCheckpoint({
+          phase: "fill",
+          status: saveR.success ? "filled" : "fill_failed",
+          fill_results: fillResults,
+          ref_mappings: refMappings,
+          save_result: saveR.data,
+          save_error: saveR.error,
+          output_path: outputPath,
+          rollback_snapshot: snapshotPath,
+          // v0.7.4.8: auto-verify 결과
+          auto_verify: autoVerify
+        });
+      };
+      const runVerify = async () => {
+        if (!outputPath || !fs5.existsSync(outputPath)) {
+          throw new Error("output file not saved yet \u2014 run phase=fill first");
+        }
+        const stat = fs5.statSync(outputPath);
+        const minBytes = outputPath.toLowerCase().endsWith(".hwpx") ? 19e3 : 24e3;
+        const sizeOk = stat.size >= minBytes;
+        let wcData = null;
+        try {
+          const r = await bridge2.send("word_count", {}, ANALYSIS_TIMEOUT2);
+          if (r.success && r.data)
+            wcData = r.data;
+        } catch {
+        }
+        let textOk = false;
+        let textPreview = "";
+        try {
+          const r = await bridge2.send("get_document_text", { file_path: outputPath, max_chars: 5e3 }, ANALYSIS_TIMEOUT2);
+          if (r.success && r.data) {
+            const d = r.data;
+            const txt = d.text || d.full_text || "";
+            textOk = txt.length > 100;
+            textPreview = txt.slice(0, 300);
+          }
+        } catch {
+        }
+        let consistencyScore = null;
+        try {
+          const params = { file_path: outputPath };
+          if (cp.writing_patterns)
+            params.expected_profile = cp.writing_patterns;
+          const r = await bridge2.send("validate_consistency", params, ANALYSIS_TIMEOUT2);
+          if (r.success && r.data) {
+            const d = r.data;
+            if (typeof d.consistency_score === "number")
+              consistencyScore = d.consistency_score;
+          }
+        } catch {
+        }
+        let privacy = null;
+        try {
+          const r = await bridge2.send("privacy_scan", { file_path: outputPath }, ANALYSIS_TIMEOUT2);
+          if (r.success && r.data)
+            privacy = r.data;
+        } catch {
+        }
+        const crossCheckPassed = sizeOk && textOk && consistencyScore !== null && consistencyScore >= 50;
+        let verify5Stage = null;
+        try {
+          const r = await bridge2.send("verify_5stage", {
+            file_path: outputPath,
+            expected_text_snippet: textPreview.slice(0, 100),
+            run_layout: false
+          }, ANALYSIS_TIMEOUT2);
+          if (r.success && r.data)
+            verify5Stage = r.data;
+        } catch {
+        }
+        return saveCheckpoint({
+          phase: "verify",
+          verify: {
+            file_size: stat.size,
+            min_required: minBytes,
+            file_size_ok: sizeOk,
+            word_count: wcData,
+            text_ok: textOk,
+            text_preview: textPreview,
+            consistency_score: consistencyScore,
+            privacy,
+            cross_check_passed: crossCheckPassed,
+            // v0.7.5.4 P4-2: 5단계 검증 결과 병합
+            verify_5stage: verify5Stage,
+            overall_pass: verify5Stage?.overall_pass ?? crossCheckPassed
+          }
+        });
+      };
+      const runAutoFixPhase = async () => {
+        if (!outputPath)
+          throw new Error("output_path missing");
+        const saveFmt = outputPath.toLowerCase().endsWith(".hwpx") ? "HWPX" : "HWP";
+        const loopResult = await runAutoFixLoop({
+          outputPath,
+          styleProfile: cp.writing_patterns,
+          threshold: args.auto_fix_threshold ?? 85,
+          maxIter: Math.min(args.auto_fix_max_iterations ?? 2, 5),
+          saveFmt
+        });
+        return saveCheckpoint({
+          phase: "auto_fix",
+          auto_fix: loopResult
+        });
+      };
+      const runRollback = () => {
+        if (!formFile)
+          throw new Error("form_file missing");
+        if (!fs5.existsSync(snapshotPath))
+          throw new Error("no rollback snapshot \u2014 fill phase \uB97C \uBA3C\uC800 \uC2E4\uD589\uD574\uC57C \uD569\uB2C8\uB2E4");
+        fs5.copyFileSync(snapshotPath, formFile);
+        return saveCheckpoint({
+          phase: "rollback",
+          status: "restored",
+          restored_from: snapshotPath,
+          restored_to: formFile
+        });
+      };
+      let result;
+      if (args.phase === "learn")
+        result = await runLearn();
+      else if (args.phase === "plan")
+        result = await runPlan();
+      else if (args.phase === "preview")
+        result = runPreview();
+      else if (args.phase === "fill")
+        result = await runFill();
+      else if (args.phase === "verify")
+        result = await runVerify();
+      else if (args.phase === "auto_fix")
+        result = await runAutoFixPhase();
+      else if (args.phase === "rollback")
+        result = runRollback();
+      else if (args.phase === "all") {
+        await runLearn();
+        await runPlan();
+        result = runPreview();
+      } else {
+        throw new Error(`unknown phase: ${args.phase}`);
+      }
+      return { content: [{ type: "text", text: JSON.stringify({ ok: true, session_id: sid, ...result }) }] };
+    } catch (err) {
+      saveCheckpoint({ phase: args.phase, status: "failed", error: err.message });
+      return { content: [{ type: "text", text: JSON.stringify({ error: err.message, session_id: sid }) }], isError: true };
+    }
+  });
+  server2.tool("hwp_korean_business_fill", "\uACF5\uBB34\uC6D0 \uC591\uC2DD \uC6D0\uC2A4\uD1B1 \uC790\uB3D9 \uC791\uC131. (v0.7.5.4 \uC2E0\uADDC) \uC591\uC2DD \uD30C\uC77C + \uBCF8\uBB38 \uCC44\uC6B0\uAE30 \uB9F5\uB9CC \uC8FC\uBA74 \uC790\uB3D9\uC73C\uB85C: (1) \uBB38\uC11C \uD0C0\uC785 \uAC10\uC9C0 + \uACF5\uBB34\uC6D0 \uD45C\uC900 \uD504\uB9AC\uC14B \uC120\uD0DD, (2) \uC6D0\uBCF8 \uC11C\uC2DD \uC2A4\uB0C5\uC0F7 \uCE90\uC2DC, (3) \uC791\uC131\uC694\uB839 \uBC15\uC2A4 \uC815\uB9AC (scope=both), (4) \uD45C \uC140 + \uBCF8\uBB38 \uC77C\uAD04 \uC0BD\uC785, (5) \uC0C8 \uACBD\uB85C \uC800\uC7A5 (\uC6D0\uBCF8 \uC808\uB300 \uBCF4\uC874), (6) 5\uB2E8\uACC4 \uAC80\uC99D. \uC0AC\uC5C5\uACC4\uD68D\uC11C/\uACF5\uBB38/\uBCF4\uACE0\uC11C \uC790\uB3D9\uD654\uC758 \uAD8C\uC7A5 \uC9C4\uC785\uC810.", {
+    form_file: external_exports.string().describe("\uC591\uC2DD HWP/HWPX \uD30C\uC77C \uC808\uB300 \uACBD\uB85C"),
+    output_path: external_exports.string().describe("\uC800\uC7A5\uD560 \uC0C8 \uD30C\uC77C \uACBD\uB85C (\uC6D0\uBCF8\uACFC \uB2EC\uB77C\uC57C \uD568)"),
+    body_fills: external_exports.array(external_exports.object({
+      heading: external_exports.string().describe('\uC18C\uC81C\uBAA9 \uD14D\uC2A4\uD2B8 (\uC608: "(1) \uC0B0\uC5C5\uC758 \uD2B9\uC131")'),
+      body_text: external_exports.string().describe("\uC0BD\uC785\uD560 \uBCF8\uBB38")
+    })).optional().describe("\uBCF8\uBB38 \uC0BD\uC785 \uB9F5 (heading \u2192 body_text)"),
+    table_cell_overrides: external_exports.array(external_exports.object({
+      table_index: external_exports.number().int().min(0),
+      cells: external_exports.array(external_exports.object({
+        tab: external_exports.number().int().min(0),
+        text: external_exports.string()
+      }))
+    })).optional().describe("\uD45C \uC140 \uC9C1\uC811 \uC9C0\uC815"),
+    doc_type_hint: external_exports.enum(["business_plan", "official_document", "report", "form", "general"]).optional().describe("\uBB38\uC11C \uD0C0\uC785 \uD78C\uD2B8 (\uC0DD\uB7B5 \uC2DC \uC790\uB3D9 \uAC10\uC9C0)"),
+    delete_guides: external_exports.boolean().optional().describe("\uC791\uC131\uC694\uB839 \uC790\uB3D9 \uC0AD\uC81C (\uAE30\uBCF8 true)"),
+    run_verify: external_exports.boolean().optional().describe("5\uB2E8\uACC4 \uAC80\uC99D \uC2E4\uD589 (\uAE30\uBCF8 true)")
+  }, async (args) => {
+    const startTime = Date.now();
+    const log = [];
+    const pushLog = (step, data) => log.push({ step, elapsed_ms: Date.now() - startTime, ...data });
+    try {
+      const formPath = path6.resolve(args.form_file);
+      const outPath = path6.resolve(args.output_path);
+      if (formPath === outPath) {
+        return { content: [{ type: "text", text: JSON.stringify({ error: "output_path \uB294 form_file \uACFC \uB2EC\uB77C\uC57C \uD569\uB2C8\uB2E4 (\uC6D0\uBCF8 \uBCF4\uD638)." }) }], isError: true };
+      }
+      if (!fs5.existsSync(formPath)) {
+        return { content: [{ type: "text", text: JSON.stringify({ error: `\uC591\uC2DD \uD30C\uC77C\uC774 \uC5C6\uC2B5\uB2C8\uB2E4: ${formPath}` }) }], isError: true };
+      }
+      const originalMtime = fs5.statSync(formPath).mtime.getTime();
+      const originalSize = fs5.statSync(formPath).size;
+      await bridge2.ensureRunning();
+      const openR = await bridge2.send("open_document", { file_path: formPath }, ANALYSIS_TIMEOUT2);
+      pushLog("open_document", { ok: openR.success, pages: openR.data?.pages });
+      if (!openR.success)
+        throw new Error(`open failed: ${openR.error}`);
+      let docType = args.doc_type_hint || "general";
+      let preset = null;
+      try {
+        const detectParams = {};
+        if (args.doc_type_hint)
+          detectParams.type_override = args.doc_type_hint;
+        const r = await bridge2.send("detect_document_type", detectParams, ANALYSIS_TIMEOUT2);
+        if (r.success && r.data) {
+          const d = r.data;
+          if (!args.doc_type_hint)
+            docType = d.type || "general";
+          preset = d.recommended_preset || null;
+          pushLog("detect_document_type", { type: docType, confidence: d.confidence });
+        }
+      } catch (e) {
+        pushLog("detect_document_type", { error: e.message });
+      }
+      try {
+        const r = await bridge2.send("snapshot_template_style", {}, ANALYSIS_TIMEOUT2);
+        if (r.success && r.data) {
+          pushLog("snapshot_template_style", { snapshot_id: r.data.snapshot_id });
+        }
+      } catch (e) {
+        pushLog("snapshot_template_style", { error: e.message });
+      }
+      const deleteGuides = args.delete_guides ?? true;
+      let extractedGuides = [];
+      if (deleteGuides) {
+        try {
+          const r = await bridge2.send("delete_guide_text", { scope: "both", extract_first: true }, ANALYSIS_TIMEOUT2);
+          if (r.success && r.data) {
+            const d = r.data;
+            extractedGuides = d.extracted_guides || [];
+            pushLog("delete_guide_text", { ...d, extracted_guide_count: extractedGuides.length });
+          }
+        } catch (e) {
+          pushLog("delete_guide_text", { error: e.message });
+        }
+      }
+      const tableFillResults = [];
+      if (args.table_cell_overrides && args.table_cell_overrides.length > 0) {
+        for (const tbl of args.table_cell_overrides) {
+          try {
+            const r = await bridge2.send("fill_by_tab", {
+              table_index: tbl.table_index,
+              cells: tbl.cells
+            }, 12e4);
+            if (r.success && r.data) {
+              tableFillResults.push({ table_index: tbl.table_index, ...r.data });
+            } else {
+              tableFillResults.push({ table_index: tbl.table_index, error: r.error });
+            }
+          } catch (e) {
+            tableFillResults.push({ table_index: tbl.table_index, error: e.message });
+          }
+        }
+        pushLog("fill_by_tab_batch", { tables_processed: tableFillResults.length });
+      }
+      const tableFillResult = tableFillResults.length > 0 ? { tables: tableFillResults } : null;
+      const bodyResults = [];
+      if (args.body_fills && args.body_fills.length > 0) {
+        for (const fill of args.body_fills) {
+          try {
+            const params = {
+              heading: fill.heading,
+              body_text: fill.body_text
+            };
+            const r = await bridge2.send("insert_body_after_heading", params, ANALYSIS_TIMEOUT2);
+            if (r.success && r.data) {
+              const d = r.data;
+              bodyResults.push({ heading: fill.heading, status: d.status, total_matches: d.total_matches });
+            } else {
+              bodyResults.push({ heading: fill.heading, status: "error", error: r.error });
+            }
+          } catch (e) {
+            bodyResults.push({ heading: fill.heading, status: "error", error: e.message });
+          }
+        }
+        pushLog("insert_body_after_heading_batch", { count: bodyResults.length, success: bodyResults.filter((r) => r.status === "ok").length });
+      }
+      const saveFmt = outPath.toLowerCase().endsWith(".hwpx") ? "HWPX" : "HWP";
+      const saveR = await bridge2.send("save_as", { path: outPath, format: saveFmt }, ANALYSIS_TIMEOUT2);
+      pushLog("save_as", { ok: saveR.success, path: outPath });
+      if (!saveR.success)
+        throw new Error(`save failed: ${saveR.error}`);
+      const postMtime = fs5.statSync(formPath).mtime.getTime();
+      const postSize = fs5.statSync(formPath).size;
+      const originalPreserved = originalMtime === postMtime && originalSize === postSize;
+      pushLog("original_preservation_check", {
+        preserved: originalPreserved,
+        original_mtime: originalMtime,
+        post_mtime: postMtime,
+        original_size: originalSize,
+        post_size: postSize
+      });
+      let verify5Stage = null;
+      if (args.run_verify !== false) {
+        try {
+          const snippet = args.body_fills?.[0]?.body_text?.slice(0, 50) || "";
+          const r = await bridge2.send("verify_5stage", {
+            file_path: outPath,
+            expected_text_snippet: snippet,
+            run_layout: false
+          }, ANALYSIS_TIMEOUT2);
+          if (r.success && r.data)
+            verify5Stage = r.data;
+          pushLog("verify_5stage", { overall_pass: verify5Stage?.overall_pass, passed_stages: verify5Stage?.passed_stages });
+        } catch (e) {
+          pushLog("verify_5stage", { error: e.message });
+        }
+      }
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            status: "ok",
+            form_file: formPath,
+            output_path: outPath,
+            doc_type: docType,
+            preset_used: preset ? preset.description || docType : "none",
+            original_preserved: originalPreserved,
+            extracted_guides: extractedGuides.length > 0 ? extractedGuides : void 0,
+            table_fill: tableFillResult,
+            body_fills: bodyResults,
+            verify_5stage: verify5Stage,
+            overall_pass: verify5Stage?.overall_pass ?? null,
+            total_duration_ms: Date.now() - startTime,
+            log
+          })
+        }]
+      };
+    } catch (err) {
+      return {
+        content: [{ type: "text", text: JSON.stringify({
+          error: err.message,
+          log
+        }) }],
+        isError: true
+      };
+    }
+  });
+  server2.tool("hwp_business_plan_prepare", "\u2605 \uC0AC\uC5C5\uACC4\uD68D\uC11C \uC591\uC2DD\uC744 \uBD84\uC11D\uD558\uC5EC AI \uC790\uB3D9 \uC791\uC131 \uCEE8\uD14D\uC2A4\uD2B8\uB97C \uC0DD\uC131\uD569\uB2C8\uB2E4 (v0.7.9). \uC591\uC2DD \uD30C\uC77C(+\uC120\uD0DD\uC801 \uCC38\uACE0\uC790\uB8CC)\uC744 \uC785\uB825\uD558\uBA74: (1) \uBB38\uC11C \uD0C0\uC785 \uAC10\uC9C0, (2) \uC591\uC2DD \uAD6C\uC870 \uCD94\uCD9C, (3) \uC791\uC131\uC694\uB839 \uD30C\uC2F1, (4) \uCC38\uACE0\uC790\uB8CC \uC77D\uAE30+\uC139\uC158 \uB9E4\uD551, (5) \uC139\uC158\uBCC4 AI \uCEE8\uD14D\uC2A4\uD2B8 \uBC18\uD658. \uC774 \uACB0\uACFC\uB85C AI\uAC00 body_fills \uB97C \uC0DD\uC131\uD55C \uD6C4 hwp_korean_business_fill \uB85C \uC2E4\uC81C \uC0BD\uC785\uD569\uB2C8\uB2E4.", {
+    form_file: external_exports.string().describe("\uC591\uC2DD HWP/HWPX \uD30C\uC77C \uC808\uB300 \uACBD\uB85C"),
+    reference_files: external_exports.array(external_exports.string()).optional().describe("\uCC38\uACE0\uC790\uB8CC \uD30C\uC77C \uACBD\uB85C \uBAA9\uB85D (PDF/HWP/Excel/DOCX)")
+  }, async (args) => {
+    const startTime = Date.now();
+    const log = [];
+    const pushLog = (step, data) => log.push({ step, elapsed_ms: Date.now() - startTime, ...data });
+    try {
+      const formPath = path6.resolve(args.form_file);
+      if (!fs5.existsSync(formPath)) {
+        return { content: [{ type: "text", text: JSON.stringify({ error: `\uC591\uC2DD \uD30C\uC77C \uC5C6\uC74C: ${formPath}` }) }], isError: true };
+      }
+      await bridge2.ensureRunning();
+      const openR = await bridge2.send("open_document", { file_path: formPath }, ANALYSIS_TIMEOUT2);
+      pushLog("open_document", { ok: openR.success, pages: openR.data?.pages });
+      if (!openR.success)
+        throw new Error(`open failed: ${openR.error}`);
+      let docType = "general";
+      let preset = null;
+      try {
+        const r = await bridge2.send("detect_document_type", {}, ANALYSIS_TIMEOUT2);
+        if (r.success && r.data) {
+          const d = r.data;
+          docType = d.type || "general";
+          preset = d.recommended_preset || null;
+          pushLog("detect_document_type", { type: docType, confidence: d.confidence });
+        }
+      } catch (e) {
+        pushLog("detect_document_type", { error: e.message });
+      }
+      let templateSections = [];
+      try {
+        const r = await bridge2.send("extract_template_structure", { file_path: formPath }, ANALYSIS_TIMEOUT2);
+        if (r.success && r.data) {
+          const d = r.data;
+          templateSections = d.sections || [];
+          pushLog("extract_template_structure", { sections: templateSections.length });
+        }
+      } catch (e) {
+        pushLog("extract_template_structure", { error: e.message });
+      }
+      let snapshotId = "";
+      try {
+        const r = await bridge2.send("snapshot_template_style", {}, ANALYSIS_TIMEOUT2);
+        if (r.success && r.data)
+          snapshotId = String(r.data.snapshot_id || "");
+        pushLog("snapshot_template_style", { snapshot_id: snapshotId });
+      } catch (e) {
+        pushLog("snapshot_template_style", { error: e.message });
+      }
+      let guideConstraints = [];
+      try {
+        const r = await bridge2.send("extract_guide_text", {}, ANALYSIS_TIMEOUT2);
+        if (r.success && r.data) {
+          guideConstraints = r.data.guides || [];
+          pushLog("extract_guide_text", { count: guideConstraints.length });
+        }
+      } catch (e) {
+        pushLog("extract_guide_text", { error: e.message });
+      }
+      let refData = {};
+      if (args.reference_files && args.reference_files.length > 0) {
+        const allTexts = [];
+        const allTables = [];
+        for (const refFile of args.reference_files) {
+          try {
+            const r = await bridge2.send("read_reference", { file_path: path6.resolve(refFile) }, ANALYSIS_TIMEOUT2);
+            if (r.success && r.data) {
+              const d = r.data;
+              if (d.full_text)
+                allTexts.push(String(d.full_text));
+              else if (d.text)
+                allTexts.push(String(d.text));
+              if (d.tables)
+                allTables.push(...d.tables);
+            }
+          } catch (e) {
+            pushLog("read_reference", { file: refFile, error: e.message });
+          }
+        }
+        refData = { full_text: allTexts.join("\n\n---\n\n"), tables: allTables };
+        pushLog("read_references", { files: args.reference_files.length, total_chars: allTexts.join("").length, tables: allTables.length });
+      }
+      let sectionMappings = [];
+      try {
+        const r = await bridge2.send("map_reference_to_sections", {
+          reference_data: refData,
+          template_sections: templateSections,
+          guide_constraints: guideConstraints
+        }, ANALYSIS_TIMEOUT2);
+        if (r.success && r.data) {
+          const d = r.data;
+          sectionMappings = d.section_mappings || [];
+          pushLog("map_reference_to_sections", { total: d.total_sections, with_data: d.sections_with_data });
+        }
+      } catch (e) {
+        pushLog("map_reference_to_sections", { error: e.message });
+      }
+      let contexts = [];
+      try {
+        const r = await bridge2.send("build_section_context", {
+          section_mappings: sectionMappings,
+          template_style: snapshotId ? { snapshot_id: snapshotId } : {}
+        }, ANALYSIS_TIMEOUT2);
+        if (r.success && r.data) {
+          const d = r.data;
+          contexts = d.contexts || [];
+          pushLog("build_section_context", { total: d.total, with_ref: d.sections_with_reference, total_chars: d.total_suggested_chars });
+        }
+      } catch (e) {
+        pushLog("build_section_context", { error: e.message });
+      }
+      try {
+        await bridge2.send("close_document", {}, 1e4);
+      } catch (_) {
+      }
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            status: "ok",
+            form_file: formPath,
+            doc_type: docType,
+            preset: preset ? { description: preset.description } : null,
+            template_sections: templateSections.length,
+            guide_constraints: guideConstraints,
+            section_contexts: contexts,
+            total_duration_ms: Date.now() - startTime,
+            log,
+            hint: "section_contexts \uC758 \uAC01 \uD56D\uBAA9\uC73C\uB85C body_fills \uB97C \uC0DD\uC131\uD55C \uD6C4 hwp_korean_business_fill \uC758 body_fills \uD30C\uB77C\uBBF8\uD130\uB85C \uC804\uB2EC\uD558\uC138\uC694. heading \uC740 fuzzy matching \uC9C0\uC6D0\uB429\uB2C8\uB2E4."
+          })
+        }]
+      };
+    } catch (err) {
+      return {
+        content: [{ type: "text", text: JSON.stringify({ error: err.message, log }) }],
+        isError: true
+      };
+    }
+  });
   server2.tool("hwp_xml_edit_nested_cell", 'HWPX \uC911\uCCA9 \uD45C(\uD45C \uC548\uC758 \uD45C)\uC758 \uD2B9\uC815 \uC140 \uD14D\uC2A4\uD2B8\uB97C \uC7AC\uADC0 \uACBD\uB85C\uB85C \uD3B8\uC9D1\uD569\uB2C8\uB2E4. (v0.7.2.1 \uC2E0\uADDC) path \uBC30\uC5F4\uB85C \uC911\uCCA9 \uAE4A\uC774 \uD45C\uD604 \u2014 \uC608: [{tableIndex:0,row:0,col:0},{tableIndex:0,row:1,col:1}]\uC740 "0\uBC88 \uD45C (0,0) \uC140 \uC548\uC758 0\uBC88 nested \uD45C (1,1) \uC140". v0.7.0 hwp_xml_edit_table_cell\uC758 \uB2E4\uB2E8\uACC4 \uD655\uC7A5. linesegarray \uC140 \uB0B4\uBD80\uB9CC \uC790\uB3D9 \uC0AD\uC81C, charPrIDRef \uBCF4\uC874.', {
     file_path: external_exports.string().describe("\uC218\uC815\uD560 HWPX \uD30C\uC77C \uACBD\uB85C"),
     path: external_exports.array(external_exports.object({
@@ -39212,16 +40405,25 @@ function registerCompositeTools(server2, bridge2) {
     }
     return id;
   };
-  const CONFIG_PATH = path6.join(os.homedir(), ".hwp_studio_config.json");
-  const STATE_DIR = path6.join(os.homedir(), ".hwp_studio_state");
-  const TEMPLATE_DIR = path6.join(os.homedir(), ".hwp_studio_templates");
+  const CONFIG_PATH = path6.join(os2.homedir(), ".hwp_studio_config.json");
+  const STATE_DIR = path6.join(os2.homedir(), ".hwp_studio_state");
+  const TEMPLATE_DIR = path6.join(os2.homedir(), ".hwp_studio_templates");
   const DEFAULT_POLICY = {
-    max_reference_files: 5,
-    max_total_size_mb: 10,
+    max_reference_files: 10,
+    // v0.7.4.8: 5 → 10 (기존 허용, 최대값)
+    max_total_size_mb: 5,
+    // v0.7.4.8: 10 → 5 (기본 엄격하게 — 권장 상한 150KB 기준 여유)
     max_tokens_input_percent: 80,
-    allowed_formats: ["xlsx", "csv", "json", "pdf", "docx", "txt", "html", "xml", "pptx"],
+    allowed_formats: ["xlsx", "csv", "json", "pdf", "docx", "txt", "html", "xml", "pptx", "hwp", "hwpx"],
     prefer_summary: true,
-    summary_threshold_mb: 3
+    summary_threshold_mb: 3,
+    // v0.7.4.8 신규: 권장 임계값 (경고 발생 기준)
+    recommend_threshold_kb: 150,
+    // 이 값 초과 시 warning 반환 (focus degradation 시작)
+    optimal_threshold_kb: 60,
+    // 이 값 이하면 최적 (LLM focus 최상)
+    optimal_file_count: 3
+    // 이 값 이하면 최적 파일 수
   };
   function readConfig() {
     try {
@@ -39244,7 +40446,11 @@ function registerCompositeTools(server2, bridge2) {
       max_tokens_input_percent: external_exports.number().min(1).max(100).optional(),
       allowed_formats: external_exports.array(external_exports.string()).optional(),
       prefer_summary: external_exports.boolean().optional(),
-      summary_threshold_mb: external_exports.number().positive().optional()
+      summary_threshold_mb: external_exports.number().positive().optional(),
+      // v0.7.4.8 신규 필드
+      recommend_threshold_kb: external_exports.number().positive().optional().describe("v0.7.4.8: \uC774 \uAC12 \uCD08\uACFC \uC2DC warning (\uAE30\uBCF8 150KB)"),
+      optimal_threshold_kb: external_exports.number().positive().optional().describe("v0.7.4.8: \uC774 \uAC12 \uC774\uD558\uBA74 \uCD5C\uC801 (\uAE30\uBCF8 60KB)"),
+      optimal_file_count: external_exports.number().int().positive().optional().describe("v0.7.4.8: \uC774 \uAC12 \uC774\uD558\uBA74 \uCD5C\uC801 \uD30C\uC77C \uC218 (\uAE30\uBCF8 3)")
     }).optional().describe("set \uBAA8\uB4DC \uC2DC \uBD80\uBD84 \uC5C5\uB370\uC774\uD2B8\uD560 \uC815\uCC45 \uD544\uB4DC")
   }, async ({ mode, policy }) => {
     try {
@@ -39331,6 +40537,13 @@ function registerCompositeTools(server2, bridge2) {
       if (mode === "delete") {
         if (fs5.existsSync(filePath))
           fs5.unlinkSync(filePath);
+        const snapshotPath = path6.join(STATE_DIR, `${safeId(session_id)}.snapshot.bin`);
+        if (fs5.existsSync(snapshotPath)) {
+          try {
+            fs5.unlinkSync(snapshotPath);
+          } catch {
+          }
+        }
         return { content: [{ type: "text", text: JSON.stringify({ ok: true, mode, session_id, deleted: true }) }] };
       }
       if (mode === "cancel") {
@@ -39663,13 +40876,129 @@ function registerCompositeTools(server2, bridge2) {
       return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }], isError: true };
     }
   });
-  server2.tool("hwp_autopilot_create", "\uBB38\uC11C \uC790\uB3D9 \uC0DD\uC131 12\uB2E8\uACC4 \uD30C\uC774\uD504\uB77C\uC778. (v0.7.2.4 \uC2E0\uADDC) sections[]/tables[]\uB97C \uBC1B\uC544 template \uAE30\uBC18\uC73C\uB85C \uC791\uC131\u2192\uC2A4\uD0C0\uC77C\u2192TOC\u2192\uAC80\uC99D\u2192\uC800\uC7A5\u2192PDF\u2192layout \uAC80\uC99D\uAE4C\uC9C0 \uC77C\uAD04 \uC2E4\uD589. mode=plan\uC740 estimate\uB9CC \uBC18\uD658, mode=execute\uB294 \uC2E4\uC81C \uD30C\uC774\uD504 \uC2E4\uD589. \uAC01 step\uB9C8\uB2E4 session_state \uC790\uB3D9 save + cancel \uCCB4\uD06C.", {
-    output_path: external_exports.string().describe("\uC0DD\uC131\uD560 .hwp/.hwpx \uC808\uB300 \uACBD\uB85C"),
+  server2.tool("hwp_autopilot_plan", "\uBB38\uC11C \uC790\uB3D9 \uC0DD\uC131\uC744 \uC704\uD55C \uAD6C\uC870\uD654\uB41C \uACC4\uD68D\uC744 \uBC18\uD658\uD569\uB2C8\uB2E4. (v0.7.4.0 \uC2E0\uADDC) estimate_workload + extract_template_structure + analyze_writing_patterns \uB97C \uC870\uD569\uD574 sections[]/tables[]/style_profile skeleton \uC744 \uB9CC\uB4E4\uACE0 ~/.hwp_studio_state/{session_id}.json \uC5D0 \uC800\uC7A5. \uC774 \uB3C4\uAD6C\uB294 LLM \uC744 \uD638\uCD9C\uD558\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4 \u2014 Claude host \uAC00 \uBC18\uD658\uB41C plan.sections[].content \uB97C \uCC44\uC6B4 \uB4A4 \uB3D9\uC77C session_id \uB85C hwp_autopilot_create(plan_session_id=...) \uB97C \uD638\uCD9C\uD574 \uC2E4\uD589\uD569\uB2C8\uB2E4.", {
+    user_request: external_exports.string().describe('\uC0AC\uC6A9\uC790 \uC694\uCCAD (\uC608: "AI \uC2A4\uD0C0\uD2B8\uC5C5 \uC0AC\uC5C5\uACC4\uD68D\uC11C 10\uC139\uC158, A4, \uACA9\uC2DD\uCCB4")'),
+    template_path: external_exports.string().optional().describe("\uC591\uC2DD \uD30C\uC77C .hwp/.hwpx (\uC788\uC73C\uBA74 sections/style_profile \uC790\uB3D9 \uCD94\uCD9C)"),
+    template_id: external_exports.string().optional().describe("hwp_template_library \uB4F1\uB85D ID (template_path \uB300\uC2E0)"),
+    target_pages: external_exports.number().int().min(1).max(200).optional().describe("\uBAA9\uD45C \uD398\uC774\uC9C0 \uC218 (\uC5C6\uC73C\uBA74 estimate \uC5D0\uC11C \uC720\uCD94)"),
+    target_sections: external_exports.number().int().min(1).max(50).optional().describe("\uBAA9\uD45C \uC139\uC158 \uC218 (\uC5C6\uC73C\uBA74 template/estimate \uC5D0\uC11C \uC720\uCD94)"),
+    target_tables: external_exports.number().int().min(0).max(30).optional().describe("\uBAA9\uD45C \uD45C \uAC1C\uC218 (\uAE30\uBCF8 0)"),
+    reference_files: external_exports.array(external_exports.string()).optional().describe("\uCC38\uACE0 \uC790\uB8CC \uACBD\uB85C (estimate_workload \uC785\uB825)"),
+    output_path: external_exports.string().optional().describe("\uCD5C\uC885 \uC800\uC7A5 \uACBD\uB85C \u2014 autopilot_create \uC5D0 \uADF8\uB300\uB85C \uC804\uB2EC\uB428"),
+    session_id: external_exports.string().optional().describe("\uC138\uC158 ID (\uC0DD\uB7B5 \uC2DC \uC790\uB3D9 \uC0DD\uC131)")
+  }, async (args) => {
+    const sid = safeId(args.session_id || `plan_${(/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-").slice(0, 19)}`);
+    const sessionPath = path6.join(STATE_DIR, `${sid}.json`);
+    if (!fs5.existsSync(STATE_DIR))
+      fs5.mkdirSync(STATE_DIR, { recursive: true });
+    try {
+      let resolvedTemplate = args.template_path;
+      if (!resolvedTemplate && args.template_id) {
+        const tid = safeId(args.template_id);
+        const tplFile = path6.join(TEMPLATE_DIR, "files", `${tid}.hwpx`);
+        if (fs5.existsSync(tplFile))
+          resolvedTemplate = tplFile;
+      }
+      await bridge2.ensureRunning();
+      let estimate = {};
+      try {
+        const estParams = { user_request: args.user_request };
+        if (resolvedTemplate)
+          estParams.file_path = resolvedTemplate;
+        if (args.reference_files)
+          estParams.reference_files = args.reference_files;
+        const r = await bridge2.send("estimate_workload", estParams, ANALYSIS_TIMEOUT2);
+        if (r.success && r.data)
+          estimate = r.data;
+      } catch {
+      }
+      let templateStructure = null;
+      let writingPatterns = null;
+      if (resolvedTemplate) {
+        try {
+          const r = await bridge2.send("extract_template_structure", { file_path: resolvedTemplate }, ANALYSIS_TIMEOUT2);
+          if (r.success && r.data)
+            templateStructure = r.data;
+        } catch {
+        }
+        try {
+          const r = await bridge2.send("analyze_writing_patterns", { file_path: resolvedTemplate }, ANALYSIS_TIMEOUT2);
+          if (r.success && r.data)
+            writingPatterns = r.data;
+        } catch {
+        }
+      }
+      const tplSections = templateStructure?.sections || [];
+      const targetSec = args.target_sections ?? (tplSections.length > 0 ? tplSections.length : typeof estimate.sections_estimate === "number" ? estimate.sections_estimate : 5);
+      const targetTbl = args.target_tables ?? (typeof estimate.tables_estimate === "number" ? estimate.tables_estimate : 0);
+      const targetPgs = args.target_pages ?? (typeof estimate.pages_estimate === "number" ? estimate.pages_estimate : 10);
+      const sectionsSkel = tplSections.length > 0 ? tplSections.slice(0, targetSec).map((s, i) => ({
+        id: `sec_${i + 1}`,
+        title: String(s.title || `\uC139\uC158 ${i + 1}`),
+        outline_level: typeof s.level === "number" ? s.level : 1,
+        content: "",
+        target_chars: Math.round(targetPgs * 1100 / Math.max(1, targetSec))
+      })) : Array.from({ length: targetSec }, (_unused, i) => ({
+        id: `sec_${i + 1}`,
+        title: `\uC139\uC158 ${i + 1}`,
+        outline_level: 1,
+        content: "",
+        target_chars: Math.round(targetPgs * 1100 / Math.max(1, targetSec))
+      }));
+      const tablesSkel = Array.from({ length: targetTbl }, (_unused, i) => ({
+        id: `tbl_${i + 1}`,
+        caption: "",
+        suggested_headers: [],
+        rows_hint: 5,
+        cols_hint: 3,
+        data: []
+      }));
+      const styleProfileOut = writingPatterns ? {
+        body_style: writingPatterns.body_style,
+        title_styles: writingPatterns.title_styles,
+        table_styles: writingPatterns.table_styles,
+        page_setup: writingPatterns.page_setup,
+        numbering_pattern: writingPatterns.numbering_pattern
+      } : null;
+      const planObject = {
+        plan_version: "0.7.4.0",
+        session_id: sid,
+        user_request: args.user_request,
+        template_path: resolvedTemplate || null,
+        output_path: args.output_path || null,
+        target_pages: targetPgs,
+        target_sections: targetSec,
+        target_tables: targetTbl,
+        sections: sectionsSkel,
+        tables: tablesSkel,
+        style_profile: styleProfileOut,
+        estimate,
+        template_structure: templateStructure,
+        next_action: {
+          tool: "hwp_autopilot_create",
+          required_fill: ["sections[].content", "tables[].data", "tables[].caption"],
+          guidance: "plan.sections \uC640 plan.tables \uC5D0 \uCF58\uD150\uCE20\uB97C \uCC44\uC6B4 \uD6C4 \uB3D9\uC77C session_id \uB610\uB294 plan_session_id \uB85C hwp_autopilot_create \uD638\uCD9C"
+        },
+        created_at: (/* @__PURE__ */ new Date()).toISOString(),
+        status: "awaiting_content"
+      };
+      fs5.writeFileSync(sessionPath, JSON.stringify(planObject, null, 2), "utf8");
+      return { content: [{ type: "text", text: JSON.stringify({
+        ok: true,
+        mode: "plan",
+        plan: planObject
+      }) }] };
+    } catch (err) {
+      return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }], isError: true };
+    }
+  });
+  server2.tool("hwp_autopilot_create", "\uBB38\uC11C \uC790\uB3D9 \uC0DD\uC131 12\uB2E8\uACC4 \uD30C\uC774\uD504\uB77C\uC778. (v0.7.2.4 / v0.7.4.0 / v0.7.5.4) sections[]/tables[]\uB97C \uBC1B\uC544 template \uAE30\uBC18\uC73C\uB85C \uC791\uC131\u2192\uC2A4\uD0C0\uC77C\u2192TOC\u2192\uAC80\uC99D\u2192\uC800\uC7A5\u2192PDF\u2192layout \uAC80\uC99D. v0.7.5.4: auto_fix \uAE30\uBCF8\uAC12 false + preserve_template_style \uAE30\uBCF8\uAC12 true (\uC6D0\uBCF8 \uD15C\uD50C\uB9BF \uC11C\uC2DD \uBCF4\uC874). mode=plan\uC740 estimate\uB9CC, mode=execute\uB294 \uC2E4\uC81C \uD30C\uC774\uD504. \uAC01 step \uB9C8\uB2E4 session_state \uC790\uB3D9 save + cancel \uCCB4\uD06C.", {
+    output_path: external_exports.string().optional().describe("\uC0DD\uC131\uD560 .hwp/.hwpx \uC808\uB300 \uACBD\uB85C (plan_session_id \uC0AC\uC6A9 \uC2DC \uC0DD\uB7B5 \uAC00\uB2A5)"),
     sections: external_exports.array(external_exports.object({
       title: external_exports.string(),
       content: external_exports.string(),
       outline_level: external_exports.number().int().min(1).max(7).optional()
-    })).describe("\uBBF8\uB9AC \uC0DD\uC131\uB41C \uC139\uC158 \uCF58\uD150\uCE20 (\uD638\uCD9C\uC790\uAC00 LLM\uC73C\uB85C \uC791\uC131)"),
+    })).optional().describe("\uBBF8\uB9AC \uC0DD\uC131\uB41C \uC139\uC158 \uCF58\uD150\uCE20 (\uD638\uCD9C\uC790\uAC00 LLM\uC73C\uB85C \uC791\uC131). plan_session_id \uC0AC\uC6A9 \uC2DC \uC0DD\uB7B5 \uAC00\uB2A5."),
     template_path: external_exports.string().optional().describe("\uD15C\uD50C\uB9BF .hwpx \uACBD\uB85C (\uC5C6\uC73C\uBA74 \uBE48 \uBB38\uC11C\uB85C \uC2DC\uC791)"),
     template_id: external_exports.string().optional().describe("hwp_template_library \uB4F1\uB85D ID (template_path \uB300\uC2E0)"),
     tables: external_exports.array(external_exports.object({
@@ -39681,7 +41010,14 @@ function registerCompositeTools(server2, bridge2) {
     export_pdf: external_exports.boolean().optional().describe("\uC644\uB8CC \uD6C4 PDF \uBCC0\uD658 (\uAE30\uBCF8 true)"),
     mode: external_exports.enum(["plan", "execute"]).optional().describe("plan=estimate\uB9CC, execute=\uC2E4\uC81C \uC2E4\uD589 (\uAE30\uBCF8 execute)"),
     session_id: external_exports.string().optional().describe("\uC7AC\uAC1C\uD560 \uC138\uC158 (\uC0DD\uB7B5 \uC2DC \uC790\uB3D9 \uC0DD\uC131)"),
-    prompt: external_exports.string().optional().describe("\uC6D0\uBCF8 \uC0AC\uC6A9\uC790 \uD504\uB86C\uD504\uD2B8 (\uBA54\uD0C0\uB370\uC774\uD130)")
+    prompt: external_exports.string().optional().describe("\uC6D0\uBCF8 \uC0AC\uC6A9\uC790 \uD504\uB86C\uD504\uD2B8 (\uBA54\uD0C0\uB370\uC774\uD130)"),
+    // v0.7.5.4 P2-2: auto_fix 기본값 false (원본 서식 override 방지)
+    auto_fix: external_exports.boolean().optional().describe("v0.7.5.4: \uAE30\uBCF8 false. validate_consistency \uC810\uC218 < threshold \uC5EC\uB3C4 \uC790\uB3D9 override \uC548 \uD568. true \uC5EC\uB3C4 runAutoFixLoop \uAC00 P0-2 \uC5D0\uC11C no-op \uC804\uD658\uB428 (validate \uB9CC \uC218\uD589)."),
+    auto_fix_threshold: external_exports.number().min(0).max(100).optional().describe("auto_fix \uD2B8\uB9AC\uAC70 \uC810\uC218 (\uAE30\uBCF8 85, auto_fix=true \uC77C \uB54C\uB9CC \uC758\uBBF8)"),
+    auto_fix_max_iterations: external_exports.number().int().min(1).max(5).optional().describe("auto_fix \uCD5C\uB300 \uBC18\uBCF5 \uD69F\uC218 (\uAE30\uBCF8 2, \uC548\uC804 \uD55C\uB3C4 5)"),
+    // v0.7.5.4 P2-2: 원본 템플릿 서식 보존 (기본 true)
+    preserve_template_style: external_exports.boolean().optional().describe("v0.7.5.4: \uC6D0\uBCF8 \uD15C\uD50C\uB9BF\uC758 \uC11C\uC2DD (heading/body/cell) \uC744 \uBCC0\uACBD\uD558\uC9C0 \uC54A\uC74C. true \uC2DC style_profile override \uBB34\uC2DC. \uACF5\uBB34\uC6D0 \uC591\uC2DD \uC791\uC5C5 \uC2DC \uAD8C\uC7A5 (\uAE30\uBCF8 true)."),
+    plan_session_id: external_exports.string().optional().describe("hwp_autopilot_plan \uC774 \uB9CC\uB4E0 plan session_id. \uC9C0\uC815 \uC2DC sections/tables/style_profile/output_path/template_path \uB97C \uD574\uB2F9 \uC138\uC158\uC5D0\uC11C \uC790\uB3D9 \uB85C\uB4DC (\uAC1C\uBCC4 \uC778\uC790 \uC6B0\uC120)")
   }, async (args) => {
     const startTime = Date.now();
     const mode = args.mode || "execute";
@@ -39691,8 +41027,59 @@ function registerCompositeTools(server2, bridge2) {
     const sessionPath = path6.join(STATE_DIR, `${sid}.json`);
     if (!fs5.existsSync(STATE_DIR))
       fs5.mkdirSync(STATE_DIR, { recursive: true });
-    const sectionTitles = args.sections.map((s) => s.title);
-    const totalSteps = 8 + args.sections.length + (args.tables?.length || 0);
+    const preserveTemplateStyle = args["preserve_template_style"] ?? true;
+    const autoFix = preserveTemplateStyle ? false : args.auto_fix ?? false;
+    const autoFixThreshold = args.auto_fix_threshold ?? 85;
+    const autoFixMaxIter = Math.min(args.auto_fix_max_iterations ?? 2, 5);
+    const rawArgs = args;
+    let hSections = rawArgs["sections"];
+    let hTables = rawArgs["tables"];
+    let hStyleProfile = rawArgs["style_profile"];
+    let hOutputPath = rawArgs["output_path"];
+    let hTemplatePath = rawArgs["template_path"];
+    const templateId = rawArgs["template_id"];
+    if (args.plan_session_id) {
+      try {
+        const planPath = path6.join(STATE_DIR, `${safeId(args.plan_session_id)}.json`);
+        if (fs5.existsSync(planPath)) {
+          const plan = JSON.parse(fs5.readFileSync(planPath, "utf8"));
+          if ((!hSections || hSections.length === 0) && Array.isArray(plan.sections)) {
+            hSections = plan.sections.filter((s) => typeof s.content === "string" && s.content.trim().length > 0).map((s) => ({
+              title: String(s.title || ""),
+              content: String(s.content || ""),
+              outline_level: typeof s.outline_level === "number" ? s.outline_level : void 0
+            }));
+          }
+          if ((!hTables || hTables.length === 0) && Array.isArray(plan.tables)) {
+            hTables = plan.tables.filter((t) => Array.isArray(t.data) && t.data.length > 0).map((t) => ({ caption: t.caption, data: t.data }));
+          }
+          if (!hStyleProfile && plan.style_profile)
+            hStyleProfile = plan.style_profile;
+          if (!hOutputPath && plan.output_path)
+            hOutputPath = String(plan.output_path);
+          if (!hTemplatePath && plan.template_path)
+            hTemplatePath = String(plan.template_path);
+        }
+      } catch {
+      }
+    }
+    if (!hSections || hSections.length === 0) {
+      return { content: [{ type: "text", text: JSON.stringify({
+        error: "sections \uAC00 \uBE44\uC5B4\uC788\uC2B5\uB2C8\uB2E4. sections[]\uB97C \uC9C1\uC811 \uC804\uB2EC\uD558\uAC70\uB098 plan_session_id \uB85C hwp_autopilot_plan \uACB0\uACFC\uB97C \uCC38\uC870\uD558\uC138\uC694."
+      }) }], isError: true };
+    }
+    if (!hOutputPath) {
+      return { content: [{ type: "text", text: JSON.stringify({
+        error: "output_path \uAC00 \uBE44\uC5B4\uC788\uC2B5\uB2C8\uB2E4. \uC9C1\uC811 \uC804\uB2EC\uD558\uAC70\uB098 plan_session_id \uC5D0 \uD3EC\uD568\uC2DC\uCF1C \uC8FC\uC138\uC694."
+      }) }], isError: true };
+    }
+    const sections = hSections;
+    const tables = hTables;
+    const styleProfile = hStyleProfile;
+    const outputPath = hOutputPath;
+    const templatePath = hTemplatePath;
+    const sectionTitles = sections.map((s) => s.title);
+    const totalSteps = 8 + sections.length + (tables?.length || 0);
     let stepsDone = 0;
     const stepLog = [];
     const saveSession = (extra = {}) => {
@@ -39706,7 +41093,7 @@ function registerCompositeTools(server2, bridge2) {
       const merged = {
         ...existing,
         session_id: sid,
-        current_doc: args.output_path,
+        current_doc: outputPath,
         sections_total: sectionTitles,
         progress_percent: Math.round(stepsDone / totalSteps * 100),
         last_saved: (/* @__PURE__ */ new Date()).toISOString(),
@@ -39733,10 +41120,10 @@ function registerCompositeTools(server2, bridge2) {
       await bridge2.ensureRunning();
       let estimate = {};
       try {
-        const userRequest = args.prompt || `${args.sections.length}\uAC1C \uC139\uC158 \uC790\uB3D9 \uC0DD\uC131`;
+        const userRequest = args.prompt || `${sections.length}\uAC1C \uC139\uC158 \uC790\uB3D9 \uC0DD\uC131`;
         const estParams = { user_request: userRequest };
-        if (args.template_path)
-          estParams.file_path = args.template_path;
+        if (templatePath)
+          estParams.file_path = templatePath;
         const r = await bridge2.send("estimate_workload", estParams, ANALYSIS_TIMEOUT2);
         if (r.success)
           estimate = r.data;
@@ -39751,7 +41138,7 @@ function registerCompositeTools(server2, bridge2) {
           estimate,
           steps_total: totalSteps,
           sections: sectionTitles,
-          tables: args.tables?.length || 0,
+          tables: tables?.length || 0,
           requires_approval: estSeconds > threshold
         }) }] };
       }
@@ -39765,13 +41152,13 @@ function registerCompositeTools(server2, bridge2) {
           message: `\uC608\uC0C1 ${estSeconds}\uCD08 > \uC784\uACC4 ${threshold}\uCD08. session_id\uB85C \uC7AC\uD638\uCD9C \uC2DC approve_threshold_seconds\uB97C \uB298\uB824 \uC9C4\uD589\uD558\uC138\uC694.`
         }) }] };
       }
-      if (args.template_path) {
-        const r = await bridge2.send("open_document", { file_path: args.template_path }, ANALYSIS_TIMEOUT2);
+      if (templatePath) {
+        const r = await bridge2.send("open_document", { file_path: templatePath }, ANALYSIS_TIMEOUT2);
         recordStep("open_template", r.success, r.error);
         if (!r.success)
           throw new Error(`open_template failed: ${r.error}`);
-      } else if (args.template_id) {
-        const safeTid = safeId(args.template_id);
+      } else if (templateId) {
+        const safeTid = safeId(templateId);
         const tplFile = path6.join(TEMPLATE_DIR, "files", `${safeTid}.hwpx`);
         if (!fs5.existsSync(tplFile))
           throw new Error(`template file not found: ${safeTid}`);
@@ -39788,7 +41175,7 @@ function registerCompositeTools(server2, bridge2) {
       if (isCancelled())
         throw new Error("cancelled");
       let lastBodyChars = 0;
-      for (const section of args.sections) {
+      for (const section of sections) {
         if (isCancelled())
           throw new Error("cancelled");
         const headingR = await bridge2.send("insert_heading", {
@@ -39827,11 +41214,11 @@ function registerCompositeTools(server2, bridge2) {
           current_section: section.title
         });
       }
-      if (args.tables) {
-        for (let i = 0; i < args.tables.length; i++) {
+      if (tables) {
+        for (let i = 0; i < tables.length; i++) {
           if (isCancelled())
             throw new Error("cancelled");
-          const t = args.tables[i];
+          const t = tables[i];
           const r = await bridge2.send("table_create_from_data", {
             data: t.data,
             caption: t.caption
@@ -39839,11 +41226,11 @@ function registerCompositeTools(server2, bridge2) {
           recordStep(`table:${i}`, r.success, { rows: t.data.length, caption: t.caption });
         }
       }
-      if (args.style_profile) {
-        const r = await bridge2.send("apply_style_profile", { profile: args.style_profile }, ANALYSIS_TIMEOUT2);
+      if (styleProfile) {
+        const r = await bridge2.send("apply_style_profile", { profile: styleProfile }, ANALYSIS_TIMEOUT2);
         recordStep("apply_style_profile", r.success, r.error);
       }
-      const hasOutline = args.sections.some((s) => typeof s.outline_level === "number" && s.outline_level >= 1);
+      const hasOutline = sections.some((s) => typeof s.outline_level === "number" && s.outline_level >= 1);
       if (hasOutline) {
         try {
           const r = await bridge2.send("generate_toc", {}, ANALYSIS_TIMEOUT2);
@@ -39856,14 +41243,14 @@ function registerCompositeTools(server2, bridge2) {
       }
       if (isCancelled())
         throw new Error("cancelled");
-      const saveFmt = args.output_path.toLowerCase().endsWith(".hwpx") ? "HWPX" : "HWP";
-      const saveR = await bridge2.send("save_as", { path: args.output_path, format: saveFmt }, ANALYSIS_TIMEOUT2);
+      const saveFmt = outputPath.toLowerCase().endsWith(".hwpx") ? "HWPX" : "HWP";
+      const saveR = await bridge2.send("save_as", { path: outputPath, format: saveFmt }, ANALYSIS_TIMEOUT2);
       recordStep("save_as", saveR.success, saveR.error);
       if (!saveR.success)
         throw new Error(`save_as failed: ${saveR.error}`);
       try {
-        const stat = fs5.statSync(args.output_path);
-        const minBytes = args.output_path.toLowerCase().endsWith(".hwpx") ? 19e3 : 24e3;
+        const stat = fs5.statSync(outputPath);
+        const minBytes = outputPath.toLowerCase().endsWith(".hwpx") ? 19e3 : 24e3;
         const sizeOk = stat.size >= minBytes;
         const allSectionsVerified = stepLog.filter((s) => String(s.name).startsWith("section:")).every((s) => s.detail?.body_verified === true);
         if (!sizeOk && !allSectionsVerified) {
@@ -39882,26 +41269,51 @@ function registerCompositeTools(server2, bridge2) {
         recordStep("file_size_check", false, e.message);
       }
       let score = 100;
+      let scoreBefore = null;
+      let autoFixIterations = 0;
+      let autoFixLog = [];
+      let autoFixStopped = "skipped";
       try {
-        const r = await bridge2.send("validate_consistency", { file_path: args.output_path }, ANALYSIS_TIMEOUT2);
-        if (r.success && r.data) {
-          const d = r.data;
-          score = typeof d.consistency_score === "number" ? d.consistency_score : 100;
+        const loopResult = await runAutoFixLoop({
+          outputPath,
+          styleProfile: autoFix ? styleProfile : void 0,
+          threshold: autoFix ? autoFixThreshold : 0,
+          maxIter: autoFixMaxIter,
+          saveFmt,
+          isCancelled,
+          onIteration: (entry) => {
+            saveSession({ auto_fix_last_iteration: entry });
+          }
+        });
+        scoreBefore = loopResult.score_before;
+        score = loopResult.score_after;
+        autoFixIterations = loopResult.iterations;
+        autoFixLog = loopResult.log;
+        autoFixStopped = loopResult.stopped_reason;
+        recordStep("validate_consistency", true, { score, score_before: scoreBefore });
+        if (autoFixIterations > 0) {
+          const loopOk = autoFixStopped === "threshold_reached" || autoFixStopped === "max_iterations" || autoFixStopped === "plateau";
+          recordStep(`auto_fix:${autoFixIterations}`, loopOk, {
+            iterations: autoFixIterations,
+            stopped_reason: autoFixStopped,
+            score_before: scoreBefore,
+            score_after: score
+          });
         }
-        recordStep("validate_consistency", r.success, { score });
+        saveSession({ auto_fix_log: autoFixLog });
       } catch (e) {
         recordStep("validate_consistency", false, e.message);
       }
       let pdf_path = null;
       if (exportPdf) {
-        const pdfTarget = args.output_path.replace(/\.(hwp|hwpx)$/i, ".pdf");
+        const pdfTarget = outputPath.replace(/\.(hwp|hwpx)$/i, ".pdf");
         const r = await bridge2.send("export_format", { path: pdfTarget, format: "PDF" }, ANALYSIS_TIMEOUT2);
         recordStep("export_format", r.success, r.error);
         if (r.success)
           pdf_path = pdfTarget;
       }
       try {
-        const r = await bridge2.send("verify_layout", { file_path: args.output_path }, ANALYSIS_TIMEOUT2);
+        const r = await bridge2.send("verify_layout", { file_path: outputPath }, ANALYSIS_TIMEOUT2);
         recordStep("verify_layout", r.success, r.error);
       } catch (e) {
         recordStep("verify_layout", false, e.message);
@@ -39914,9 +41326,13 @@ function registerCompositeTools(server2, bridge2) {
         ok: true,
         status: "completed",
         session_id: sid,
-        saved_path: args.output_path,
+        saved_path: outputPath,
         pdf_path,
         score,
+        score_before: scoreBefore,
+        auto_fix_iterations: autoFixIterations,
+        auto_fix_log: autoFixLog,
+        auto_fix_stopped_reason: autoFixStopped,
         steps_done: stepsDone,
         steps_total: totalSteps,
         duration_seconds: Math.round((Date.now() - startTime) / 1e3),
@@ -39937,6 +41353,68 @@ function registerCompositeTools(server2, bridge2) {
         step_log: stepLog,
         duration_seconds: Math.round((Date.now() - startTime) / 1e3)
       }) }], isError: !cancelled };
+    }
+  });
+  const PDF_CLONE_TIMEOUT = 6e5;
+  server2.tool("hwp_pdf_clone", 'PDF (native \uB610\uB294 \uC2A4\uCE94 \uD55C\uAD6D\uC5B4) \uB97C \uD3B8\uC9D1 \uAC00\uB2A5\uD55C HWP/HWPX \uB85C \uBCF5\uC6D0\uD569\uB2C8\uB2E4. (v0.7.4.4) native PDF \uB294 PyMuPDF get_text("dict") \uB85C bbox + \uD3F0\uD2B8 \uC9C1\uC811 \uCD94\uCD9C, \uC2A4\uCE94 PDF \uB294 PaddleOCR (lang=korean, ~150MB \uBAA8\uB378 \uCD5C\uCD08 \uC790\uB3D9 \uB2E4\uC6B4\uB85C\uB4DC) + opencv \uC804\uCC98\uB9AC (deskew + denoise + threshold). hybrid PDF \uB294 \uD398\uC774\uC9C0\uBCC4 \uC790\uB3D9 dispatch. \uC81C\uBAA9 \uAC10\uC9C0, \uD45C \uC7AC\uAD6C\uC131 (pdfplumber find_tables), \uC774\uBBF8\uC9C0 \uC784\uBCA0\uB529 (page.get_images + extract_image), 2-column \uAC10\uC9C0 \uACBD\uACE0, 4-component fidelity score (text/page/layout/structure). \uCD9C\uB825\uC740 \uC6D0\uBCF8\uACFC \uC2DC\uAC01\uC801\uC73C\uB85C \uC720\uC0AC\uD55C \uD074\uB860 (\uD53D\uC140 \uB2E8\uC704 \uC77C\uCE58 \uC544\uB2D8).', {
+    pdf_path: external_exports.string().describe("\uC6D0\uBCF8 PDF \uACBD\uB85C (\uC808\uB300 \uB610\uB294 \uC0C1\uB300)"),
+    output_path: external_exports.string().describe("\uCD9C\uB825 HWP/HWPX \uACBD\uB85C (.hwp \uB610\uB294 .hwpx, \uD655\uC7A5\uC790\uC5D0 \uB530\uB77C \uD615\uC2DD \uACB0\uC815)"),
+    options: external_exports.object({
+      ocr_engine: external_exports.enum(["paddle", "none", "auto"]).optional().describe('"auto"(\uAE30\uBCF8): native PDF \uB294 OCR \uBBF8\uC0AC\uC6A9, \uC2A4\uCE94 PDF \uB9CC PaddleOCR (v0.7.4.3+). "none": \uAC15\uC81C native \uB9CC. "paddle": \uAC15\uC81C OCR.'),
+      preserve_images: external_exports.boolean().optional().describe("PDF \uB0B4 \uC774\uBBF8\uC9C0\uB97C \uCD94\uCD9C\uD574 HWP \uC5D0 \uC0BD\uC785 (\uAE30\uBCF8 true, v0.7.4.4 \uBD80\uD130 \uC720\uD6A8)"),
+      detect_tables: external_exports.boolean().optional().describe("\uD45C \uAD6C\uC870 \uC790\uB3D9 \uAC10\uC9C0 + table_create_from_data \uD638\uCD9C (\uAE30\uBCF8 true, v0.7.4.4 \uBD80\uD130 \uC720\uD6A8)"),
+      max_pages: external_exports.number().int().min(0).optional().describe("\uCC98\uB9AC\uD560 \uCD5C\uB300 \uD398\uC774\uC9C0 \uC218 (0 = \uC804\uCCB4, \uAE30\uBCF8 0). \uD070 PDF \uD14C\uC2A4\uD2B8 \uC2DC 1-3 \uAD8C\uC7A5"),
+      preprocess: external_exports.boolean().optional().describe("\uC2A4\uCE94 \uC774\uBBF8\uC9C0 \uC804\uCC98\uB9AC (deskew + denoise + threshold). \uAE30\uBCF8 true, v0.7.4.3 \uBD80\uD130 \uC720\uD6A8"),
+      min_native_chars_per_page: external_exports.number().int().min(0).optional().describe("native PDF \uB85C \uBD84\uB958\uD558\uB294 \uD398\uC774\uC9C0\uB2F9 \uCD5C\uC18C \uAE00\uC790\uC218 (\uAE30\uBCF8 30)"),
+      page_setup_from_pdf: external_exports.boolean().optional().describe("PDF \uCCAB \uD398\uC774\uC9C0\uC758 \uAC00\uB85C/\uC138\uB85C mm \uB97C HWP \uC6A9\uC9C0 \uC124\uC815\uC5D0 \uC801\uC6A9 (\uAE30\uBCF8 true)"),
+      lang: external_exports.string().optional().describe('OCR \uC5B8\uC5B4 (\uAE30\uBCF8 "korean", v0.7.4.3 \uBD80\uD130 \uC720\uD6A8)')
+    }).optional().describe("PDF clone \uC635\uC158")
+  }, async ({ pdf_path, output_path, options }) => {
+    const pdfResolved = path6.resolve(pdf_path);
+    const outResolved = path6.resolve(output_path);
+    if (!fs5.existsSync(pdfResolved)) {
+      return { content: [{ type: "text", text: JSON.stringify({
+        error: `PDF \uD30C\uC77C\uC744 \uCC3E\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4: ${pdfResolved}`
+      }) }], isError: true };
+    }
+    const outExt = path6.extname(outResolved).toLowerCase();
+    if (outExt !== ".hwp" && outExt !== ".hwpx") {
+      return { content: [{ type: "text", text: JSON.stringify({
+        error: "output_path \uB294 .hwp \uB610\uB294 .hwpx \uD655\uC7A5\uC790\uC5EC\uC57C \uD569\uB2C8\uB2E4."
+      }) }], isError: true };
+    }
+    const outDir = path6.dirname(outResolved);
+    if (!fs5.existsSync(outDir)) {
+      return { content: [{ type: "text", text: JSON.stringify({
+        error: `\uCD9C\uB825 \uB514\uB809\uD1A0\uB9AC\uAC00 \uC874\uC7AC\uD558\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4: ${outDir}`
+      }) }], isError: true };
+    }
+    try {
+      await bridge2.ensureRunning();
+      const startedAt = Date.now();
+      const response = await bridge2.send("clone_pdf_to_hwp", {
+        pdf_path: pdfResolved,
+        output_path: outResolved,
+        options: options ?? {}
+      }, PDF_CLONE_TIMEOUT);
+      if (!response.success) {
+        return { content: [{ type: "text", text: JSON.stringify({
+          error: response.error
+        }) }], isError: true };
+      }
+      const data = response.data || {};
+      if ((data.status === "ok" || data.status === "partial") && fs5.existsSync(outResolved)) {
+        bridge2.setCurrentDocument(outResolved);
+        bridge2.setCachedAnalysis(null);
+      }
+      return { content: [{ type: "text", text: JSON.stringify({
+        ...data,
+        elapsed_seconds: Math.round((Date.now() - startedAt) / 1e3)
+      }) }] };
+    } catch (err) {
+      return { content: [{ type: "text", text: JSON.stringify({
+        error: err.message
+      }) }], isError: true };
     }
   });
 }

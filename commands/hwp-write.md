@@ -44,12 +44,45 @@ allowed-tools:
 ## 사전 질문 (반드시 순서대로 진행)
 1. "어떤 문서를 작성할까요?" (사업계획서/보고서/공문/기안/제안서/동의서/위촉장/기타)
 2. "양식 파일이 있나요?" (서식을 따를 기존 문서)
-3. "참고자료가 있나요?" (Excel/PDF/DOCX/PPT 등 — 모든 형식 지원)
+3. "참고자료가 있나요?" (Excel/PDF/DOCX/PPT/HWP 등 — 모든 형식 지원)
    → 있으면: "참조 데이터를 docs/references/에 .md로 저장해둘까요? (이후 재사용 가능)"
+
+   💡 **참고자료 권장 볼륨 (v0.7.4.8)**:
+   - 🟢 **최적** 1-3개 파일, 총 60KB 이하 (가장 정확, LLM focus 최상)
+   - 🟡 **적정** 최대 5개, 총 150KB 이하 (실무 기본)
+   - 🟠 **주의** 5개 초과 또는 총 150KB 초과 → focus degradation 시작
+   - 🔴 **최대** 10개 또는 500KB — 품질 저하 감수 (split 권장)
 4. "문체: 개괄식(~했음) / 격식체(~했습니다)?"
 5. "예상 분량?" (1~2쪽 / 5~10쪽 / 10쪽 이상)
    → 5쪽 이상: "섹션별로 나눠서 작성하겠습니다. 먼저 목차를 잡아볼까요?"
 6. "완성 후 PDF로도 변환할까요?"
+7. "**작업 우선순위를 선택해 주세요** (v0.7.4.8 신규):
+   ⚡ **빠른 완성** — 단순 양식 채우기, 2-3쪽 표준 문서 (Haiku/Sonnet, 3-5분)
+   ⚖️ **균형** (기본) — 대부분의 업무 문서 (Sonnet, 5-8분)
+   ⭐ **최고 품질** — 복잡한 구조, 법적/공식 문서 (Opus, 8-15분)
+
+   답변 없으면: hwp_estimate_workload 결과로 자동 판단 (simple_fill→Haiku, text_generation→Sonnet, structured_analysis→Opus)"
+
+## 📊 Pre-flight 분석 (질문 후, 작성 전)
+
+모든 답변 수집 후 **반드시** `hwp_estimate_workload` 실행해 아래 정보를 사용자에게 제시:
+
+```
+📊 예상 작업 분석:
+- 분량: {estimated_pages}쪽 ({estimated_sections}섹션, {estimated_tables}표)
+- 복잡도: {suggested_workflow}
+- 예상 시간: ⚡{haiku}s / ⚖️{sonnet}s / ⭐{opus}s
+- 토큰: {total_tokens} ({context_window_usage_percent}% of 200K)
+- 참고자료: {context_efficiency.recommendation}
+- 권장: {recommended_model_for_complexity.default} — {recommended_model_for_complexity.reason}
+
+이대로 진행할까요? 다른 모델 원하시면 ⚡/⚖️/⭐ 중 선택.
+```
+
+선택 후 해당 sub-agent 로 delegation:
+- ⚡ → `hwp-fast` (model: haiku 또는 sonnet)
+- ⚖️ → `hwp-standard` (model: sonnet)
+- ⭐ → `hwp-quality` (model: opus)
 
 ## 양식 정밀 분석 (양식 파일 있을 때 — 가장 중요)
 

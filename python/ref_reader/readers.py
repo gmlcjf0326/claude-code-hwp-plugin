@@ -1,44 +1,21 @@
-"""참고자료 텍스트 추출기.
-지원: .txt, .csv, .xlsx, .json, .md, .pdf, .html, .xml
-추가: .docx, .pptx, .doc, .ppt, .rtf 등 → PDF 변환 후 텍스트 추출
-HWP/HWPX는 hwp_analyzer.analyze_document 사용 (이 모듈에서는 다루지 않음)
+"""ref_reader.readers — 1차 포맷 리더 (primary readers).
+
+포맷:
+- text (.txt, .md, .log)
+- csv (.csv)
+- excel (.xlsx, .xls)
+- json (.json)
+- pdf (.pdf)
+- html (.html, .htm)
+- xml (.xml)
+- hwp_structured (.hwp, .hwpx via hwp_analyzer.analyze_document)
+
+변환 기반 리더 (docx, pptx, rtf 등) 는 conversion.py 에 있음.
 """
 import os
 import sys
 import json
-import subprocess
-import tempfile
-
-
-def read_reference(file_path, max_chars=30000):
-    """참고자료 파일에서 텍스트 추출."""
-    file_path = os.path.abspath(file_path)
-    if not os.path.exists(file_path):
-        raise FileNotFoundError(f"파일을 찾을 수 없습니다: {file_path}")
-
-    ext = os.path.splitext(file_path)[1].lower()
-
-    if ext in ('.txt', '.md', '.log'):
-        return _read_text(file_path, max_chars)
-    elif ext == '.csv':
-        return _read_csv(file_path, max_chars)
-    elif ext in ('.xlsx', '.xls'):
-        return _read_excel(file_path, max_chars)
-    elif ext == '.json':
-        return _read_json(file_path, max_chars)
-    elif ext == '.pdf':
-        return _read_pdf(file_path, max_chars)
-    elif ext in ('.html', '.htm'):
-        return _read_html(file_path, max_chars)
-    elif ext == '.xml':
-        return _read_xml(file_path, max_chars)
-    elif ext in ('.docx', '.doc', '.pptx', '.ppt', '.rtf', '.odt', '.odp'):
-        return _read_via_pdf_conversion(file_path, max_chars)
-    else:
-        raise ValueError(
-            f"지원하지 않는 파일 형식: {ext}. "
-            f"지원: .txt, .md, .csv, .xlsx, .json, .pdf, .html, .xml, .docx, .pptx"
-        )
+import re
 
 
 def _read_text(path, max_chars):
@@ -158,135 +135,8 @@ def _read_pdf(path, max_chars):
     }
 
 
-def _read_via_pdf_conversion(path, max_chars):
-    """DOCX/PPTX 등 비지원 확장자 → PDF 변환 후 텍스트 추출."""
-    ext = os.path.splitext(path)[1].lower()
-
-    # 1순위: LibreOffice CLI로 PDF 변환
-    pdf_path = _convert_to_pdf_libreoffice(path)
-    if pdf_path:
-        result = _read_pdf(pdf_path, max_chars)
-        result["original_format"] = ext.lstrip('.')
-        result["conversion_method"] = "libreoffice"
-        # 임시 PDF 삭제
-        try:
-            os.remove(pdf_path)
-        except Exception:
-            pass
-        return result
-
-    # 2순위: python-docx로 직접 텍스트 추출 (DOCX만)
-    if ext == '.docx':
-        result = _read_docx_direct(path, max_chars)
-        if result:
-            return result
-
-    # 3순위: python-pptx로 직접 텍스트 추출 (PPTX만)
-    if ext == '.pptx':
-        result = _read_pptx_direct(path, max_chars)
-        if result:
-            return result
-
-    raise ValueError(
-        f"{ext} 파일을 읽을 수 없습니다. "
-        f"LibreOffice를 설치하면 자동 변환됩니다: https://www.libreoffice.org/download/"
-    )
-
-
-def _convert_to_pdf_libreoffice(path):
-    """LibreOffice CLI로 PDF 변환. 성공 시 PDF 경로 반환, 실패 시 None."""
-    # LibreOffice 경로 탐색
-    soffice_paths = [
-        "soffice",  # PATH에 있으면
-        r"C:\Program Files\LibreOffice\program\soffice.exe",
-        r"C:\Program Files (x86)\LibreOffice\program\soffice.exe",
-    ]
-
-    soffice = None
-    for p in soffice_paths:
-        try:
-            subprocess.run([p, "--version"], capture_output=True, timeout=5)
-            soffice = p
-            break
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            continue
-
-    if not soffice:
-        print("[INFO] LibreOffice 미설치 — PDF 변환 불가, 대체 방법 시도", file=sys.stderr)
-        return None
-
-    try:
-        outdir = tempfile.gettempdir()
-        subprocess.run(
-            [soffice, "--headless", "--convert-to", "pdf", "--outdir", outdir, path],
-            capture_output=True, timeout=60
-        )
-        basename = os.path.splitext(os.path.basename(path))[0]
-        pdf_path = os.path.join(outdir, f"{basename}.pdf")
-        if os.path.exists(pdf_path):
-            return pdf_path
-    except Exception as e:
-        print(f"[WARN] LibreOffice 변환 실패: {e}", file=sys.stderr)
-
-    return None
-
-
-def _read_docx_direct(path, max_chars):
-    """python-docx로 DOCX 텍스트 직접 추출."""
-    try:
-        from docx import Document
-    except ImportError:
-        return None
-
-    doc = Document(path)
-    paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
-    content = "\n".join(paragraphs)[:max_chars]
-    return {
-        "format": "docx",
-        "file_name": os.path.basename(path),
-        "content": content,
-        "paragraph_count": len(paragraphs),
-        "char_count": len(content),
-    }
-
-
-def _read_pptx_direct(path, max_chars):
-    """python-pptx로 PPTX 텍스트 직접 추출."""
-    try:
-        from pptx import Presentation
-    except ImportError:
-        return None
-
-    prs = Presentation(path)
-    slides = []
-    total_chars = 0
-    for i, slide in enumerate(prs.slides):
-        texts = []
-        for shape in slide.shapes:
-            if shape.has_text_frame:
-                for para in shape.text_frame.paragraphs:
-                    text = para.text.strip()
-                    if text:
-                        texts.append(text)
-        slide_text = "\n".join(texts)
-        total_chars += len(slide_text)
-        slides.append({"slide": i + 1, "text": slide_text})
-        if total_chars > max_chars:
-            break
-
-    full_text = "\n\n".join(s["text"] for s in slides)
-    return {
-        "format": "pptx",
-        "file_name": os.path.basename(path),
-        "content": full_text[:max_chars],
-        "slide_count": len(slides),
-        "char_count": len(full_text[:max_chars]),
-    }
-
-
 def _read_html(path, max_chars):
     """HTML 파일에서 텍스트 + 표 추출."""
-    import re
     with open(path, 'r', encoding='utf-8', errors='replace') as f:
         html = f.read(max_chars * 3)  # HTML 태그 포함이므로 더 많이 읽음
 
@@ -376,3 +226,78 @@ def _read_xml(path, max_chars):
         "content": content,
         "char_count": len(content),
     }
+
+
+def _read_hwp_structured(hwp, file_path, max_chars):
+    """v0.7.4.8 Fix C1: HWP 파일을 구조화된 tables + full_text 로 반환.
+
+    기존 PDF 변환 경로와 달리 표 구조(rows × cols)를 2D 배열로 보존.
+    hwp_analyzer.analyze_document 가 이미 hwp.table_to_df() 로 2D 추출 중이므로 재사용.
+    """
+    try:
+        from hwp_analyzer import analyze_document
+    except ImportError as e:
+        raise ValueError(f"hwp_analyzer import 실패: {e}") from e
+
+    try:
+        analysis = analyze_document(hwp, file_path, already_open=False)
+    except Exception as e:
+        # 분석 실패 시 PDF 변환 fallback (구조 손실되지만 텍스트는 나옴)
+        print(f"[WARN] _read_hwp_structured analyze failed: {e} — PDF fallback",
+              file=sys.stderr)
+        # lazy import to avoid circular (conversion → readers._read_pdf)
+        from .conversion import _read_via_pdf_conversion
+        return _read_via_pdf_conversion(file_path, max_chars)
+
+    # analyze_document 반환 구조: {tables: [...], fields: [...], text_preview, full_text, ...}
+    full_text = analysis.get("full_text", "") or ""
+    original_len = len(full_text)
+    truncated = False
+    if original_len > max_chars:
+        full_text = full_text[:max_chars]
+        truncated = True
+
+    # tables 를 ref_reader 표준 schema 로 변환
+    tables_out = []
+    for tbl in analysis.get("tables", []) or []:
+        headers = tbl.get("headers", []) or []
+        data = tbl.get("data", []) or []
+        tables_out.append({
+            "index": tbl.get("index", 0),
+            "rows": tbl.get("rows", len(data) + (1 if headers else 0)),
+            "cols": tbl.get("cols", len(headers) if headers else (len(data[0]) if data else 0)),
+            "headers": headers,
+            "data": data,
+        })
+
+    # 기존 csv/excel 경로와 호환되는 최상위 headers/data 도 제공
+    primary_headers: list = []
+    primary_data: list = []
+    if tables_out:
+        first = tables_out[0]
+        primary_headers = first.get("headers", []) or []
+        primary_data = first.get("data", []) or []
+
+    result = {
+        "format": "hwp_structured",
+        "file_name": os.path.basename(file_path),
+        "file_format": "HWPX" if file_path.lower().endswith(".hwpx") else "HWP",
+        "tables": tables_out,
+        "table_count": len(tables_out),
+        "fields": analysis.get("fields", []) or [],
+        "full_text": full_text,
+        "text_preview": analysis.get("text_preview", "") or "",
+        "pages": analysis.get("pages", 0) or 0,
+        "char_count": len(full_text),
+        "original_char_count": original_len,
+        "truncated": truncated,
+        # 호환 필드 (기존 csv/excel 경로)
+        "headers": primary_headers,
+        "data": primary_data,
+    }
+    if truncated:
+        result["warning"] = (
+            f"full_text 가 {original_len} 글자 → {max_chars} 글자로 잘렸습니다. "
+            f"max_chars 를 더 크게 설정하거나 full_text 대신 tables[] 를 사용하세요."
+        )
+    return result

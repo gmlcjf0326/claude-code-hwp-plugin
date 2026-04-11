@@ -1,7 +1,7 @@
 {
   "name": "claude-code-hwp-plugin",
-  "version": "0.7.3.3",
-  "description": "Claude Code plugin for HWP document automation. 94 MCP tools + 8 workflow commands + HWPX rule hooks.",
+  "version": "0.8.2",
+  "description": "Claude Code plugin for HWP document automation. 118 Python RPC handlers + MCP tools + workflow commands + HWPX rule hooks. v0.8.2 rule-based form filling engine (Phase 5A-G, form_fill_auto composite pipeline).",
   "type": "module",
   "private": true,
   "dependencies": {

@@ -18,11 +18,8 @@ async function ensureAnalysis(bridge, filePath) {
         if (!HWP_EXTENSIONS.has(ext)) {
             throw new Error('HWP 또는 HWPX 파일만 지원합니다.');
         }
-        // COM 메모리 변경사항을 파일에 반영 (미저장 표/텍스트 감지용)
-        try {
-            await bridge.send('save_document', {});
-        }
-        catch { }
+        // v0.7.5.4 P0-1: save_document 선행 호출 제거 — 원본 파일 자동 저장 방지
+        // analyze_document 는 file_path 를 직접 받으므로 COM flush 불필요
         const response = await bridge.send('analyze_document', { file_path: resolved }, ANALYSIS_TIMEOUT);
         if (!response.success)
             throw new Error(response.error ?? '분석 실패');
@@ -414,6 +411,61 @@ export function registerAnalysisTools(server, bridge, toolset = 'standard') {
             try {
                 await bridge.ensureRunning();
                 const r = await bridge.send('form_detect', {}, ANALYSIS_TIMEOUT);
+                if (!r.success)
+                    return { content: [{ type: 'text', text: JSON.stringify({ error: r.error }) }], isError: true };
+                return { content: [{ type: 'text', text: JSON.stringify(r.data) }] };
+            }
+            catch (err) {
+                return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+            }
+        });
+        // v0.7.5.4 P3-1: 문서 타입 자동 감지 + 공무원 양식 프리셋 추천
+        server.tool('hwp_detect_document_type', '문서 타입을 자동 감지해서 공무원 양식 표준 서식 프리셋을 추천합니다. (v0.7.5.4 신규) 타입: business_plan(사업계획서) / official_document(공문) / form(양식) / report(보고서) / general(일반). 결과의 recommended_preset 을 hwp_insert_body_after_heading 의 body_style 에 전달하면 표준 서식이 자동 적용됩니다. 사업계획서 / 공문 작업 전 가장 먼저 호출하세요.', {}, async () => {
+            if (!bridge.getCurrentDocument())
+                return { content: [{ type: 'text', text: JSON.stringify({ error: '열린 문서가 없습니다. hwp_open_document 로 양식 파일을 먼저 여세요.' }) }], isError: true };
+            try {
+                await bridge.ensureRunning();
+                const r = await bridge.send('detect_document_type', {}, ANALYSIS_TIMEOUT);
+                if (!r.success)
+                    return { content: [{ type: 'text', text: JSON.stringify({ error: r.error }) }], isError: true };
+                return { content: [{ type: 'text', text: JSON.stringify(r.data) }] };
+            }
+            catch (err) {
+                return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+            }
+        });
+        // v0.7.5.4 P2-3: 템플릿 서식 스냅샷 — 양식 원본 서식 프로파일 캐시
+        server.tool('hwp_snapshot_template_style', '양식 원본의 서식 프로파일을 스냅샷으로 캐시합니다. (v0.7.5.4 신규) body_default + heading_samples (레벨별) + table_cell_samples 를 JSON 으로 ~/.hwp_studio_state/snap_XXX.json 에 저장. 양식 첨부 후 한 번 호출하면 이후 insert_body_after_heading 호출 시 이 스냅샷 참조로 일관된 서식 적용 가능. 공무원 양식 작업의 첫 단계.', {}, async () => {
+            if (!bridge.getCurrentDocument())
+                return { content: [{ type: 'text', text: JSON.stringify({ error: '열린 문서가 없습니다.' }) }], isError: true };
+            try {
+                await bridge.ensureRunning();
+                const r = await bridge.send('snapshot_template_style', {}, ANALYSIS_TIMEOUT);
+                if (!r.success)
+                    return { content: [{ type: 'text', text: JSON.stringify({ error: r.error }) }], isError: true };
+                return { content: [{ type: 'text', text: JSON.stringify(r.data) }] };
+            }
+            catch (err) {
+                return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
+            }
+        });
+        // v0.7.5.4 P4-1: 5단계 검증 helper (TEST_CHECKLIST Phase 19 표준)
+        server.tool('hwp_verify_5stage', '문서를 TEST_CHECKLIST Phase 19 의 5단계 검증 기준으로 평가합니다. (v0.7.5.4 신규) Stage 1 step_log (호출자 보장), 2 body_verified (chars ≥ expected×0.5), 3 file_size (22KB/28KB 하한), 4 text cross-check (snippet 90%+ 매칭), 5 layout PNG (opt-in). overall_pass 는 stage 1-4 모두 PASS 시 true. 신규 문서 작성 후 자동 검증에 사용.', {
+            file_path: z.string().describe('검증할 HWP/HWPX 파일 절대 경로'),
+            expected_chars: z.number().int().optional().describe('예상 본문 글자수 (stage 2 판정 기준, 없으면 chars > 0 만 확인)'),
+            expected_text_snippet: z.string().optional().describe('본문에 포함돼야 할 텍스트 샘플 (stage 4 판정)'),
+            run_layout: z.boolean().optional().describe('stage 5 layout PNG 생성 실행 (기본 false, 시간 오래 걸림)'),
+        }, async ({ file_path, expected_chars, expected_text_snippet, run_layout }) => {
+            try {
+                await bridge.ensureRunning();
+                const params = { file_path };
+                if (expected_chars !== undefined)
+                    params.expected_chars = expected_chars;
+                if (expected_text_snippet !== undefined)
+                    params.expected_text_snippet = expected_text_snippet;
+                if (run_layout !== undefined)
+                    params.run_layout = run_layout;
+                const r = await bridge.send('verify_5stage', params, 60000);
                 if (!r.success)
                     return { content: [{ type: 'text', text: JSON.stringify({ error: r.error }) }], isError: true };
                 return { content: [{ type: 'text', text: JSON.stringify(r.data) }] };

@@ -1,243 +1,20 @@
-"""HWP Document Analyzer - Extract structure and content from HWP documents.
-Uses pyhwpx Hwp() only. Raw win32com is forbidden.
+"""hwp_analyzer.tables — 표 셀 매핑 + 라벨 해결.
+
+함수:
+- map_table_cells             : 표의 모든 셀을 Tab traversal 로 순회 → cell_map
+- _group_cells_into_rows      : flat cell_map → 행 단위 그룹
+- _find_label_column          : 열 헤더 라벨 매칭
+- _find_label_row             : 행 라벨 매칭
+- _find_cell_position_in_rows : flat index → (row, col) 변환
+- _find_cell_in_flat          : flat cell_map 에서 라벨 검색
+- resolve_labels_to_tabs      : 라벨 리스트 → tab 인덱스 해결 (right/below/cross matching)
 """
 import sys
-import os
-import re
+
+from .label import _normalize, _match_label
 
 
-MAX_TABLES = 50  # 표 스캔 상한 (통장사본 등 반복 표 방지)
-
-
-# ── 공백 정규화 ──
-def _normalize(text):
-    """모든 공백(스페이스, 탭, NBSP 등)을 제거하여 비교용 문자열 반환."""
-    return re.sub(r"\s+", "", text)
-
-
-# ── 라벨 별칭(alias) 사전 ──
-# key: 정규화된 표준명, value: 정규화된 동의어 리스트
-_LABEL_ALIASES = {
-    "기업명": ["기업이름", "회사명", "상호명", "상호", "법인명", "업체명", "회사이름"],
-    "사업자등록번호": ["사업자번호", "사업자등록NO", "사업자No"],
-    "법인등록번호": ["법인번호", "법인등록No", "법인No"],
-    "사업장주소": ["주소", "소재지", "본점소재지", "사업장소재지", "회사주소", "기업주소"],
-    "대표자성명": ["대표자", "대표자명", "대표이사", "대표자이름", "대표이사명", "성명"],
-    "대표전화번호": ["대표전화", "전화번호", "연락처", "대표번호", "전화", "TEL"],
-    "홈페이지URL": ["홈페이지", "웹사이트", "URL", "홈페이지주소", "웹주소"],
-    "이메일": ["이메일주소", "EMAIL", "E-MAIL"],
-    "팩스번호": ["팩스", "FAX", "FAX번호"],
-    "설립일": ["설립일자", "설립년월일", "법인설립일"],
-    "업종": ["업종명", "주업종"],
-    "업태": ["업태명", "주업태"],
-    "종업원수": ["직원수", "임직원수", "종업원"],
-    "자본금": ["납입자본금", "자본금액"],
-    "매출액": ["연매출", "연매출액", "매출"],
-}
-
-# 역방향 룩업 테이블 생성: 동의어 -> 표준명
-_ALIAS_LOOKUP = {}
-for canonical, aliases in _LABEL_ALIASES.items():
-    norm_canonical = _normalize(canonical)
-    _ALIAS_LOOKUP[norm_canonical] = norm_canonical
-    for alias in aliases:
-        _ALIAS_LOOKUP[_normalize(alias)] = norm_canonical
-
-
-def _canonical_label(label):
-    """라벨을 정규화하고 표준명으로 변환. 별칭 없으면 정규화된 원본 반환."""
-    norm = _normalize(label)
-    return _ALIAS_LOOKUP.get(norm.upper(), _ALIAS_LOOKUP.get(norm, norm))
-
-
-def _match_label(cell_text, search_label):
-    """셀 텍스트와 검색 라벨이 같은 의미인지 판단.
-
-    Returns: (is_match, is_exact, ratio)
-      - is_match: 매칭 여부
-      - is_exact: exact match 여부 (정규화 후 완전 일치)
-      - ratio: 매칭률 (0.0~1.0, exact이면 1.0)
-    """
-    norm_cell = _normalize(cell_text)
-    norm_label = _normalize(search_label)
-
-    if not norm_cell or not norm_label:
-        return False, False, 0.0
-
-    # 1) 정규화 후 exact match (공백만 달랐던 경우)
-    if norm_cell == norm_label:
-        return True, True, 1.0
-
-    # 2) 별칭 매칭: 둘 다 같은 표준명으로 매핑되는지
-    canon_cell = _canonical_label(cell_text)
-    canon_label = _canonical_label(search_label)
-    if canon_cell == canon_label:
-        return True, True, 1.0
-
-    # 3) 정규화된 문자열 포함 관계 (partial match)
-    if norm_label in norm_cell:
-        return True, False, len(norm_label) / len(norm_cell)
-    if norm_cell in norm_label:
-        return True, False, len(norm_cell) / len(norm_label)
-
-    return False, False, 0.0
-
-
-def analyze_document(hwp, file_path, already_open=False):
-    """Analyze an HWP document: pages, tables, fields, text."""
-    file_path = os.path.abspath(file_path)
-    # 항상 문서를 열어서 활성화 보장 (이미 열려있으면 해당 문서가 포커스됨)
-    hwp.open(file_path)
-    # 커서를 문서 처음으로 이동
-    try:
-        hwp.MovePos(2)  # movePOS_START: 문서 처음으로
-    except Exception as e:
-        print(f"[WARN] MovePos failed: {e}", file=sys.stderr)
-
-    result = {
-        "file_path": file_path,
-        "file_name": os.path.basename(file_path),
-        "file_format": "HWPX" if file_path.lower().endswith(".hwpx") else "HWP",
-        "pages": 0,
-        "tables": [],
-        "fields": [],
-        "text_preview": "",
-        "full_text": "",
-        # B2 (v0.6.6): HeadCtrl 순회 결과 — 표/그림/머리말/꼬리말/각주/누름틀 위치
-        "controls": [],
-        "controls_by_type": {},
-    }
-
-    scan_started = False
-
-    # B2 (v0.6.6): HeadCtrl 순회 — 표 추출 전에 전체 컨트롤 카탈로그 수집
-    # 기존 표 추출 (get_into_nth_table) 로직은 그대로 유지 (호환성)
-    try:
-        from hwp_traversal import traverse_all_ctrls
-        ctrl_result = traverse_all_ctrls(hwp, include_ids=None)
-        result["controls"] = ctrl_result.get("controls", [])
-        result["controls_by_type"] = ctrl_result.get("by_type", {})
-    except Exception as e:
-        print(f"[WARN] HeadCtrl traversal failed: {e}", file=sys.stderr)
-
-    try:
-        # Page count
-        try:
-            result["pages"] = hwp.PageCount
-        except Exception as e:
-            print(f"[WARN] PageCount failed: {e}", file=sys.stderr)
-
-        # Extract tables (with data for AI context, max MAX_TABLES)
-        try:
-            # 커서를 문서 시작으로 초기화 (표 탐색 안정성 보장)
-            try:
-                hwp.MovePos(2)  # 문서 처음으로
-            except Exception as e:
-                print(f"[WARN] MovePos before table scan failed: {e}", file=sys.stderr)
-
-            table_idx = 0
-            prev_data = None
-            while table_idx < MAX_TABLES:
-                try:
-                    hwp.get_into_nth_table(table_idx)
-                    df = hwp.table_to_df()
-                    current_data = df.values.tolist()
-                    # 중복 감지: 이전 표와 동일한 데이터면 같은 표 반복 접근 → 중단
-                    if prev_data is not None and current_data == prev_data:
-                        print(f"[INFO] Table {table_idx} is duplicate of previous — stopping scan", file=sys.stderr)
-                        try:
-                            if hwp.is_cell():
-                                hwp.MovePos(3)
-                        except Exception as e:
-                            print(f"[WARN] Table exit (dup detect): {e}", file=sys.stderr)
-                        break
-                    prev_data = current_data
-                    table_info = {
-                        "index": table_idx,
-                        "rows": len(df) + 1,  # +1 for header
-                        "cols": len(df.columns) if len(df) > 0 else 0,
-                        "headers": [str(c) for c in df.columns],
-                        "data": current_data,
-                    }
-                    result["tables"].append(table_info)
-                    try:
-                        if hwp.is_cell():
-                            hwp.MovePos(3)
-                        hwp.MovePos(2)
-                    except Exception as e:
-                        print(f"[WARN] Table exit/MovePos failed: {e}", file=sys.stderr)
-                    table_idx += 1
-                except Exception as e:
-                    print(f"[INFO] Table scan stopped at idx {table_idx}: {e}", file=sys.stderr)
-                    break
-            # BUG-7 fix: 실제 발견된 표 수와 스캔 상한 분리
-            result["scanned_tables"] = table_idx
-            if table_idx >= MAX_TABLES:
-                result["tables_truncated"] = True
-                result["tables_truncated_message"] = f"표가 {MAX_TABLES}개 이상일 수 있습니다. 처음 {MAX_TABLES}개만 분석했습니다."
-                print(f"[WARN] Table scan capped at {MAX_TABLES}", file=sys.stderr)
-        except Exception as e:
-            print(f"[WARN] Table extraction failed: {e}", file=sys.stderr)
-
-        # Extract fields
-        try:
-            field_list = hwp.GetFieldList()
-            if field_list:
-                fields = field_list.split("\x02") if "\x02" in field_list else [field_list]
-                for field in fields:
-                    if field.strip():
-                        value = ""
-                        try:
-                            value = hwp.GetFieldText(field.strip()) or ""
-                        except Exception as e:
-                            print(f"[WARN] GetFieldText failed: {e}", file=sys.stderr)
-                        result["fields"].append({
-                            "name": field.strip(),
-                            "value": value,
-                        })
-        except Exception as e:
-            print(f"[WARN] Field extraction failed: {e}", file=sys.stderr)
-
-        # Extract full text (up to 15,000 chars for AI context)
-        try:
-            hwp.InitScan(0x0077)
-            scan_started = True
-            text_parts = []
-            total_len = 0
-            count = 0
-            while total_len < 15000 and count < 5000:
-                try:
-                    state, text = hwp.GetText()
-                    if state <= 0:
-                        break
-                    # state 1=일반텍스트, 2=표 안 텍스트 등
-                    if text and text.strip():
-                        text_parts.append(text.strip())
-                        total_len += len(text)
-                    count += 1
-                except Exception:
-                    break
-            hwp.ReleaseScan()
-            scan_started = False
-
-            full = "\n".join(text_parts)
-            result["full_text"] = full[:15000]
-            result["text_preview"] = full[:500]
-        except Exception as e:
-            print(f"[WARN] Text extraction failed: {e}", file=sys.stderr)
-
-    finally:
-        # Guarantee ReleaseScan if InitScan was called
-        if scan_started:
-            try:
-                hwp.ReleaseScan()
-            except Exception as e:
-                print(f"[WARN] ReleaseScan failed: {e}", file=sys.stderr)
-
-    return result
-
-
-def map_table_cells(hwp, table_idx, max_cells=200):
+def map_table_cells(hwp, table_idx, max_cells=200, max_text_len=500):
     """Map all navigable cells in a table by Tab traversal.
 
     Returns a list of cell entries with tab index and the text content
@@ -275,9 +52,13 @@ def map_table_cells(hwp, table_idx, max_cells=200):
                 except Exception as e:
                     print(f"[WARN] Cancel in map_table_cells: {e}", file=sys.stderr)
 
+            # v0.7.4.8 Fix B3: 100자 → 500자 (파라미터화). 긴 사업내용 등 보존
+            truncated_text = cell_text[:max_text_len]
             cell_map.append({
                 "tab": i,
-                "text": cell_text[:100],  # Truncate long text
+                "text": truncated_text,
+                "text_truncated": len(cell_text) > max_text_len,
+                "original_length": len(cell_text),
                 "pos": list(pos) if pos else None,
             })
 
@@ -393,7 +174,7 @@ def _find_cell_in_flat(cell_map, label):
     Returns (matched_idx, is_partial).
     """
     if not label:
-        return None, False  # 이중 방어: 호출부에서도 체크하지만 안전장치 유지
+        return None, False  # 이중 방어
     # Exact match (정규화 + 별칭 포함)
     for i, cell in enumerate(cell_map):
         is_match, is_exact, _ = _match_label(cell["text"], label)

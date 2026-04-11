@@ -1,5 +1,5 @@
 import { build } from 'esbuild';
-import { readFileSync, cpSync } from 'fs';
+import { readFileSync, cpSync, rmSync } from 'fs';
 import { execSync } from 'child_process';
 
 const pkg = JSON.parse(readFileSync('./package.json', 'utf8'));
@@ -25,9 +25,22 @@ try {
 
 // B1 (v0.6.6): mcp-server/python → claude-code-hwp-plugin/python 자동 미러
 // 양쪽 미러 드리프트 방지. 빌드 시점에 매번 동기화.
+// Phase 0 (2026-04-11): __pycache__ 제외 — stale .pyc 가 cache 로 복사되는 문제 방지
+// v0.7.9 post-refactor fix (2026-04-11): cpSync 는 additive (소스에서 삭제된 파일이 destination 에 남음)
+//   → Phase 0-9 에서 hwp_editor.py → hwp_editor/ 분할 후 stale hwp_editor.py 가 mirror 에 남아 Python import 충돌 발생.
+//   → 사전 rmSync 로 destination 전체 삭제 후 cpSync 실행.
 try {
-  cpSync('../mcp-server/python', './python', { recursive: true });
-  console.log('✅ Python mirror synced from ../mcp-server/python');
+  try {
+    rmSync('./python', { recursive: true, force: true });
+  } catch (e) {
+    // Windows 에서 일부 .pyc 가 lock 된 경우 무시 (filter 가 어차피 제외)
+    console.error('[INFO] python/ rmSync partial:', e.message);
+  }
+  cpSync('../mcp-server/python', './python', {
+    recursive: true,
+    filter: (src) => !src.includes('__pycache__'),
+  });
+  console.log('✅ Python mirror synced from ../mcp-server/python (clean rebuild, no __pycache__)');
 } catch (e) {
   console.error('⚠️  Python mirror sync failed:', e.message);
   console.error('   build will continue with existing python/ files');

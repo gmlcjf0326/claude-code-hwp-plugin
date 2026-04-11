@@ -37,6 +37,15 @@ allowed-tools:
 
 사용자가 한글 문서 관련 작업을 요청하면 자동으로 작동합니다.
 
+## 🚨 작업 시작 전 필수 (v0.7.9-refactor 이후)
+
+코드 수정/디버깅이 필요한 작업이라면:
+1. **`mcp-server/python/PYTHON_INDEX.md` 를 먼저 읽으세요** — 112 MCP tool + 위치 색인
+2. "1. 의도별 빠른 찾기" 표 → 작업 의도에 맞는 파일 직접 jump
+3. 대상 파일 1-2개만 read (53개 분할 후 전체 스캔 금지)
+
+순수 MCP tool 호출만 하는 작업이라면 이 단계 skip.
+
 ## Step 1: 환경 확인
 
 hwp_check_setup을 자동 실행합니다.
