@@ -651,14 +651,17 @@ export function registerEditingTools(server, bridge, toolset = 'standard') {
         });
         server.tool('hwp_table_create_from_data', '2D 배열 데이터로 새 표를 생성합니다. col_widths/row_heights 로 mm 단위 정밀 레이아웃. ' +
             '(v0.7.3.1) cell 안 호출 시 자동으로 cell 폭 기반 col_widths 축소. row_heights 도 페이지 높이 자동 축소. ' +
-            'treat_as_char 옵션으로 글자처럼 취급 on/off 제어 (cell 안 표는 한컴 자동 적용).', {
+            'treat_as_char 옵션으로 글자처럼 취급 on/off 제어 (cell 안 표는 한컴 자동 적용). ' +
+            '(v0.7.6+) header_style=true 시 첫 행은 Bold + 가운데정렬 + 배경색 #E8E8E8 + 글자색 #333333 자동 적용 (header_bg_color/header_text_color 로 override).', {
             data: z.array(z.array(z.string())).describe('2D 배열 데이터'),
-            header_style: z.boolean().optional().describe('첫 행 헤더 스타일 (Bold+배경색)'),
+            header_style: z.boolean().optional().describe('첫 행 헤더 스타일 (v0.7.6+: Bold + 가운데정렬 + 밝은 회색 배경 #E8E8E8 자동 적용)'),
+            header_bg_color: z.array(z.number().int().min(0).max(255)).length(3).optional().describe('헤더 배경색 [R,G,B] (기본 [232,232,232] 밝은 회색). header_style=true 일 때만 적용.'),
+            header_text_color: z.array(z.number().int().min(0).max(255)).length(3).optional().describe('헤더 글자색 [R,G,B] (기본 [51,51,51] 진한 회색). header_style=true 일 때만 적용.'),
             col_widths: z.array(z.number()).optional().describe('열 너비 (mm, 자동 축소 가능)'),
             row_heights: z.array(z.number()).optional().describe('행 높이 (mm, v0.7.3.1 자동 축소 추가)'),
-            alignment: z.enum(['left', 'center', 'right']).optional().describe('표 정렬 (기본 left)'),
+            alignment: z.enum(['left', 'center', 'right']).optional().describe('본문 행 정렬 (기본 left). 헤더 행은 header_style=true 시 항상 가운데 강제.'),
             treat_as_char: z.boolean().optional().describe('v0.7.3.1 신규: 글자처럼 취급 on/off. cell 안 nested 표는 자동 true. top-level 표는 false 가 기본.'),
-        }, async ({ data, header_style, col_widths, row_heights, alignment, treat_as_char }) => {
+        }, async ({ data, header_style, header_bg_color, header_text_color, col_widths, row_heights, alignment, treat_as_char }) => {
             if (!bridge.getCurrentDocument())
                 return { content: [{ type: 'text', text: JSON.stringify({ error: '열린 문서가 없습니다.' }) }], isError: true };
             try {
@@ -666,6 +669,10 @@ export function registerEditingTools(server, bridge, toolset = 'standard') {
                 const params = { data };
                 if (header_style)
                     params.header_style = header_style;
+                if (header_bg_color)
+                    params.header_bg_color = header_bg_color;
+                if (header_text_color)
+                    params.header_text_color = header_text_color;
                 if (col_widths)
                     params.col_widths = col_widths;
                 if (row_heights)
@@ -686,7 +693,7 @@ export function registerEditingTools(server, bridge, toolset = 'standard') {
         });
         server.tool('hwp_insert_heading', '제목 텍스트를 삽입합니다 (H1~H9). 공문서 순번 체계의 대제목 등에 사용. numbering으로 자동 순번(텍스트 prefix)을 붙일 수 있습니다 (예: Ⅰ. 제목, 1. 제목, 가. 제목). v0.6.9+: auto_outline_level 옵션으로 ParaShape.OutlineLevel 자동 설정 → 한글 "개요 보기" + hwp_generate_toc 계층 인식 활성화. level 범위 1~6 → 1~9 확장.', {
             text: z.string().describe('제목 텍스트'),
-            level: z.number().int().min(1).max(9).describe('제목 레벨 (1=가장 큰 22pt, 6~9=10pt). v0.6.9: 1~6 → 1~9 확장'),
+            level: z.number().int().min(1).max(9).describe('제목 레벨 (v0.7.6+: 1=28pt, 2=22pt, 3=18pt, 4=15pt, 5=12pt, 6=11pt, 7~9=10pt). 상위 depth 일수록 확연히 크게 — 본문 10~11pt 대비 최상위 2.5배.'),
             numbering: z.enum(['roman', 'decimal', 'korean', 'circle', 'paren_decimal', 'paren_korean']).optional().describe('순번 형식(텍스트 prefix): roman(Ⅰ,Ⅱ), decimal(1,2), korean(가,나), circle(①,②), paren_decimal(1),2)), paren_korean(가),나))'),
             number: z.number().int().min(1).max(10).optional().describe('순번 번호 (1~10, 기본 1)'),
             auto_outline_level: z.boolean().optional().describe('ParaShape.OutlineLevel = level-1 자동 설정 (v0.6.9 신규). true면 한글이 계층 자동 인식 → hwp_generate_toc 목차 깊이 정확. numbering과 병행 가능 (prefix + OutlineLevel 동시).'),

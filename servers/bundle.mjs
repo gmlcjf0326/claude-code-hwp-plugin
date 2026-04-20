@@ -38109,14 +38109,16 @@ function registerEditingTools(server2, bridge2, toolset2 = "standard") {
         return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }], isError: true };
       }
     });
-    server2.tool("hwp_table_create_from_data", "2D \uBC30\uC5F4 \uB370\uC774\uD130\uB85C \uC0C8 \uD45C\uB97C \uC0DD\uC131\uD569\uB2C8\uB2E4. col_widths/row_heights \uB85C mm \uB2E8\uC704 \uC815\uBC00 \uB808\uC774\uC544\uC6C3. (v0.7.3.1) cell \uC548 \uD638\uCD9C \uC2DC \uC790\uB3D9\uC73C\uB85C cell \uD3ED \uAE30\uBC18 col_widths \uCD95\uC18C. row_heights \uB3C4 \uD398\uC774\uC9C0 \uB192\uC774 \uC790\uB3D9 \uCD95\uC18C. treat_as_char \uC635\uC158\uC73C\uB85C \uAE00\uC790\uCC98\uB7FC \uCDE8\uAE09 on/off \uC81C\uC5B4 (cell \uC548 \uD45C\uB294 \uD55C\uCEF4 \uC790\uB3D9 \uC801\uC6A9).", {
+    server2.tool("hwp_table_create_from_data", "2D \uBC30\uC5F4 \uB370\uC774\uD130\uB85C \uC0C8 \uD45C\uB97C \uC0DD\uC131\uD569\uB2C8\uB2E4. col_widths/row_heights \uB85C mm \uB2E8\uC704 \uC815\uBC00 \uB808\uC774\uC544\uC6C3. (v0.7.3.1) cell \uC548 \uD638\uCD9C \uC2DC \uC790\uB3D9\uC73C\uB85C cell \uD3ED \uAE30\uBC18 col_widths \uCD95\uC18C. row_heights \uB3C4 \uD398\uC774\uC9C0 \uB192\uC774 \uC790\uB3D9 \uCD95\uC18C. treat_as_char \uC635\uC158\uC73C\uB85C \uAE00\uC790\uCC98\uB7FC \uCDE8\uAE09 on/off \uC81C\uC5B4 (cell \uC548 \uD45C\uB294 \uD55C\uCEF4 \uC790\uB3D9 \uC801\uC6A9). (v0.7.6+) header_style=true \uC2DC \uCCAB \uD589\uC740 Bold + \uAC00\uC6B4\uB370\uC815\uB82C + \uBC30\uACBD\uC0C9 #E8E8E8 + \uAE00\uC790\uC0C9 #333333 \uC790\uB3D9 \uC801\uC6A9 (header_bg_color/header_text_color \uB85C override).", {
       data: external_exports.array(external_exports.array(external_exports.string())).describe("2D \uBC30\uC5F4 \uB370\uC774\uD130"),
-      header_style: external_exports.boolean().optional().describe("\uCCAB \uD589 \uD5E4\uB354 \uC2A4\uD0C0\uC77C (Bold+\uBC30\uACBD\uC0C9)"),
+      header_style: external_exports.boolean().optional().describe("\uCCAB \uD589 \uD5E4\uB354 \uC2A4\uD0C0\uC77C (v0.7.6+: Bold + \uAC00\uC6B4\uB370\uC815\uB82C + \uBC1D\uC740 \uD68C\uC0C9 \uBC30\uACBD #E8E8E8 \uC790\uB3D9 \uC801\uC6A9)"),
+      header_bg_color: external_exports.array(external_exports.number().int().min(0).max(255)).length(3).optional().describe("\uD5E4\uB354 \uBC30\uACBD\uC0C9 [R,G,B] (\uAE30\uBCF8 [232,232,232] \uBC1D\uC740 \uD68C\uC0C9). header_style=true \uC77C \uB54C\uB9CC \uC801\uC6A9."),
+      header_text_color: external_exports.array(external_exports.number().int().min(0).max(255)).length(3).optional().describe("\uD5E4\uB354 \uAE00\uC790\uC0C9 [R,G,B] (\uAE30\uBCF8 [51,51,51] \uC9C4\uD55C \uD68C\uC0C9). header_style=true \uC77C \uB54C\uB9CC \uC801\uC6A9."),
       col_widths: external_exports.array(external_exports.number()).optional().describe("\uC5F4 \uB108\uBE44 (mm, \uC790\uB3D9 \uCD95\uC18C \uAC00\uB2A5)"),
       row_heights: external_exports.array(external_exports.number()).optional().describe("\uD589 \uB192\uC774 (mm, v0.7.3.1 \uC790\uB3D9 \uCD95\uC18C \uCD94\uAC00)"),
-      alignment: external_exports.enum(["left", "center", "right"]).optional().describe("\uD45C \uC815\uB82C (\uAE30\uBCF8 left)"),
+      alignment: external_exports.enum(["left", "center", "right"]).optional().describe("\uBCF8\uBB38 \uD589 \uC815\uB82C (\uAE30\uBCF8 left). \uD5E4\uB354 \uD589\uC740 header_style=true \uC2DC \uD56D\uC0C1 \uAC00\uC6B4\uB370 \uAC15\uC81C."),
       treat_as_char: external_exports.boolean().optional().describe("v0.7.3.1 \uC2E0\uADDC: \uAE00\uC790\uCC98\uB7FC \uCDE8\uAE09 on/off. cell \uC548 nested \uD45C\uB294 \uC790\uB3D9 true. top-level \uD45C\uB294 false \uAC00 \uAE30\uBCF8.")
-    }, async ({ data, header_style, col_widths, row_heights, alignment, treat_as_char }) => {
+    }, async ({ data, header_style, header_bg_color, header_text_color, col_widths, row_heights, alignment, treat_as_char }) => {
       if (!bridge2.getCurrentDocument())
         return { content: [{ type: "text", text: JSON.stringify({ error: "\uC5F4\uB9B0 \uBB38\uC11C\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4." }) }], isError: true };
       try {
@@ -38124,6 +38126,10 @@ function registerEditingTools(server2, bridge2, toolset2 = "standard") {
         const params = { data };
         if (header_style)
           params.header_style = header_style;
+        if (header_bg_color)
+          params.header_bg_color = header_bg_color;
+        if (header_text_color)
+          params.header_text_color = header_text_color;
         if (col_widths)
           params.col_widths = col_widths;
         if (row_heights)
@@ -38143,7 +38149,7 @@ function registerEditingTools(server2, bridge2, toolset2 = "standard") {
     });
     server2.tool("hwp_insert_heading", '\uC81C\uBAA9 \uD14D\uC2A4\uD2B8\uB97C \uC0BD\uC785\uD569\uB2C8\uB2E4 (H1~H9). \uACF5\uBB38\uC11C \uC21C\uBC88 \uCCB4\uACC4\uC758 \uB300\uC81C\uBAA9 \uB4F1\uC5D0 \uC0AC\uC6A9. numbering\uC73C\uB85C \uC790\uB3D9 \uC21C\uBC88(\uD14D\uC2A4\uD2B8 prefix)\uC744 \uBD99\uC77C \uC218 \uC788\uC2B5\uB2C8\uB2E4 (\uC608: \u2160. \uC81C\uBAA9, 1. \uC81C\uBAA9, \uAC00. \uC81C\uBAA9). v0.6.9+: auto_outline_level \uC635\uC158\uC73C\uB85C ParaShape.OutlineLevel \uC790\uB3D9 \uC124\uC815 \u2192 \uD55C\uAE00 "\uAC1C\uC694 \uBCF4\uAE30" + hwp_generate_toc \uACC4\uCE35 \uC778\uC2DD \uD65C\uC131\uD654. level \uBC94\uC704 1~6 \u2192 1~9 \uD655\uC7A5.', {
       text: external_exports.string().describe("\uC81C\uBAA9 \uD14D\uC2A4\uD2B8"),
-      level: external_exports.number().int().min(1).max(9).describe("\uC81C\uBAA9 \uB808\uBCA8 (1=\uAC00\uC7A5 \uD070 22pt, 6~9=10pt). v0.6.9: 1~6 \u2192 1~9 \uD655\uC7A5"),
+      level: external_exports.number().int().min(1).max(9).describe("\uC81C\uBAA9 \uB808\uBCA8 (v0.7.6+: 1=28pt, 2=22pt, 3=18pt, 4=15pt, 5=12pt, 6=11pt, 7~9=10pt). \uC0C1\uC704 depth \uC77C\uC218\uB85D \uD655\uC5F0\uD788 \uD06C\uAC8C \u2014 \uBCF8\uBB38 10~11pt \uB300\uBE44 \uCD5C\uC0C1\uC704 2.5\uBC30."),
       numbering: external_exports.enum(["roman", "decimal", "korean", "circle", "paren_decimal", "paren_korean"]).optional().describe("\uC21C\uBC88 \uD615\uC2DD(\uD14D\uC2A4\uD2B8 prefix): roman(\u2160,\u2161), decimal(1,2), korean(\uAC00,\uB098), circle(\u2460,\u2461), paren_decimal(1),2)), paren_korean(\uAC00),\uB098))"),
       number: external_exports.number().int().min(1).max(10).optional().describe("\uC21C\uBC88 \uBC88\uD638 (1~10, \uAE30\uBCF8 1)"),
       auto_outline_level: external_exports.boolean().optional().describe("ParaShape.OutlineLevel = level-1 \uC790\uB3D9 \uC124\uC815 (v0.6.9 \uC2E0\uADDC). true\uBA74 \uD55C\uAE00\uC774 \uACC4\uCE35 \uC790\uB3D9 \uC778\uC2DD \u2192 hwp_generate_toc \uBAA9\uCC28 \uAE4A\uC774 \uC815\uD655. numbering\uACFC \uBCD1\uD589 \uAC00\uB2A5 (prefix + OutlineLevel \uB3D9\uC2DC)."),

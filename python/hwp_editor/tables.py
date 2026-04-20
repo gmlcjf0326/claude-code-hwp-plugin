@@ -110,7 +110,23 @@ def fill_table_cells_by_tab(hwp, table_idx, cells):
                         action = align_action.get(cell_style["align"], "TableCellAlignLeftCenter")
                         hwp.HAction.Run(action)
                 else:
-                    hwp.insert_text(text)
+                    # v0.7.6+: 스타일 미지정 시 현재 셀의 기존 char_shape 상속
+                    # (템플릿 셀의 폰트/크기/볼드가 기본값으로 덮어써지는 문제 완화)
+                    try:
+                        existing = get_char_shape(hwp)
+                        fallback_style = {
+                            "font_name": existing.get("font_name_hangul") or existing.get("font_name_latin"),
+                            "font_size": existing.get("font_size"),
+                            "bold": existing.get("bold", False),
+                        }
+                        fallback_style = {k: v for k, v in fallback_style.items() if v}
+                        if fallback_style:
+                            insert_text_with_style(hwp, text, fallback_style)
+                        else:
+                            hwp.insert_text(text)
+                    except Exception as e:
+                        print(f"[WARN] fallback char_shape inherit: {e}", file=sys.stderr)
+                        hwp.insert_text(text)
 
                 # 셀 수직 정렬/여백 설정 (HCell)
                 vert_align = cell.get("vert_align")  # "top"|"middle"|"bottom"

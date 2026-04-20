@@ -123,22 +123,30 @@ def table_create_from_data(hwp, params):
     # 셀 채우기
     align_map = {"left": 0, "center": 1, "right": 2}
     wide_table_font_size = 9 if cols >= 6 else None
+    # 헤더 기본 서식 (v0.7.6+ defaults 개선):
+    #   배경색 #E8E8E8 (밝은 회색, brightness 232 — 검정 글자 가독성 우수)
+    #   글자색 #333333 (진한 회색 — 검정보다 부드럽고 인쇄 대비 양호)
+    #   정렬: 헤더 행은 항상 가운데 강제 (본문 행은 alignment 파라미터 따름)
+    header_bg_color = params.get("header_bg_color") or [232, 232, 232]
+    header_text_color = params.get("header_text_color") or [51, 51, 51]
     filled = 0
     for r, row in enumerate(data):
         for c, val in enumerate(row):
-            if alignment and alignment in align_map:
+            # 헤더 행은 가운데 강제, 본문 행은 지정된 alignment
+            row_alignment = "center" if (header_style and r == 0) else alignment
+            if row_alignment and row_alignment in align_map:
                 try:
                     act_p = hwp.HAction
                     ps = hwp.HParameterSet.HParaShape
                     act_p.GetDefault("ParagraphShape", ps.HSet)
-                    ps.AlignType = align_map[alignment]
+                    ps.AlignType = align_map[row_alignment]
                     act_p.Execute("ParagraphShape", ps.HSet)
                 except Exception as e:
                     print(f"[WARN] Cell align: {e}", file=sys.stderr)
             if val:
                 if header_style and r == 0:
                     from hwp_editor import insert_text_with_style
-                    style = {"bold": True}
+                    style = {"bold": True, "color": list(header_text_color)}
                     if wide_table_font_size:
                         style["font_size"] = wide_table_font_size
                     insert_text_with_style(hwp, str(val), style)
@@ -148,6 +156,13 @@ def table_create_from_data(hwp, params):
                 else:
                     hwp.insert_text(str(val))
                 filled += 1
+            # 헤더 셀이면 배경색 채우기 (텍스트 삽입 후, 다음 셀 이동 전)
+            if header_style and r == 0:
+                try:
+                    bg = header_bg_color
+                    hwp.cell_fill((int(bg[0]), int(bg[1]), int(bg[2])))
+                except Exception as e:
+                    print(f"[WARN] header cell_fill: {e}", file=sys.stderr)
             if c < len(row) - 1 or r < rows - 1:
                 hwp.TableRightCell()
 

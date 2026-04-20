@@ -82,7 +82,7 @@ def insert_text_with_style(hwp, text, style=None):
     saved['StrikeOutType'] = pset.StrikeOutType
     for attr in ['SpacingHangul', 'RatioHangul', 'SuperScript', 'SubScript',
                  'OutLineType', 'ShadowType', 'Emboss', 'Engrave', 'SmallCaps',
-                 'UnderlineColor', 'StrikeOutColor']:
+                 'UnderlineColor', 'StrikeOutColor', 'ShadeColor']:
         try:
             saved[attr] = getattr(pset, attr)
         except Exception:
@@ -245,7 +245,7 @@ def insert_text_with_style(hwp, text, style=None):
             pset.StrikeOutType = saved['StrikeOutType']
             for attr in ['SpacingHangul', 'RatioHangul', 'SuperScript', 'SubScript',
                          'OutLineType', 'ShadowType', 'Emboss', 'Engrave', 'SmallCaps',
-                         'UnderlineColor', 'StrikeOutColor']:
+                         'UnderlineColor', 'StrikeOutColor', 'ShadeColor']:
                 if saved.get(attr) is not None:
                     try:
                         setattr(pset, attr, saved[attr])

@@ -109,7 +109,8 @@ def insert_heading(hwp, params):
     validate_params(params, ["text", "level"], "insert_heading")
     from hwp_editor import insert_text_with_style
     level = min(max(params["level"], 1), 9)
-    sizes = {1: 22, 2: 18, 3: 15, 4: 13, 5: 11, 6: 10, 7: 10, 8: 10, 9: 10}
+    # v0.7.6+ 계층 가시성 강화: 상위 depth 일수록 확연히 크게. 본문(10-11pt) 대비 최상위 2.5배.
+    sizes = {1: 28, 2: 22, 3: 18, 4: 15, 5: 12, 6: 11, 7: 10, 8: 10, 9: 10}
     text = params["text"]
     numbering = params.get("numbering")
     number = params.get("number", 1)
